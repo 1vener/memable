@@ -3,13 +3,20 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"memable/internal/api"
 	"memable/internal/config"
 	"memable/internal/db"
 	"memable/internal/logx"
+	"memable/internal/repo"
+	"memable/internal/scan"
+	"memable/internal/search"
 )
 
 func main() {
@@ -18,7 +25,6 @@ func main() {
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		// 日志尚未初始化，直接输出 stderr
 		slog.Error("加载配置失败", "err", err)
 		os.Exit(1)
 	}
@@ -37,9 +43,47 @@ func main() {
 	}
 
 	v, _ := db.SchemaVersion(dbh)
-	slog.Info("memable 服务启动完成",
-		"stage", "0+1.1",
+	slog.Info("数据库就绪",
 		"schema_version", v,
 		"db", cfg.Database.Path,
 	)
+
+	// 初始化各层 Repository
+	libRepo := repo.NewLibraryRepo(dbh)
+	sessionRepo := repo.NewSessionRepo(dbh)
+	mediaRepo := repo.NewMediaRepo(dbh)
+
+	// 初始化服务层
+	thumbBase := cfg.Thumbnail.ImageDir
+	if thumbBase == "" {
+		thumbBase = "thumbnail"
+	}
+
+	scanSvc := &scan.Service{
+		Sessions:  sessionRepo,
+		Media:     mediaRepo,
+		Config:    cfg,
+		ThumbBase: thumbBase,
+		Libraries: libRepo,
+	}
+	searchSvc := search.NewService(mediaRepo, libRepo)
+
+	// 启动 HTTP API 服务器
+	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, scanSvc, searchSvc, thumbBase)
+
+	// 优雅关闭
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		slog.Info("收到退出信号，正在关闭...")
+		srv.Shutdown(context.Background())
+	}()
+
+	slog.Info("memable 服务启动完成", "addr", ":8080")
+	if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
+		slog.Error("服务器异常退出", "err", err)
+		os.Exit(1)
+	}
+	slog.Info("服务已停止")
 }

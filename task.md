@@ -14,8 +14,8 @@
 ## 阶段 1 - 存储层
 
 - [x] 1.1 数据库连接（modernc.org/sqlite，WAL，foreign_keys=ON，busy_timeout，单连接池，_time_format=sqlite）
-- [x] 1.2 migrations：go:embed schema.sql + schema_version 表（版本 1）
-- [x] 1.3 Repository：libraries / scan_sessions / media CRUD（含 NeedScan 增量判定、SHA1 查重、全路径模糊搜索）
+- [x] 1.2 migrations：go:embed schema.sql + schema_version 表（版本 2）
+- [x] 1.3 Repository：libraries / scan_sessions / media CRUD（含 NeedScan 增量判定、SHA1 查重、全路径模糊搜索、ListByKind、UpdateLibrary）
 - [x] 1.4 事务封装与重试（WithTx + SQLITE_BUSY 指数退避）
 
 ## 阶段 2 - 媒体采集
@@ -35,45 +35,45 @@
 
 ## 阶段 4 - 缩略图与视频视觉指纹
 
-- [ ] 4.1 图片缩略图：最大边 300px，相对路径落盘，路径可配置
-- [ ] 4.2 视频封面时间点选择：短视频 50%、中等视频 30%、长视频 10%
-- [ ] 4.3 ffmpeg 抽取单张封面，黑屏/近纯色检测与最多 5 次回退重试
-- [ ] 4.4 视频封面 resize（最大边 300px）并写入 `media.thumbnail_path`
-- [ ] 4.5 Stash 风格视频 sprite pHash：25 张临时截图（避开首尾 5%）拼成 5x5 sprite，生成 `media.phash` 后清理临时文件
+- [x] 4.1 图片缩略图：最大边 300px，相对路径落盘，路径可配置
+- [x] 4.2 视频封面时间点选择：短视频 50%、中等视频 30%、长视频 10%
+- [x] 4.3 ffmpeg 抽取单张封面，黑屏/近纯色检测与最多 5 次回退重试
+- [x] 4.4 视频封面 resize（最大边 300px）并写入 `media.thumbnail_path`
+- [x] 4.5 Stash 风格视频 sprite pHash：25 张临时截图（避开首尾 5%）拼成 5x5 sprite，生成 `media.phash` 后清理临时文件
 
 ## 阶段 5 - Worker Pool 调度
 
-- [ ] 5.1 Worker pool（可配置并发数）
-- [ ] 5.2 扫描任务入队、取消、状态（scan_sessions.status）
-- [ ] 5.3 失败重试与进度上报
+- [x] 5.1 Worker pool（可配置并发数）
+- [x] 5.2 扫描任务入队、取消、状态（scan_sessions.status）
+- [x] 5.3 失败重试与进度上报
 
 ## 阶段 6 - 相似/重复检测
 
-- [ ] 6.1 图片：SHA1 精确 + pHash/dHash/aHash 相似（Hamming）
-- [ ] 6.2 视频：SHA1 精确 → oshash 粗筛 → Stash 风格 sprite pHash 距离+时长差候选分组
-- [ ] 6.3 阈值判定（sprite pHash Hamming 距离、允许时长差）
-- [ ] 6.4 重复报告生成（HTML，含完整路径 + 图片缩略图/视频封面）
+- [x] 6.1 图片：SHA1 精确 + pHash/dHash/aHash 相似（Hamming）
+- [x] 6.2 视频：SHA1 精确 → oshash 粗筛 → Stash 风格 sprite pHash 距离+时长差候选分组
+- [x] 6.3 阈值判定（sprite pHash Hamming 距离、允许时长差）
+- [x] 6.4 重复报告生成（HTML，含完整路径 + 图片缩略图/视频封面）
 
 ## 阶段 7 - 搜索
 
-- [ ] 7.1 文本搜索：文件名模糊匹配全路径 + sha1 精确
-- [ ] 7.2 以图搜图：对比图片缩略图与视频封面图
-- [ ] 7.3 临时目录扫描流程（is_temporary=1，临时缩略图目录）
-- [ ] 7.4 入库流程：移动文件 + UPDATE is_temporary=0 + 迁移缩略图目录
+- [x] 7.1 文本搜索：文件名模糊匹配全路径 + sha1 精确
+- [x] 7.2 以图搜图：对比图片缩略图与视频封面图
+- [x] 7.3 临时目录扫描流程（is_temporary=1，临时缩略图目录）
+- [x] 7.4 入库流程：移动文件 + UPDATE is_temporary=0 + 迁移缩略图目录
 
 ## 阶段 8 - 收藏库管理
 
-- [ ] 8.1 库 CRUD（libraries）
-- [ ] 8.2 根目录迁移（仅 UPDATE libraries.path，相对路径不变）
-- [ ] 8.3 文件树展示 + 删除联动（级联删除 media + 物理删除缩略图）
+- [x] 8.1 库 CRUD（libraries）
+- [x] 8.2 根目录迁移（仅 UPDATE libraries.path，相对路径不变）
+- [x] 8.3 文件树展示 + 删除联动（级联删除 media + 物理删除缩略图）
 
 ## 阶段 9 - Flutter 客户端
 
-- [ ] 9.1 与 Go 服务端 API 对接
-- [ ] 9.2 库管理 / 扫描进度 / 搜索 / 报告查看 UI
+- [x] 9.1 与 Go 服务端 API 对接
+- [x] 9.2 库管理 / 扫描进度 / 搜索 / 报告查看 UI
 
 ## 阶段 10 - 打包与验收
 
-- [ ] 10.1 本地打包（不依赖云服务）
+- [x] 10.1 本地打包（不依赖云服务）
 - [ ] 10.2 大规模库性能压测
-- [ ] 10.3 文档与 README
+- [x] 10.3 文档与 README

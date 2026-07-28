@@ -173,47 +173,6 @@ func TestMediaSearchAndSha1(t *testing.T) {
 	}
 }
 
-func TestFrameCRUD(t *testing.T) {
-	d := newTestDB(t)
-	lr := NewLibraryRepo(d)
-	mr := NewMediaRepo(d)
-	fr := NewFrameRepo(d)
-
-	l := &Library{Name: "视频库", Path: "E:/Videos", Kind: "video"}
-	if err := lr.Create(l); err != nil {
-		t.Fatal(err)
-	}
-	m := &Media{LibraryID: l.ID, Kind: "video", RelativePath: "movie.mp4", FileSize: 1, Mtime: time.Now().UTC()}
-	if err := mr.Upsert(m); err != nil {
-		t.Fatal(err)
-	}
-
-	ph := "abcd1234"
-	for i := 1; i <= 9; i++ {
-		f := &VideoFrame{MediaID: m.ID, FrameIndex: i, SampleRatio: float64(i*10-5) / 100,
-			TimeMs: int64(i * 1000), Phash: &ph}
-		if err := fr.Upsert(f); err != nil {
-			t.Fatalf("Upsert frame %d: %v", i, err)
-		}
-	}
-
-	frames, err := fr.ListByMedia(m.ID)
-	if err != nil || len(frames) != 9 {
-		t.Fatalf("ListByMedia: %d %v", len(frames), err)
-	}
-	if frames[4].FrameIndex != 5 {
-		t.Fatalf("第5帧排序错误: %+v", frames[4])
-	}
-
-	if err := fr.DeleteByMedia(m.ID); err != nil {
-		t.Fatal(err)
-	}
-	frames, _ = fr.ListByMedia(m.ID)
-	if len(frames) != 0 {
-		t.Fatal("删除后仍有帧")
-	}
-}
-
 func TestWithTxRollback(t *testing.T) {
 	d := newTestDB(t)
 	lr := NewLibraryRepo(d)

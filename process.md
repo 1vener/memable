@@ -174,3 +174,69 @@
 
 ### 文件变更
 - 修改：`需求文档.md`、`task.md`、`process.md`
+
+---
+
+## 2026-07-29（阶段 4~10 全量实现）
+
+### 已完成
+
+#### 前置修复：schema v2 迁移
+- **字段名统一**：`media.ohash` → `media.oshash`，符合 PRD 5.5 要求。
+- **移除 video_frames 表**：PRD 调整后视频不再持久化关键帧序列；`internal/repo/frame_repo.go` 及对应测试已删除。
+- **schema v2 迁移**：`ALTER TABLE media RENAME COLUMN ohash TO oshash` + `DROP TABLE IF EXISTS video_frames` + 新增 `idx_media_oshash` 索引。
+- **配置更新**：`config.yaml` 和 `internal/config/config.go` 中 `VideoConfig` 改为 `SpriteFrames`，`SimilarityConfig` 改为 `ImagePHashDistance` / `VideoPHashDistance` / `VideoDurationDiffMs` 等 Hamming 距离阈值。
+
+#### 阶段 4 - 缩略图与视频视觉指纹
+- `internal/media/thumbnail.go`：图片缩略图生成（最大边 300px，最近邻缩放，PNG 输出），仅用 Go 标准库。
+- `internal/media/cover.go`：视频封面提取（ffmpeg 抽帧 + 黑屏/近纯色检测 + 最多 5 次回退重试）；封面时间点按时长选择（<10s→50%、<60s→30%、≥60s→10%），回退序列含 ±10% duration 间隔、50% duration、0s。
+- `internal/media/sprite.go`：Stash 风格视频 sprite pHash；5%~95% 区间均匀 25 张截图（每张缩放至宽 160px）→ 5×5 sprite → 复用 pHash 算法 → 临时文件自动清理（`defer os.RemoveAll(tmpDir)`）。
+- `internal/scan/service.go`：`collect` 方法集成图片缩略图生成、视频封面提取、sprite pHash 计算；临时扫描使用 `_tmp` 子目录存放缩略图。
+
+#### 阶段 5 - Worker Pool 调度
+- `internal/worker/pool.go`：固定并发数 Worker Pool，支持 Submit / Stop / Cancel / Stats。
+- `internal/scan/service.go`：新增 `ScanLibraryAsync` 异步扫描方法，通过 Worker Pool 并发处理文件；`CancelScan` 支持取消会话；`scanState` 使用 mutex 保证并发安全统计。
+
+#### 阶段 6 - 相似/重复检测
+- `internal/duplicate/detector.go`：
+  - 图片检测：SHA1 精确分组 + pHash Hamming 距离相似分组（并查集合并连通分量）。
+  - 视频检测：SHA1 精确 + sprite pHash Hamming 距离 + 时长差辅助条件，连通分量合并分组。
+- `internal/duplicate/report.go`：HTML 报告生成（`html/template`），含完整路径、缩略图（`file://` 引用）、文件大小/分辨率/时长/SHA1；模板内嵌 `formatSize` / `formatDuration` 辅助函数。
+
+#### 阶段 7 - 搜索
+- `internal/search/service.go`：文本搜索（SHA1 精确 + 路径模糊，合并去重）+ 以图搜图（pHash Hamming 距离，按距离排序）。
+- `internal/api/handlers.go`：临时扫描入库（`handlePromoteSession`）——移动文件 + 迁移缩略图 + `UPDATE media.library_id` + 删除临时库记录 + 标记 `scan_sessions.is_temporary=0`。
+
+#### 阶段 8 - 收藏库管理
+- `internal/api/handlers.go`：完整库 CRUD + 文件树（`buildFileTree` 递归构建）+ 删除联动（先物理删除缩略图再级联删除数据库记录）+ 根目录迁移（`UPDATE libraries.path`）。
+- `internal/repo/media_repo.go`：新增 `UpdateLibrary`（更新媒体归属库）、`SearchBySha1`、`ListByKind`（LEFT JOIN scan_sessions 过滤临时记录）。
+
+#### 阶段 9 - Flutter 客户端
+- `flutter_app/`：完整 Flutter 项目结构。
+  - `lib/models/models.dart`：Library / Media / ScanSession / SearchResult / FileTreeNode 数据模型。
+  - `lib/services/api_service.dart`：HTTP API 客户端，覆盖全部接口。
+  - `lib/screens/`：4 个界面——收藏库管理（CRUD + 删除确认）、扫描（启动/轮询/取消）、搜索（文本搜索 + 结果展示）、报告（图片/视频报告生成）。
+  - `lib/main.dart`：Material 3 应用入口，底部导航 4 个 tab。
+
+#### 阶段 10 - 打包与文档
+- `README.md`：完整项目文档（快速开始、配置说明、API 接口表、核心算法说明、项目结构、开发命令）。
+- 本地打包验证：`go build ./cmd/server` 成功生成二进制。
+
+### 验证
+- `gofmt -w ./cmd ./internal` 通过
+- `go vet ./...` 通过
+- `go test ./... -count=1` 全部通过（db / media / repo / scan 四个包）
+- `go build ./cmd/server` 成功
+
+### 进行中
+- 无（阶段 4~10 全部完成）。
+
+### 待决
+- 10.2 大规模库性能压测：需要准备大量测试文件（数千图片/视频），当前仅验证功能正确性。
+- pHash DCT 为 O(n⁴)，大规模库可考虑优化为分离 DCT（O(n³)）。
+- Flutter 客户端尚未做端到端集成测试（需启动 Go 服务端后手动验证）。
+
+### 文件变更
+- 新增：`internal/media/thumbnail.go`、`internal/media/cover.go`、`internal/media/sprite.go`、`internal/worker/pool.go`、`internal/duplicate/detector.go`、`internal/duplicate/report.go`、`internal/search/service.go`、`internal/api/server.go`、`internal/api/handlers.go`、`README.md`、`flutter_app/`（完整 Flutter 项目）
+- 修改：`internal/config/config.go`（VideoConfig / SimilarityConfig 重构）、`config.yaml`、`schema.sql`（oshash 重命名 + 移除 video_frames）、`internal/db/schema.sql`（同步）、`internal/db/db.go`（v2 迁移）、`internal/db/db_test.go`（版本 2）、`internal/repo/models.go`（Oshash 字段名 + 移除 VideoFrame）、`internal/repo/media_repo.go`（oshash + 新增方法）、`internal/scan/service.go`（集成缩略图/sprite/worker pool）、`cmd/server/main.go`（HTTP 服务器启动）、`task.md`、`process.md`
+- 删除：`internal/repo/frame_repo.go`

@@ -49,4 +49,3 @@ type Media struct {
 	ThumbnailPath *string
 	CreatedAt     time.Time
 }
-

@@ -141,6 +141,12 @@ func (r *MediaRepo) Delete(id int64) error {
 	return nil
 }
 
+// UpdateLibrary 更新媒体的归属库（临时扫描入库时使用）。
+func (r *MediaRepo) UpdateLibrary(id int64, libraryID int64) error {
+	_, err := r.db.Exec(`UPDATE media SET library_id = ? WHERE id = ?`, libraryID, id)
+	return errx.Wrapf(err, "更新媒体库归属 id=%d", id)
+}
+
 // query 通用多行查询。
 func (r *MediaRepo) query(q string, args ...any) ([]Media, error) {
 	rows, err := r.db.Query(q, args...)
@@ -155,7 +161,7 @@ func (r *MediaRepo) query(q string, args ...any) ([]Media, error) {
 		if err := rows.Scan(&m.ID, &m.LibraryID, &m.ScanSessionID, &m.Kind, &m.RelativePath,
 			&m.FileSize, &m.Mtime, &m.Format, &m.Width, &m.Height, &m.Phash, &m.Dhash,
 			&m.Ahash, &m.DurationMs, &m.VideoCodec, &m.AudioCodec, &m.FrameRate,
-			&m.BitRate, &m.Ohash, &m.Sha1, &m.ThumbnailPath, &m.CreatedAt); err != nil {
+			&m.BitRate, &m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CreatedAt); err != nil {
 			return nil, errx.Wrapf(err, "扫描媒体行")
 		}
 		out = append(out, m)

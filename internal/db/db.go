@@ -49,11 +49,24 @@ func Migrate(db *sql.DB) error {
 		return nil
 	}
 
-	if _, err := db.Exec(schemaSQL); err != nil {
-		return fmt.Errorf("执行内嵌 schema.sql: %w", err)
+	if cur == 0 {
+		if _, err := db.Exec(schemaSQL); err != nil {
+			return fmt.Errorf("执行内嵌 schema.sql: %w", err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version(version) VALUES (?)`, schemaVersion); err != nil {
+			return fmt.Errorf("写入 schema_version: %w", err)
+		}
+		return nil
 	}
-	if _, err := db.Exec(`INSERT INTO schema_version(version) VALUES (?)`, schemaVersion); err != nil {
-		return fmt.Errorf("写入 schema_version: %w", err)
+
+	// v2：术语统一为 oshash，并移除已废弃的视频关键帧持久化表。
+	if cur < 2 {
+		if _, err := db.Exec(`ALTER TABLE media RENAME COLUMN ohash TO oshash;
+			DROP TABLE IF EXISTS video_frames;
+			CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT NULL;
+			INSERT INTO schema_version(version) VALUES (2);`); err != nil {
+			return fmt.Errorf("迁移到 v2: %w", err)
+		}
 	}
 	return nil
 }

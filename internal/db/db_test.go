@@ -26,12 +26,12 @@ func TestOpenAndMigrateInMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 1 {
-		t.Fatalf("expected version 1, got %d", v)
+	if v != 2 {
+		t.Fatalf("expected version 2, got %d", v)
 	}
 
-	// 验证核心表已建立
-	for _, tbl := range []string{"libraries", "scan_sessions", "media", "video_frames"} {
+	// 验证核心表已建立；video_frames 已在 v2 迁移中移除
+	for _, tbl := range []string{"libraries", "scan_sessions", "media"} {
 		var n int
 		q := "SELECT count(*) FROM " + tbl
 		if err := dbh.QueryRow(q).Scan(&n); err != nil {
