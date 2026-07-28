@@ -1,6 +1,7 @@
 // api_service.dart：HTTP API 客户端
 // 代码注释使用中文
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../models/models.dart';
 
@@ -9,6 +10,13 @@ class ApiService {
   final String baseUrl;
 
   ApiService({this.baseUrl = 'http://localhost:8080'});
+
+  // ===== 健康检查 =====
+
+  Future<void> health() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/health'));
+    if (res.statusCode != 200) throw Exception('API 健康检查失败');
+  }
 
   // ===== 收藏库管理 =====
 
@@ -19,7 +27,7 @@ class ApiService {
     return list.map((e) => Library.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  Future<Library> createLibrary(String name, String path, String kind) async {
+  Future<Library> createLibrary(String name, String path, {String kind = 'image'}) async {
     final res = await http.post(
       Uri.parse('$baseUrl/api/libraries'),
       headers: {'Content-Type': 'application/json'},
@@ -44,6 +52,24 @@ class ApiService {
   }
 
   // ===== 扫描 =====
+
+  /// 启动库扫描
+  Future<Map<String, dynamic>> startScan({int? libraryId, String? scanPath}) async {
+    if (libraryId != null) {
+      final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/scan'));
+      if (res.statusCode != 200) throw Exception('启动扫描失败: ${res.body}');
+      return jsonDecode(res.body);
+    } else if (scanPath != null) {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/scan/temporary'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'path': scanPath}),
+      );
+      if (res.statusCode != 200) throw Exception('启动临时扫描失败: ${res.body}');
+      return jsonDecode(res.body);
+    }
+    throw Exception('必须指定 libraryId 或 scanPath');
+  }
 
   Future<Map<String, dynamic>> scanLibrary(int libraryId) async {
     final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/scan'));
@@ -84,7 +110,8 @@ class ApiService {
 
   // ===== 搜索 =====
 
-  Future<List<SearchResult>> searchText(String query) async {
+  /// 文字搜索
+  Future<List<SearchResult>> searchText({required String query}) async {
     final res = await http.get(
       Uri.parse('$baseUrl/api/search?q=${Uri.encodeQueryComponent(query)}'),
     );
@@ -94,7 +121,23 @@ class ApiService {
     return results.map((e) => SearchResult.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  Future<List<SearchResult>> searchImage(String phash, {int maxDistance = 12}) async {
+  /// 以图搜图（通过文件上传）
+  Future<List<SearchResult>> searchImage({required File file, int maxDistance = 12}) async {
+    final bytes = await file.readAsBytes();
+    final base64Image = base64Encode(bytes);
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/search/image'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'phash': base64Image, 'max_distance': maxDistance}),
+    );
+    if (res.statusCode != 200) throw Exception('以图搜图失败: ${res.body}');
+    final data = jsonDecode(res.body);
+    final results = data['results'] as List<dynamic>;
+    return results.map((e) => SearchResult.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  /// 以图搜图（通过 phash）
+  Future<List<SearchResult>> searchImageByPhash(String phash, {int maxDistance = 12}) async {
     final res = await http.post(
       Uri.parse('$baseUrl/api/search/image'),
       headers: {'Content-Type': 'application/json'},
@@ -107,6 +150,32 @@ class ApiService {
   }
 
   // ===== 重复报告 =====
+
+  /// 生成重复检测报告（图片 + 视频）
+  Future<DuplicateReport> generateReport() async {
+    // 先生成图片报告
+    final imgRes = await http.post(
+      Uri.parse('$baseUrl/api/reports/image'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'output_path': 'report_image.html'}),
+    );
+    // 再生成视频报告
+    final vidRes = await http.post(
+      Uri.parse('$baseUrl/api/reports/video'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'output_path': 'report_video.html'}),
+    );
+
+    Map<String, dynamic> data = {};
+    if (imgRes.statusCode == 200) {
+      data = jsonDecode(imgRes.body);
+    } else if (vidRes.statusCode == 200) {
+      data = jsonDecode(vidRes.body);
+    } else {
+      throw Exception('报告生成失败');
+    }
+    return DuplicateReport.fromJson(data);
+  }
 
   Future<Map<String, dynamic>> generateImageReport({String? outputPath}) async {
     final res = await http.post(

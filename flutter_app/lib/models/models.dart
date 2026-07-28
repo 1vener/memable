@@ -7,6 +7,7 @@ class Library {
   final String name;
   final String path;
   final String kind;
+  final String? thumbnailDir;
   final String? createdAt;
   final String? updatedAt;
 
@@ -15,6 +16,7 @@ class Library {
     required this.name,
     required this.path,
     required this.kind,
+    this.thumbnailDir,
     this.createdAt,
     this.updatedAt,
   });
@@ -24,7 +26,8 @@ class Library {
       id: json['id'] as int,
       name: json['name'] as String,
       path: json['path'] as String,
-      kind: json['kind'] as String,
+      kind: json['kind'] as String? ?? 'image',
+      thumbnailDir: json['thumbnail_dir'] as String?,
       createdAt: json['created_at'] as String?,
       updatedAt: json['updated_at'] as String?,
     );
@@ -82,6 +85,9 @@ class ScanSession {
   final int? libraryId;
   final bool isTemporary;
   final String status;
+  final int scanned;
+  final int imported;
+  final int skipped;
   final String? startedAt;
   final String? finishedAt;
 
@@ -90,6 +96,9 @@ class ScanSession {
     this.libraryId,
     required this.isTemporary,
     required this.status,
+    this.scanned = 0,
+    this.imported = 0,
+    this.skipped = 0,
     this.startedAt,
     this.finishedAt,
   });
@@ -100,6 +109,9 @@ class ScanSession {
       libraryId: json['library_id'] as int?,
       isTemporary: json['is_temporary'] == 1 || json['is_temporary'] == true,
       status: json['status'] as String,
+      scanned: json['scanned'] as int? ?? 0,
+      imported: json['imported'] as int? ?? 0,
+      skipped: json['skipped'] as int? ?? 0,
       startedAt: json['started_at'] as String?,
       finishedAt: json['finished_at'] as String?,
     );
@@ -110,19 +122,29 @@ class ScanSession {
 class SearchResult {
   final Media media;
   final String fullPath;
-  final int distance;
+  final String name;
+  final String? thumbnailUrl;
+  final double score;
 
   SearchResult({
     required this.media,
     required this.fullPath,
-    this.distance = 0,
-  });
+    String? name,
+    this.thumbnailUrl,
+    this.score = 0.0,
+  }) : name = name ?? fullPath.split('/').last.split('\\').last;
 
   factory SearchResult.fromJson(Map<String, dynamic> json) {
+    final media = Media.fromJson(json['Media'] ?? json['media'] ?? json);
+    final fullPath = (json['FullPath'] ?? json['full_path'] ?? media.relativePath) as String;
+    final distance = (json['Distance'] ?? json['distance'] ?? 0) as int;
+    // 将 distance 转换为 0-1 相似度分数（distance 越小越相似）
+    final score = distance > 0 ? (1.0 - distance / 64.0).clamp(0.0, 1.0) : 1.0;
     return SearchResult(
-      media: Media.fromJson(json['Media'] ?? json['media'] ?? json),
-      fullPath: json['FullPath'] ?? json['full_path'] ?? '',
-      distance: json['Distance'] ?? json['distance'] ?? 0,
+      media: media,
+      fullPath: fullPath,
+      thumbnailUrl: media.thumbnailPath,
+      score: score,
     );
   }
 }
@@ -153,6 +175,30 @@ class FileTreeNode {
               ?.map((e) => FileTreeNode.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
+    );
+  }
+}
+
+/// 重复检测报告
+class DuplicateReport {
+  final int groupCount;
+  final int fileCount;
+  final String fileSize;
+  final String path;
+
+  DuplicateReport({
+    required this.groupCount,
+    required this.fileCount,
+    required this.fileSize,
+    required this.path,
+  });
+
+  factory DuplicateReport.fromJson(Map<String, dynamic> json) {
+    return DuplicateReport(
+      groupCount: json['group_count'] as int? ?? 0,
+      fileCount: json['file_count'] as int? ?? 0,
+      fileSize: json['file_size'] as String? ?? '',
+      path: json['path'] as String? ?? '',
     );
   }
 }

@@ -1,20 +1,45 @@
-// library_screen.dart：桌面端收藏库管理
+// library_screen.dart：收藏库管理页面（左列表 + 右文件树 + 右键菜单）
 // 代码注释使用中文
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../widgets/context_menu.dart';
+
+/// 文件树节点
+class FileTreeNode {
+  final String name;
+  final String fullPath;
+  final bool isDir;
+  final List<FileTreeNode> children;
+
+  FileTreeNode({
+    required this.name,
+    required this.fullPath,
+    required this.isDir,
+    this.children = const [],
+  });
+}
 
 class LibraryScreen extends StatefulWidget {
   final ApiService api;
-  const LibraryScreen({super.key, required this.api});
+  final ValueChanged<String> onLibrarySelected;
+
+  const LibraryScreen({
+    super.key,
+    required this.api,
+    required this.onLibrarySelected,
+  });
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
-  List<Library> _libs = [];
+  List<Library> _libraries = [];
+  Library? _selected;
   bool _loading = true;
+  String? _error;
 
   @override
   void initState() {
@@ -23,259 +48,460 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _loadLibraries() async {
-    setState(() => _loading = true);
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
-      final libs = await widget.api.getLibraries();
-      setState(() => _libs = libs);
+      final data = await widget.api.getLibraries();
+      if (mounted) {
+        setState(() {
+          _libraries = data;
+          _loading = false;
+          if (_libraries.isNotEmpty && _selected == null) {
+            _selected = _libraries.first;
+          }
+        });
+      }
     } catch (e) {
-      _showError('加载失败', e);
-    } finally {
-      setState(() => _loading = false);
+      if (mounted) {
+        setState(() {
+          _error = '$e';
+          _loading = false;
+        });
+      }
     }
   }
 
-  void _showError(String title, Object e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$title: $e'), backgroundColor: const Color(0xFFEF4444)),
-    );
-  }
-
   Future<void> _addLibrary() async {
-    final nameCtrl = TextEditingController();
-    final pathCtrl = TextEditingController();
-    String kind = 'mixed';
-
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('新建收藏库'),
-        content: SizedBox(
-          width: 400,
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(labelText: '名称', hintText: '如：照片库'),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: pathCtrl,
-              decoration: const InputDecoration(labelText: '根目录路径', hintText: '如：D:/Pictures'),
-            ),
-            const SizedBox(height: 12),
-            StatefulBuilder(builder: (ctx, setState) {
-              return DropdownButtonFormField<String>(
-                value: kind,
-                decoration: const InputDecoration(labelText: '类型'),
-                items: const [
-                  DropdownMenuItem(value: 'image', child: Text('图片')),
-                  DropdownMenuItem(value: 'video', child: Text('视频')),
-                  DropdownMenuItem(value: 'mixed', child: Text('混合')),
-                ],
-                onChanged: (v) => setState(() => kind = v ?? 'mixed'),
-              );
-            }),
-          ]),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('创建')),
-        ],
-      ),
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: '选择媒体库目录',
     );
+    if (dir == null) return;
 
-    if (result == true && nameCtrl.text.isNotEmpty && pathCtrl.text.isNotEmpty) {
-      try {
-        await widget.api.createLibrary(nameCtrl.text, pathCtrl.text, kind);
-        _loadLibraries();
-      } catch (e) {
-        _showError('创建失败', e);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _NameDialog(defaultName: dir.split('/').last.split('\\').last),
+    );
+    if (name == null || name.isEmpty) return;
+
+    try {
+      await widget.api.createLibrary(name, dir);
+      await _loadLibraries();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('创建失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+        );
       }
     }
   }
 
   Future<void> _deleteLibrary(Library lib) async {
-    final confirmed = await showDialog<bool>(
+    final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        icon: const Icon(Icons.warning_amber, color: Color(0xFFF59E0B), size: 48),
         title: const Text('确认删除'),
-        content: Text('删除收藏库「${lib.name}」？\n\n将级联删除该库下所有媒体记录和缩略图文件。'),
+        content: Text('确定要删除库「${lib.name}」吗？此操作不可恢复。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+          TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
+            child: const Text('删除', style: TextStyle(color: Color(0xFFEF4444))),
           ),
         ],
       ),
     );
-    if (confirmed == true) {
-      try {
-        await widget.api.deleteLibrary(lib.id);
-        _loadLibraries();
-      } catch (e) {
-        _showError('删除失败', e);
+    if (ok != true) return;
+
+    try {
+      await widget.api.deleteLibrary(lib.id);
+      setState(() => _selected = null);
+      await _loadLibraries();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('删除失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+        );
       }
     }
+  }
+
+  void _onLibraryTap(Library lib) {
+    setState(() => _selected = lib);
+    widget.onLibrarySelected(lib.name);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 页面标题栏
-            Row(
-              children: [
-                const Text('收藏库管理', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
-                const Spacer(),
-                FilledButton.icon(
-                  onPressed: _addLibrary,
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text('新建收藏库'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '共 ${_libs.length} 个收藏库',
-              style: const TextStyle(fontSize: 13, color: Color(0xFF64748B)),
-            ),
-            const SizedBox(height: 20),
+    final cs = Theme.of(context).colorScheme;
 
-            // 表格
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _libs.isEmpty
-                      ? _buildEmptyState()
-                      : _buildTable(),
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, size: 48, color: cs.error),
+            const SizedBox(height: 16),
+            Text('加载失败', style: TextStyle(fontSize: 16, color: cs.onSurface)),
+            const SizedBox(height: 8),
+            Text(_error!, style: TextStyle(fontSize: 13, color: cs.outline)),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _loadLibraries,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重试'),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.folder_open, size: 64, color: Colors.grey[300]),
-          const SizedBox(height: 16),
-          const Text('暂无收藏库', style: TextStyle(fontSize: 16, color: Color(0xFF94A3B8))),
-          const SizedBox(height: 8),
-          const Text('点击右上角「新建收藏库」添加媒体目录', style: TextStyle(fontSize: 13, color: Color(0xFF94A3B8))),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTable() {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(minWidth: MediaQuery.of(context).size.width - 290),
-          child: DataTable(
-            headingRowColor: WidgetStateProperty.all(const Color(0xFFF8FAFC)),
-            headingTextStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF475569)),
-            dataTextStyle: const TextStyle(fontSize: 13, color: Color(0xFF1E293B)),
-            columnSpacing: 24,
-            horizontalMargin: 20,
-            columns: const [
-              DataColumn(label: Text('ID')),
-              DataColumn(label: Text('名称')),
-              DataColumn(label: Text('路径')),
-              DataColumn(label: Text('类型')),
-              DataColumn(label: Text('操作')),
-            ],
-            rows: _libs.map((lib) {
-              return DataRow(cells: [
-                DataCell(Text('#${lib.id}')),
-                DataCell(Row(children: [
-                  Icon(
-                    lib.kind == 'image' ? Icons.image_outlined : lib.kind == 'video' ? Icons.video_library_outlined : Icons.folder_outlined,
-                    size: 18,
-                    color: const Color(0xFF64748B),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(lib.name, style: const TextStyle(fontWeight: FontWeight.w500)),
-                ])),
-                DataCell(
-                  SizedBox(width: 300, child: Text(lib.path, overflow: TextOverflow.ellipsis)),
-                ),
-                DataCell(_kindChip(lib.kind)),
-                DataCell(Row(mainAxisSize: MainAxisSize.min, children: [
-                  IconButton(
-                    icon: const Icon(Icons.edit_outlined, size: 18),
-                    tooltip: '编辑路径',
-                    onPressed: () => _editPath(lib),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.delete_outline, size: 18),
-                    tooltip: '删除',
-                    onPressed: () => _deleteLibrary(lib),
-                  ),
-                ])),
-              ]);
-            }).toList(),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _kindChip(String kind) {
-    final (label, color) = switch (kind) {
-      'image' => ('图片', const Color(0xFF3B82F6)),
-      'video' => ('视频', const Color(0xFF8B5CF6)),
-      _ => ('混合', const Color(0xFF6B7280)),
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w500)),
-    );
-  }
-
-  Future<void> _editPath(Library lib) async {
-    final ctrl = TextEditingController(text: lib.path);
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('迁移根目录'),
-        content: SizedBox(
-          width: 400,
-          child: TextField(
-            controller: ctrl,
-            decoration: const InputDecoration(labelText: '新路径'),
-            autofocus: true,
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('迁移')),
-        ],
-      ),
-    );
-    if (result == true && ctrl.text.isNotEmpty && ctrl.text != lib.path) {
-      try {
-        await widget.api.updateLibraryPath(lib.id, ctrl.text);
-        _loadLibraries();
-      } catch (e) {
-        _showError('迁移失败', e);
-      }
+      );
     }
+
+    return Row(
+      children: [
+        // ========== 左侧：库列表 ==========
+        SizedBox(
+          width: 280,
+          child: Column(
+            children: [
+              // 工具栏
+              Container(
+                height: 52,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                decoration: BoxDecoration(
+                  border: Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
+                ),
+                child: Row(
+                  children: [
+                    Text(
+                      '收藏库 (${_libraries.length})',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.add, size: 20),
+                      tooltip: '添加库',
+                      onPressed: _addLibrary,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh, size: 20),
+                      tooltip: '刷新',
+                      onPressed: _loadLibraries,
+                    ),
+                  ],
+                ),
+              ),
+              // 库列表
+              Expanded(
+                child: _libraries.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.folder_off, size: 48, color: cs.outline),
+                            const SizedBox(height: 12),
+                            Text('暂无收藏库', style: TextStyle(fontSize: 14, color: cs.outline)),
+                            const SizedBox(height: 16),
+                            FilledButton.tonalIcon(
+                              onPressed: _addLibrary,
+                              icon: const Icon(Icons.add, size: 18),
+                              label: const Text('添加库'),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(8),
+                        itemCount: _libraries.length,
+                        itemBuilder: (context, index) {
+                          final lib = _libraries[index];
+                          final selected = _selected?.id == lib.id;
+                          return _LibraryCard(
+                            library: lib,
+                            selected: selected,
+                            onTap: () => _onLibraryTap(lib),
+                            onDelete: () => _deleteLibrary(lib),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+        // ========== 分隔线 ==========
+        VerticalDivider(width: 1, color: cs.outlineVariant),
+        // ========== 右侧：库详情 ==========
+        Expanded(
+          child: _selected == null
+              ? Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.folder_open, size: 64, color: cs.outline.withValues(alpha: 0.5)),
+                      const SizedBox(height: 16),
+                      Text('选择一个库查看详情', style: TextStyle(fontSize: 15, color: cs.outline)),
+                    ],
+                  ),
+                )
+              : _LibraryDetail(library: _selected!, api: widget.api),
+        ),
+      ],
+    );
+  }
+}
+
+/// 库卡片
+class _LibraryCard extends StatelessWidget {
+  final Library library;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+
+  const _LibraryCard({
+    required this.library,
+    required this.selected,
+    required this.onTap,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.all(4),
+      child: Tooltip(
+        message: library.path,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: onTap,
+            onSecondaryTapDown: (details) {
+              showContextMenu(
+                context: context,
+                position: details.globalPosition,
+                items: [
+                  ContextMenuItem(
+                    icon: Icons.play_arrow,
+                    label: '开始扫描',
+                    onTap: onTap,
+                  ),
+                  ContextMenuItem(
+                    icon: Icons.delete_outline,
+                    label: '删除库',
+                    isDestructive: true,
+                    onTap: onDelete,
+                  ),
+                ],
+              );
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: selected
+                    ? cs.primary.withValues(alpha: Theme.of(context).brightness == Brightness.dark ? 0.15 : 0.1)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(10),
+                border: selected
+                    ? Border.all(color: cs.primary.withValues(alpha: 0.3))
+                    : null,
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: cs.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.folder, color: cs.primary, size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          library.name,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: cs.onSurface,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          library.path,
+                          style: TextStyle(fontSize: 12, color: cs.outline),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right, size: 18, color: cs.outline),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 库详情面板
+class _LibraryDetail extends StatelessWidget {
+  final Library library;
+  final ApiService api;
+
+  const _LibraryDetail({required this.library, required this.api});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final baseUrl = api.baseUrl;
+
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // 库名称
+          Row(
+            children: [
+              Icon(Icons.folder, size: 28, color: cs.primary),
+              const SizedBox(width: 12),
+              Text(
+                library.name,
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: cs.onSurface),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+
+          // 基本信息卡片
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('基本信息', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                  const SizedBox(height: 16),
+                  _InfoRow(label: '库 ID', value: library.id.toString()),
+                  const SizedBox(height: 8),
+                  _InfoRow(label: '路径', value: library.path),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // 缩略图预览（如果有）
+          if (library.thumbnailDir != null && library.thumbnailDir!.isNotEmpty)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('缩略图', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.network(
+                        '$baseUrl/thumbnail/${library.id}/preview',
+                        height: 180,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(
+                          height: 180,
+                          width: double.infinity,
+                          color: cs.surfaceContainerHighest,
+                          child: Center(
+                            child: Text('暂无缩略图', style: TextStyle(color: cs.outline)),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+  const _InfoRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 80,
+          child: Text(label, style: TextStyle(fontSize: 13, color: cs.outline)),
+        ),
+        Expanded(
+          child: SelectableText(value, style: TextStyle(fontSize: 13, color: cs.onSurface)),
+        ),
+      ],
+    );
+  }
+}
+
+/// 名称输入对话框
+class _NameDialog extends StatefulWidget {
+  final String defaultName;
+  const _NameDialog({required this.defaultName});
+
+  @override
+  State<_NameDialog> createState() => _NameDialogState();
+}
+
+class _NameDialogState extends State<_NameDialog> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.defaultName);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('库名称'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: '输入库名称'),
+        onSubmitted: (_) => Navigator.pop(context, _ctrl.text.trim()),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        FilledButton(onPressed: () => Navigator.pop(context, _ctrl.text.trim()), child: const Text('确认')),
+      ],
+    );
   }
 }

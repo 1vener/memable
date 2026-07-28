@@ -1,23 +1,29 @@
-// scan_screen.dart：桌面端扫描管理
+// scan_screen.dart：扫描页面（库选择 + 临时扫描 + 进度 + 历史）
 // 代码注释使用中文
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 
 class ScanScreen extends StatefulWidget {
   final ApiService api;
-  const ScanScreen({super.key, required this.api});
+  final String? currentLibrary;
+  const ScanScreen({super.key, required this.api, this.currentLibrary});
 
   @override
   State<ScanScreen> createState() => _ScanScreenState();
 }
 
 class _ScanScreenState extends State<ScanScreen> {
-  List<Library> _libs = [];
-  String? _sessionId;
-  String _status = '';
-  Map<String, dynamic>? _sessionData;
+  List<Library> _libraries = [];
+  int? _selectedLibraryId;
   bool _scanning = false;
+  String? _statusMessage;
+  String? _error;
+
+  // 临时扫描路径
+  String _tempPath = '';
+  bool _useExistingLib = true;
 
   @override
   void initState() {
@@ -25,224 +31,326 @@ class _ScanScreenState extends State<ScanScreen> {
     _loadLibraries();
   }
 
+  @override
+  void didUpdateWidget(covariant ScanScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.currentLibrary != null && widget.currentLibrary != oldWidget.currentLibrary) {
+      final match = _libraries.where((l) => l.name == widget.currentLibrary).toList();
+      if (match.isNotEmpty) {
+        setState(() => _selectedLibraryId = match.first.id);
+      }
+    }
+  }
+
   Future<void> _loadLibraries() async {
     try {
-      final libs = await widget.api.getLibraries();
-      setState(() => _libs = libs);
-    } catch (_) {}
-  }
-
-  Future<void> _startScan(int libraryId, String libName) async {
-    setState(() => _scanning = true);
-    try {
-      final result = await widget.api.scanLibrary(libraryId);
-      setState(() {
-        _sessionId = result['session_id'];
-        _status = result['status'];
-      });
-      _pollSession();
-    } catch (e) {
-      _showSnack('启动扫描失败: $e');
-      setState(() => _scanning = false);
-    }
-  }
-
-  Future<void> _startTempScan() async {
-    final ctrl = TextEditingController();
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('临时目录扫描'),
-        content: SizedBox(
-          width: 400,
-          child: TextField(
-            controller: ctrl,
-            decoration: const InputDecoration(labelText: '目录路径', hintText: '如：D:/Downloads'),
-            autofocus: true,
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('开始扫描')),
-        ],
-      ),
-    );
-    if (result == true && ctrl.text.isNotEmpty) {
-      setState(() => _scanning = true);
-      try {
-        final r = await widget.api.scanTemporary(ctrl.text);
+      final data = await widget.api.getLibraries();
+      if (mounted) {
         setState(() {
-          _sessionId = r['session_id'];
-          _status = r['status'];
+          _libraries = data;
+          if (_selectedLibraryId == null && _libraries.isNotEmpty) {
+            _selectedLibraryId = _libraries.first.id;
+          }
         });
-        _pollSession();
-      } catch (e) {
-        _showSnack('启动临时扫描失败: $e');
-        setState(() => _scanning = false);
-      }
-    }
-  }
-
-  Future<void> _pollSession() async {
-    while (_sessionId != null && _status == 'running') {
-      await Future.delayed(const Duration(seconds: 2));
-      try {
-        final data = await widget.api.getSession(_sessionId!);
-        if (!mounted) return;
-        setState(() {
-          _sessionData = data;
-          _status = (data['session'] as Map?)?['status'] ?? '';
-        });
-        if (_status != 'running') {
-          setState(() => _scanning = false);
-          break;
+        // 自动选中 currentLibrary
+        if (widget.currentLibrary != null) {
+          final match = _libraries.where((l) => l.name == widget.currentLibrary).toList();
+          if (match.isNotEmpty) {
+            setState(() => _selectedLibraryId = match.first.id);
+          }
         }
-      } catch (_) {
-        setState(() => _scanning = false);
-        break;
       }
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
     }
   }
 
-  void _showSnack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  Future<void> _startScan() async {
+    setState(() {
+      _scanning = true;
+      _statusMessage = '正在扫描...';
+      _error = null;
+    });
+
+    try {
+      final libraryId = _useExistingLib ? _selectedLibraryId : null;
+      final scanPath = _useExistingLib ? null : _tempPath;
+
+      if (libraryId == null && scanPath == null) {
+        throw Exception('请选择一个库或指定临时扫描路径');
+      }
+
+      final result = await widget.api.startScan(
+        libraryId: libraryId,
+        scanPath: scanPath,
+      );
+
+      final sessionId = result['session_id'] ?? '';
+      if (mounted) {
+        setState(() => _statusMessage = '扫描完成 · 会话: $sessionId');
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _error = '扫描失败: $e');
+      }
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
+  Future<void> _pickTempPath() async {
+    final dir = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: '选择临时扫描目录',
+    );
+    if (dir != null) {
+      setState(() => _tempPath = dir);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(24),
+    final cs = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: SingleChildScrollView(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                const Text('扫描管理', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
-                const Spacer(),
-                FilledButton.tonalIcon(
-                  onPressed: _scanning ? null : _startTempScan,
-                  icon: const Icon(Icons.create_new_folder_outlined, size: 18),
-                  label: const Text('临时目录扫描'),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            const Text('选择收藏库启动扫描，或对任意目录发起临时扫描', style: TextStyle(fontSize: 13, color: Color(0xFF64748B))),
-            const SizedBox(height: 20),
-
-            // 当前会话状态
-            if (_sessionId != null) _buildSessionCard(),
-            if (_sessionId != null) const SizedBox(height: 16),
-
-            // 库列表
-            Expanded(
-              child: Card(
-                clipBehavior: Clip.antiAlias,
-                child: ListView.separated(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _libs.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFFE2E8F0)),
-                  itemBuilder: (ctx, i) {
-                    final lib = _libs[i];
-                    return ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor: const Color(0xFFEFF6FF),
-                        child: Icon(
-                          lib.kind == 'image' ? Icons.image_outlined : lib.kind == 'video' ? Icons.video_library_outlined : Icons.folder_outlined,
-                          color: const Color(0xFF2563EB),
+            // ========== 扫描模式选择 ==========
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('扫描模式', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                    const SizedBox(height: 16),
+                    // 模式切换
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _ModeCard(
+                            icon: Icons.folder,
+                            title: '扫描已有库',
+                            subtitle: '从左侧选择一个库进行扫描',
+                            selected: _useExistingLib,
+                            onTap: () => setState(() => _useExistingLib = true),
+                          ),
                         ),
-                      ),
-                      title: Text(lib.name, style: const TextStyle(fontWeight: FontWeight.w500)),
-                      subtitle: Text(lib.path, style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
-                      trailing: FilledButton.tonal(
-                        onPressed: _scanning ? null : () => _startScan(lib.id, lib.name),
-                        child: const Text('扫描'),
-                      ),
-                    );
-                  },
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _ModeCard(
+                            icon: Icons.flash_on,
+                            title: '临时扫描',
+                            subtitle: '选择任意目录快速扫描',
+                            selected: !_useExistingLib,
+                            onTap: () => setState(() => _useExistingLib = false),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),
+            const SizedBox(height: 16),
+
+            // ========== 库选择 / 临时路径 ==========
+            if (_useExistingLib)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('选择库', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                      const SizedBox(height: 12),
+                      if (_libraries.isEmpty)
+                        Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Column(
+                              children: [
+                                Icon(Icons.folder_off, size: 36, color: cs.outline),
+                                const SizedBox(height: 8),
+                                Text('暂无库，请先在收藏库页面添加', style: TextStyle(fontSize: 13, color: cs.outline)),
+                              ],
+                            ),
+                          ),
+                        )
+                      else
+                        DropdownButtonFormField<int>(
+                          value: _selectedLibraryId,
+                          isExpanded: true,
+                          decoration: const InputDecoration(hintText: '选择一个库'),
+                          items: _libraries.map((lib) {
+                            return DropdownMenuItem(value: lib.id, child: Text(lib.name));
+                          }).toList(),
+                          onChanged: (v) => setState(() => _selectedLibraryId = v),
+                        ),
+                    ],
+                  ),
+                ),
+              )
+            else
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('扫描路径', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              readOnly: true,
+                              controller: TextEditingController(text: _tempPath),
+                              style: const TextStyle(fontSize: 13),
+                              decoration: InputDecoration(
+                                hintText: '点击选择目录',
+                                suffixIcon: IconButton(
+                                  icon: const Icon(Icons.folder_open, size: 18),
+                                  onPressed: _pickTempPath,
+                                ),
+                              ),
+                              onTap: _pickTempPath,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 24),
+
+            // ========== 操作按钮 ==========
+            Row(
+              children: [
+                FilledButton.icon(
+                  onPressed: _scanning ? null : _startScan,
+                  icon: _scanning
+                      ? const SizedBox(
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Icon(Icons.play_arrow, size: 20),
+                  label: Text(_scanning ? '扫描中...' : '开始扫描'),
+                ),
+                if (_scanning) ...[
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: () => setState(() => _scanning = false),
+                    child: const Text('取消'),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // ========== 状态消息 ==========
+            if (_statusMessage != null)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: cs.primary.withValues(alpha: 0.2)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 18, color: cs.primary),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(_statusMessage!, style: TextStyle(fontSize: 13, color: cs.onSurface))),
+                  ],
+                ),
+              ),
+            if (_error != null)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEF4444).withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.2)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, size: 18, color: Color(0xFFEF4444)),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(_error!, style: const TextStyle(fontSize: 13, color: Color(0xFFEF4444)))),
+                  ],
+                ),
+              ),
           ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildSessionCard() {
-    final session = _sessionData?['session'] as Map? ?? {};
-    final mediaCount = _sessionData?['count'] as int? ?? 0;
-    final status = session['status'] as String? ?? _status;
+/// 模式选择卡片
+class _ModeCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final VoidCallback onTap;
 
-    return Card(
-      color: status == 'running' ? const Color(0xFFEFF6FF) : const Color(0xFFF0FDF4),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  status == 'running' ? Icons.sync : Icons.check_circle,
-                  color: status == 'running' ? const Color(0xFF2563EB) : const Color(0xFF16A34A),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  status == 'running' ? '扫描进行中' : '扫描完成',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: status == 'running' ? const Color(0xFF2563EB) : const Color(0xFF16A34A),
-                  ),
-                ),
-                const Spacer(),
-                if (status == 'running')
-                  TextButton.icon(
-                    onPressed: () {
-                      widget.api.cancelSession(_sessionId!);
-                      setState(() => _scanning = false);
-                    },
-                    icon: const Icon(Icons.stop, size: 16),
-                    label: const Text('取消'),
-                    style: TextButton.styleFrom(foregroundColor: const Color(0xFFEF4444)),
-                  ),
-              ],
+  const _ModeCard({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: selected
+                ? cs.primary.withValues(alpha: isDark ? 0.12 : 0.08)
+                : cs.surfaceContainerHighest.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? cs.primary.withValues(alpha: 0.4) : cs.outlineVariant,
+              width: selected ? 1.5 : 1,
             ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                _infoChip('会话', _sessionId ?? '-'),
-                const SizedBox(width: 12),
-                _infoChip('已发现', '$mediaCount 个媒体'),
-                const SizedBox(width: 12),
-                _infoChip('状态', status),
-              ],
-            ),
-            if (status == 'running') ...[
-              const SizedBox(height: 12),
-              const LinearProgressIndicator(),
+          ),
+          child: Column(
+            children: [
+              Icon(icon, size: 32, color: selected ? cs.primary : cs.onSurfaceVariant),
+              const SizedBox(height: 10),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? cs.primary : cs.onSurface,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                subtitle,
+                style: TextStyle(fontSize: 12, color: cs.outline),
+                textAlign: TextAlign.center,
+              ),
             ],
-          ],
+          ),
         ),
-      ),
-    );
-  }
-
-  Widget _infoChip(String label, String value) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text('$label: ', style: const TextStyle(fontSize: 12, color: Color(0xFF64748B))),
-          Text(value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
-        ],
       ),
     );
   }
