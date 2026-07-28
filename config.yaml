@@ -1,0 +1,27 @@
+// 默认 config.yaml；可用 -config 指定其他路径，也可用 MEMABLE_* 环境变量覆盖。
+// 所有路径均支持相对路径（相对于工作目录）。
+
+database:
+  path: memable.db          # SQLite 数据库文件路径；":memory:" 为内存库
+
+thumbnail:
+  image_dir: thumbnail/image/   # 图片缩略图目录
+  video_dir: thumbnail/video/   # 视频关键帧/封面目录
+  max_edge: 300                 # 缩略图最大边（像素）
+
+video:
+  sprite_frames: 25             # 5%-95% 区间临时截图数量，计算后清理
+
+similarity:
+  image_phash_distance: 10      # 图片 pHash 最大 Hamming 距离
+  image_dhash_distance: 10      # 图片 dHash 最大 Hamming 距离
+  image_ahash_distance: 10      # 图片 aHash 最大 Hamming 距离
+  video_phash_distance: 12      # 视频 sprite pHash 最大 Hamming 距离
+  video_duration_diff_ms: 3000  # 视频允许时长差（毫秒）
+
+worker:
+  pool_size: 4              # 扫描/处理 Worker Pool 并发数
+
+log:
+  level: info               # debug/info/warn/error
+  format: text              # text/json
