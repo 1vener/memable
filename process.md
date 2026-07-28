@@ -240,3 +240,31 @@
 - 新增：`internal/media/thumbnail.go`、`internal/media/cover.go`、`internal/media/sprite.go`、`internal/worker/pool.go`、`internal/duplicate/detector.go`、`internal/duplicate/report.go`、`internal/search/service.go`、`internal/api/server.go`、`internal/api/handlers.go`、`README.md`、`flutter_app/`（完整 Flutter 项目）
 - 修改：`internal/config/config.go`（VideoConfig / SimilarityConfig 重构）、`config.yaml`、`schema.sql`（oshash 重命名 + 移除 video_frames）、`internal/db/schema.sql`（同步）、`internal/db/db.go`（v2 迁移）、`internal/db/db_test.go`（版本 2）、`internal/repo/models.go`（Oshash 字段名 + 移除 VideoFrame）、`internal/repo/media_repo.go`（oshash + 新增方法）、`internal/scan/service.go`（集成缩略图/sprite/worker pool）、`cmd/server/main.go`（HTTP 服务器启动）、`task.md`、`process.md`
 - 删除：`internal/repo/frame_repo.go`
+
+---
+
+## 2026-07-29（代码清理与问题修复）
+
+### 已完成
+
+#### 死代码清理
+- `internal/api/handlers.go`：删除未调用的 `parseIntID`（与 `server.go` 的 `parseInt64` 重复）、`jsonEncode`（调试函数从未使用）、`var _ = fmt.Sprintf`（多余），以及不再需要的 `encoding/json`、`strconv` 导入。
+
+#### 重复消除
+- `internal/media/cover.go`：将 `replaceExt` 导出为 `ReplaceExt`。
+- `internal/scan/service.go`：删除本地 `replaceExt` 副本，改为调用 `media.ReplaceExt`。
+
+#### 注释与导入修复
+- `internal/repo/media_repo.go:131`：将过时注释"video_frames 外键级联删除"改为"物理缩略图由上层处理"。
+- `internal/media/thumbnail.go`：删除重复的 `_ "image/png"` 空导入。
+
+### 验证
+- `go vet ./...` 通过
+- `go test ./... -count=1 -short` 全部通过
+- `go build ./cmd/server` 成功
+
+### 待决
+- **10.2 大规模库性能压测**：需要准备数千张图片/视频的真实媒体库环境，当前仅验证功能正确性。压测时关注：批量扫描吞吐、oshash/sprite pHash 计算耗时、SQLite WAL 在并发写入下的表现。
+
+### 文件变更
+- 修改：`internal/api/handlers.go`、`internal/media/cover.go`、`internal/media/thumbnail.go`、`internal/repo/media_repo.go`、`internal/scan/service.go`、`process.md`

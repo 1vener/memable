@@ -58,7 +58,7 @@ func ExtractVideoCover(ctx context.Context, videoPath, outDir string, maxEdge in
 
 		// 有效帧：resize 后保存为缩略图
 		thumbName := fmt.Sprintf("cover_%s", filepath.Base(videoPath))
-		thumbName = replaceExt(thumbName, ".png")
+		thumbName = ReplaceExt(thumbName, ".png")
 		thumbPath := filepath.Join(outDir, thumbName)
 		if err := GenerateImageThumbnail(rawPath, thumbPath, maxEdge); err != nil {
 			_ = os.Remove(rawPath)
@@ -186,7 +186,8 @@ func isBlackOrSolid(path string) bool {
 	return stddev < 2.0 // 近纯色
 }
 
-func replaceExt(name, newExt string) string {
+// ReplaceExt 替换文件扩展名。
+func ReplaceExt(name, newExt string) string {
 	ext := filepath.Ext(name)
 	if ext == "" {
 		return name + newExt

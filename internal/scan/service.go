@@ -311,18 +311,10 @@ func (s *Service) thumbDir(temporary bool) string {
 
 // thumbRelPath 生成缩略图相对路径：kind/subpath.png
 func thumbRelPath(kind, relPath, newExt string) string {
-	return NormalizeRelPath(filepath.Join(kind, replaceExt(filepath.Base(relPath), newExt)))
+	return NormalizeRelPath(filepath.Join(kind, media.ReplaceExt(filepath.Base(relPath), newExt)))
 }
 
 // NormalizeRelPath 统一路径分隔符为正斜杠。
 func NormalizeRelPath(p string) string {
 	return strings.ReplaceAll(p, "\\", "/")
-}
-
-func replaceExt(name, newExt string) string {
-	ext := filepath.Ext(name)
-	if ext == "" {
-		return name + newExt
-	}
-	return name[:len(name)-len(ext)] + newExt
 }

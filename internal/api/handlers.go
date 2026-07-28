@@ -3,13 +3,11 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"memable/internal/duplicate"
 	"memable/internal/repo"
@@ -466,17 +464,3 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
-
-// parseIntID 从路径参数解析整数 ID。
-func parseIntID(s string) (int64, error) {
-	return strconv.ParseInt(s, 10, 64)
-}
-
-// jsonEncode 编码 JSON（用于调试）。
-func jsonEncode(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
-
-// 确保变量被使用（避免 unused import）
-var _ = fmt.Sprintf

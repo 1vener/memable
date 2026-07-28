@@ -128,7 +128,7 @@ func (r *MediaRepo) SearchByPath(pattern string) ([]Media, error) {
 	)
 }
 
-// Delete 删除媒体记录；video_frames 外键级联删除（物理缩略图由上层处理）。
+// Delete 删除媒体记录；物理缩略图由上层处理。
 func (r *MediaRepo) Delete(id int64) error {
 	res, err := r.db.Exec(`DELETE FROM media WHERE id = ?`, id)
 	if err != nil {
