@@ -278,10 +278,16 @@ class _AboutRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: TextStyle(fontSize: 13, color: cs.outline)),
+        SizedBox(
+          width: 48,
+          child: Text(label, style: TextStyle(fontSize: 13, color: cs.outline)),
+        ),
         const SizedBox(width: 12),
-        Text(value, style: TextStyle(fontSize: 13, color: cs.onSurface)),
+        Expanded(
+          child: Text(value, style: TextStyle(fontSize: 13, color: cs.onSurface), overflow: TextOverflow.ellipsis),
+        ),
       ],
     );
   }

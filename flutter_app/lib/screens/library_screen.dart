@@ -206,7 +206,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
             const SizedBox(height: 16),
             Text('加载失败', style: TextStyle(fontSize: 16, color: cs.onSurface)),
             const SizedBox(height: 8),
-            Text(_error!, style: TextStyle(fontSize: 13, color: cs.outline)),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(_error!, style: TextStyle(fontSize: 13, color: cs.outline), overflow: TextOverflow.ellipsis, maxLines: 3),
+            ),
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: _loadLibraries,
@@ -443,9 +446,12 @@ class _LibraryDetail extends StatelessWidget {
             children: [
               Icon(Icons.folder, size: 28, color: cs.primary),
               const SizedBox(width: 12),
-              Text(
-                library.name,
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: cs.onSurface),
+              Expanded(
+                child: Text(
+                  library.name,
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: cs.onSurface),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ),

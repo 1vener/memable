@@ -91,7 +91,7 @@ class _ReportScreenState extends State<ReportScreen> {
                       const SizedBox(height: 12),
                       Text('报告生成失败', style: TextStyle(fontSize: 15, color: cs.onSurface)),
                       const SizedBox(height: 6),
-                      Text(_error!, style: TextStyle(fontSize: 13, color: cs.outline)),
+                      Text(_error!, style: TextStyle(fontSize: 13, color: cs.outline), overflow: TextOverflow.ellipsis, maxLines: 3),
                     ],
                   ),
                 ),
@@ -281,6 +281,7 @@ class _StatCard extends StatelessWidget {
             Text(
               value,
               style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: cs.onSurface),
+              overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 2),
             Text(label, style: TextStyle(fontSize: 12, color: cs.outline)),

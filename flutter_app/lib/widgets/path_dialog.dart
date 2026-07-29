@@ -46,8 +46,8 @@ class _PathDialogState extends State<PathDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: Text(widget.title),
-      content: SizedBox(
-        width: 440,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440, minWidth: 240),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,

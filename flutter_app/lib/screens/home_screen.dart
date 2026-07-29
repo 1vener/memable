@@ -423,12 +423,15 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Row(
         children: [
           // 页面标题
-          Text(
-            _currentPageTitle,
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              color: cs.onSurface,
+          Expanded(
+            child: Text(
+              _currentPageTitle,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
+              ),
+              overflow: TextOverflow.ellipsis,
             ),
           ),
           const SizedBox(width: 20),

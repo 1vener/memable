@@ -180,9 +180,12 @@ class _SearchScreenState extends State<SearchScreen> {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        Text(
-                          _imagePath!.split('/').last.split('\\').last,
-                          style: TextStyle(fontSize: 12, color: cs.outline),
+                        Expanded(
+                          child: Text(
+                            _imagePath!.split('/').last.split('\\').last,
+                            style: TextStyle(fontSize: 12, color: cs.outline),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, size: 16),
@@ -233,7 +236,10 @@ class _SearchScreenState extends State<SearchScreen> {
                         const SizedBox(height: 12),
                         Text('搜索失败', style: TextStyle(fontSize: 15, color: cs.onSurface)),
                         const SizedBox(height: 6),
-                        Text(_error!, style: TextStyle(fontSize: 13, color: cs.outline)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 32),
+                          child: Text(_error!, style: TextStyle(fontSize: 13, color: cs.outline), overflow: TextOverflow.ellipsis, maxLines: 3),
+                        ),
                         const SizedBox(height: 16),
                         FilledButton.tonal(onPressed: _textSearch, child: const Text('重试')),
                       ],
@@ -449,7 +455,7 @@ class _ResultListTile extends StatelessWidget {
                 ),
                 child: Icon(Icons.image, size: 20, color: cs.outline),
               ),
-        title: Text(result.name, style: const TextStyle(fontSize: 13)),
+        title: Text(result.name, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis),
         subtitle: Text(
           result.fullPath,
           style: TextStyle(fontSize: 12, color: cs.outline),

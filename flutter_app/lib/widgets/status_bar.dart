@@ -47,9 +47,12 @@ class StatusBar extends StatelessWidget {
           if (currentLibrary != null) ...[
             Icon(Icons.folder_outlined, size: 14, color: cs.onSurfaceVariant),
             const SizedBox(width: 4),
-            Text(
-              currentLibrary!,
-              style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+            Flexible(
+              child: Text(
+                currentLibrary!,
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ],
           const Spacer(),
@@ -57,9 +60,12 @@ class StatusBar extends StatelessWidget {
           if (scanProgress != null) ...[
             Icon(Icons.sync, size: 14, color: cs.primary),
             const SizedBox(width: 4),
-            Text(
-              scanProgress!,
-              style: TextStyle(fontSize: 12, color: cs.primary),
+            Flexible(
+              child: Text(
+                scanProgress!,
+                style: TextStyle(fontSize: 12, color: cs.primary),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ],
           // 版本号
