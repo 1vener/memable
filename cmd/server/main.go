@@ -17,6 +17,7 @@ import (
 	"memable/internal/repo"
 	"memable/internal/scan"
 	"memable/internal/search"
+	"memable/internal/task"
 )
 
 func main() {
@@ -52,6 +53,7 @@ func main() {
 	libRepo := repo.NewLibraryRepo(dbh)
 	sessionRepo := repo.NewSessionRepo(dbh)
 	mediaRepo := repo.NewMediaRepo(dbh)
+	taskRepo := repo.NewTaskRepo(dbh)
 
 	// 初始化服务层：使用统一的缩略图根目录（内容寻址路径含 image/video 前缀）
 	thumbBase := "thumbnail"
@@ -68,8 +70,15 @@ func main() {
 	}
 	searchSvc := search.NewService(mediaRepo, libRepo)
 
+	// 初始化任务调度器
+	runner := task.NewRunner(taskRepo, sessionRepo, mediaRepo, libRepo, scanSvc, task.RunnerConfig{
+		PoolSize:  cfg.Worker.PoolSize,
+		ThumbBase: thumbBase,
+	})
+	runner.Start(context.Background())
+
 	// 启动 HTTP API 服务器
-	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, scanSvc, searchSvc, thumbBase)
+	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, taskRepo, scanSvc, searchSvc, runner, thumbBase)
 
 	// 优雅关闭
 	go func() {
@@ -77,6 +86,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		slog.Info("收到退出信号，正在关闭...")
+		runner.Stop()
 		srv.Shutdown(context.Background())
 	}()
 

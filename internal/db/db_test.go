@@ -26,8 +26,8 @@ func TestOpenAndMigrateInMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 2 {
-		t.Fatalf("expected version 2, got %d", v)
+	if v != 3 {
+		t.Fatalf("expected version 3, got %d", v)
 	}
 
 	// 验证核心表已建立；video_frames 已在 v2 迁移中移除

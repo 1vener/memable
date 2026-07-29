@@ -17,6 +17,7 @@ import (
 	"memable/internal/repo"
 	"memable/internal/scan"
 	"memable/internal/search"
+	"memable/internal/task"
 )
 
 // Server HTTP API 服务器。
@@ -25,21 +26,25 @@ type Server struct {
 	libraries *repo.LibraryRepo
 	sessions  *repo.SessionRepo
 	media     *repo.MediaRepo
+	tasks     *repo.TaskRepo
 	scanSvc   *scan.Service
 	searchSvc *search.Service
+	runner    *task.Runner
 	thumbBase string
 	http      *http.Server
 }
 
 // NewServer 创建 HTTP API 服务器。
-func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, scanSvc *scan.Service, searchSvc *search.Service, thumbBase string) *Server {
+func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, tr *repo.TaskRepo, scanSvc *scan.Service, searchSvc *search.Service, runner *task.Runner, thumbBase string) *Server {
 	s := &Server{
 		cfg:       cfg,
 		libraries: lr,
 		sessions:  sr,
 		media:     mr,
+		tasks:     tr,
 		scanSvc:   scanSvc,
 		searchSvc: searchSvc,
+		runner:    runner,
 		thumbBase: thumbBase,
 	}
 	mux := http.NewServeMux()
@@ -86,6 +91,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// 健康检查
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+
+	// 任务管理
+	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
+	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
+	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
 }
 
 // Start 启动 HTTP 服务器。

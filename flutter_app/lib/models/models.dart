@@ -196,3 +196,102 @@ class DuplicateReport {
     );
   }
 }
+
+/// 后台任务模型
+class BackgroundTask {
+  final String id;
+  final String kind;
+  final String status;
+  final String title;
+  final int? libraryId;
+  final String? scanSessionId;
+  final String phase;
+  final int totalItems;
+  final int processedItems;
+  final int succeededItems;
+  final int skippedItems;
+  final int failedItems;
+  final String? resultJson;
+  final String? errorMessage;
+  final String queuedAt;
+  final String? startedAt;
+  final String? finishedAt;
+  final int queuePosition;
+
+  BackgroundTask({
+    required this.id,
+    required this.kind,
+    required this.status,
+    required this.title,
+    this.libraryId,
+    this.scanSessionId,
+    this.phase = 'queued',
+    this.totalItems = 0,
+    this.processedItems = 0,
+    this.succeededItems = 0,
+    this.skippedItems = 0,
+    this.failedItems = 0,
+    this.resultJson,
+    this.errorMessage,
+    required this.queuedAt,
+    this.startedAt,
+    this.finishedAt,
+    this.queuePosition = 0,
+  });
+
+  factory BackgroundTask.fromJson(Map<String, dynamic> json) {
+    return BackgroundTask(
+      id: (json['id'] as String?) ?? '',
+      kind: (json['kind'] as String?) ?? '',
+      status: (json['status'] as String?) ?? 'unknown',
+      title: (json['title'] as String?) ?? '',
+      libraryId: (json['library_id'] as num?)?.toInt(),
+      scanSessionId: json['scan_session_id'] as String?,
+      phase: (json['phase'] as String?) ?? 'queued',
+      totalItems: (json['total_items'] as num?)?.toInt() ?? 0,
+      processedItems: (json['processed_items'] as num?)?.toInt() ?? 0,
+      succeededItems: (json['succeeded_items'] as num?)?.toInt() ?? 0,
+      skippedItems: (json['skipped_items'] as num?)?.toInt() ?? 0,
+      failedItems: (json['failed_items'] as num?)?.toInt() ?? 0,
+      resultJson: json['result_json'] as String?,
+      errorMessage: json['error_message'] as String?,
+      queuedAt: (json['queued_at'] as String?) ?? '',
+      startedAt: json['started_at'] as String?,
+      finishedAt: json['finished_at'] as String?,
+      queuePosition: (json['queue_position'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  bool get isRunning => status == 'running';
+  bool get isQueued => status == 'queued';
+  bool get isCompleted => status == 'completed';
+  bool get isFailed => status == 'failed';
+  bool get isCancelled => status == 'cancelled';
+  bool get isActive => isRunning || isQueued;
+  bool get isTerminal => isCompleted || isFailed || isCancelled;
+
+  double get progress => totalItems > 0 ? processedItems / totalItems : 0.0;
+
+  String get kindLabel {
+    switch (kind) {
+      case 'scan': return '扫描';
+      case 'repair': return '修复扫描';
+      case 'temporary_scan': return '临时扫描';
+      case 'report_image': return '图片报告';
+      case 'report_video': return '视频报告';
+      case 'promote': return '入库';
+      default: return kind;
+    }
+  }
+
+  String get statusLabel {
+    switch (status) {
+      case 'queued': return '等待中';
+      case 'running': return '运行中';
+      case 'completed': return '已完成';
+      case 'failed': return '失败';
+      case 'cancelled': return '已取消';
+      default: return status;
+    }
+  }
+}

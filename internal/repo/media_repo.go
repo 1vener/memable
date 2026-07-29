@@ -179,14 +179,13 @@ func (r *MediaRepo) Delete(id int64) error {
 	return nil
 }
 
-// CountByThumbnailPath 统计使用同一缩略图路径的媒体记录数（排除指定 id）。
-func (r *MediaRepo) CountByThumbnailPath(thumbPath string, excludeID int64) (int, error) {
+// CountThumbnailReferences 统计仍引用指定缩略图路径的媒体记录数。
+func (r *MediaRepo) CountThumbnailReferences(thumbPath string) (int, error) {
 	var n int
 	err := r.db.QueryRow(
-		`SELECT COUNT(*) FROM media WHERE thumbnail_path = ? AND id <> ?`,
-		thumbPath, excludeID,
+		`SELECT COUNT(*) FROM media WHERE thumbnail_path = ?`, thumbPath,
 	).Scan(&n)
-	return n, err
+	return n, errx.Wrapf(err, "统计缩略图 %q 引用数", thumbPath)
 }
 
 // UpdateThumbnailPath 更新媒体的缩略图路径。
@@ -209,7 +208,7 @@ func (r *MediaRepo) query(q string, args ...any) ([]Media, error) {
 	}
 	defer rows.Close()
 
-	var out []Media
+	out := make([]Media, 0)
 	for rows.Next() {
 		var m Media
 		if err := rows.Scan(&m.ID, &m.LibraryID, &m.ScanSessionID, &m.Kind, &m.RelativePath,

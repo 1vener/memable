@@ -77,7 +77,7 @@ class _ScanScreenState extends State<ScanScreen> {
   Future<void> _startScan() async {
     setState(() {
       _scanning = true;
-      _statusMessage = '正在扫描...';
+      _statusMessage = '正在提交任务...';
       _error = null;
     });
 
@@ -94,16 +94,15 @@ class _ScanScreenState extends State<ScanScreen> {
         scanPath: scanPath,
       );
 
-      final sid = result['session_id'] ?? '';
+      final queuePos = result['queue_position'] ?? 0;
       if (mounted) {
         setState(() {
-          _sessionId = sid;
-          _statusMessage = '扫描完成 · 会话: $sid';
+          _statusMessage = '任务已提交 · 排队中第 $queuePos 位';
         });
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _error = '扫描失败: $e');
+        setState(() => _error = '提交失败: $e');
       }
     } finally {
       if (mounted) setState(() => _scanning = false);

@@ -4,6 +4,18 @@ package repo
 
 import "time"
 
+// ProgressFunc 进度回调函数（扫描/修复过程中调用）。
+type ProgressFunc func(phase string, total, processed, succeeded, skipped, failed int)
+
+// ScanResult 扫描执行结果。
+type ScanResult struct {
+	Session  *ScanSession
+	Found    int
+	Imported int
+	Skipped  int
+	Failed   int
+}
+
 // Library 收藏库（媒体根目录）。
 type Library struct {
 	ID        int64     `json:"id"`
@@ -48,4 +60,52 @@ type Media struct {
 	Sha1          *string   `json:"sha1"`
 	ThumbnailPath *string   `json:"thumbnail_path"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+// TaskKind 任务类型。
+type TaskKind string
+
+const (
+	TaskKindScan          TaskKind = "scan"
+	TaskKindRepair        TaskKind = "repair"
+	TaskKindTemporaryScan TaskKind = "temporary_scan"
+	TaskKindReportImage   TaskKind = "report_image"
+	TaskKindReportVideo   TaskKind = "report_video"
+	TaskKindPromote       TaskKind = "promote"
+)
+
+// TaskStatus 任务状态。
+type TaskStatus string
+
+const (
+	TaskStatusQueued    TaskStatus = "queued"
+	TaskStatusRunning   TaskStatus = "running"
+	TaskStatusCompleted TaskStatus = "completed"
+	TaskStatusFailed    TaskStatus = "failed"
+	TaskStatusCancelled TaskStatus = "cancelled"
+)
+
+// BackgroundTask 后台任务。
+type BackgroundTask struct {
+	ID             string     `json:"id"`
+	Kind           TaskKind   `json:"kind"`
+	Status         TaskStatus `json:"status"`
+	Title          string     `json:"title"`
+	DedupeKey      *string    `json:"dedupe_key,omitempty"`
+	LibraryID      *int64     `json:"library_id,omitempty"`
+	ScanSessionID  *string    `json:"scan_session_id,omitempty"`
+	PayloadJSON    *string    `json:"payload_json,omitempty"`
+	Phase          string     `json:"phase"`
+	TotalItems     int        `json:"total_items"`
+	ProcessedItems int        `json:"processed_items"`
+	SucceededItems int        `json:"succeeded_items"`
+	SkippedItems   int        `json:"skipped_items"`
+	FailedItems    int        `json:"failed_items"`
+	ResultJSON     *string    `json:"result_json,omitempty"`
+	ErrorMessage   *string    `json:"error_message,omitempty"`
+	QueuedAt       time.Time  `json:"queued_at"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	QueuePosition  int        `json:"queue_position,omitempty"` // 动态计算，不持久化
 }

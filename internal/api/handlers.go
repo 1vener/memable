@@ -10,9 +10,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"memable/internal/duplicate"
 	"memable/internal/media"
 	"memable/internal/repo"
+	"memable/internal/task"
 )
 
 // ===== 收藏库管理（阶段 8）=====
@@ -109,25 +109,32 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先查出关联媒体，按 ref-count 物理删除缩略图
-	medias, _ := s.media.ListByLibrary(id)
-	for _, m := range medias {
-		if m.ThumbnailPath == nil {
-			continue
-		}
-		// 检查是否有其他记录仍引用此缩略图
-		n, _ := s.media.CountByThumbnailPath(*m.ThumbnailPath, m.ID)
-		if n > 0 {
-			continue // 其他库/文件仍在使用，不删除
-		}
-		thumbAbs := s.thumbAbsPath(*m.ThumbnailPath)
-		_ = os.Remove(thumbAbs)
-	}
-
-	if err := s.libraries.Delete(id); err != nil {
+	// 数据库清理在同一事务中完成：删除会话、收藏库及级联关联媒体。
+	thumbnailPaths, err := s.libraries.DeleteWithRelatedData(id)
+	if err != nil {
 		writeError(w, 500, "删除收藏库失败: "+err.Error())
 		return
 	}
+
+	// 数据提交后，仅清理未被其他收藏库引用的缩略图文件。
+	for _, thumbRel := range thumbnailPaths {
+		n, err := s.media.CountThumbnailReferences(thumbRel)
+		if err != nil {
+			writeError(w, 500, "收藏库数据已删除，但检查缩略图引用失败: "+err.Error())
+			return
+		}
+		if n > 0 {
+			continue // 其他库仍在使用
+		}
+		thumbAbs := s.thumbAbsPath(thumbRel)
+		if err := os.Remove(thumbAbs); err != nil && !os.IsNotExist(err) {
+			writeError(w, 500, "收藏库数据已删除，但删除缩略图失败: "+err.Error())
+			return
+		}
+		// 哈希分片目录为空时一并清理，失败不影响删除结果。
+		_ = os.Remove(filepath.Dir(thumbAbs))
+	}
+
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
@@ -222,17 +229,26 @@ func (s *Server) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	poolSize := 4
-	if s.cfg != nil && s.cfg.Worker.PoolSize > 0 {
-		poolSize = s.cfg.Worker.PoolSize
-	}
-
-	sessionID, err := s.scanSvc.ScanLibraryAsync(r.Context(), *lib, "", false, poolSize)
-	if err != nil {
-		writeError(w, 500, "启动扫描失败: "+err.Error())
+	// 检查是否有活动任务
+	if active, _ := s.tasks.HasActiveForLibrary(id); active {
+		writeError(w, 409, "该库已有排队中或运行中的任务")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"session_id": sessionID, "status": "running"})
+
+	dedupeKey := fmt.Sprintf("scan:%s", lib.Path)
+	task, err := s.runner.Enqueue(repo.TaskKindScan, "扫描库: "+lib.Name, &dedupeKey, &lib.ID,
+		task.ScanPayload{LibraryPath: lib.Path, LibraryName: lib.Name, LibraryKind: lib.Kind})
+	if err != nil {
+		writeError(w, 409, "相同任务已在等待或执行")
+		return
+	}
+
+	pos, _ := s.tasks.QueuePosition(task.ID)
+	writeJSON(w, 202, map[string]any{
+		"task_id":        task.ID,
+		"status":         task.Status,
+		"queue_position": pos,
+	})
 }
 
 func (s *Server) handleRepairLibrary(w http.ResponseWriter, r *http.Request) {
@@ -247,17 +263,24 @@ func (s *Server) handleRepairLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	poolSize := 4
-	if s.cfg != nil && s.cfg.Worker.PoolSize > 0 {
-		poolSize = s.cfg.Worker.PoolSize
-	}
-
-	sessionID, err := s.scanSvc.RepairLibraryAsync(r.Context(), *lib, "", false, poolSize)
-	if err != nil {
-		writeError(w, 500, "启动修复扫描失败: "+err.Error())
+	if active, _ := s.tasks.HasActiveForLibrary(id); active {
+		writeError(w, 409, "该库已有排队中或运行中的任务")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"session_id": sessionID, "status": "running"})
+
+	dedupeKey := fmt.Sprintf("repair:%s", lib.Path)
+	task, err := s.runner.Enqueue(repo.TaskKindRepair, "修复扫描: "+lib.Name, &dedupeKey, &lib.ID, nil)
+	if err != nil {
+		writeError(w, 409, "相同任务已在等待或执行")
+		return
+	}
+
+	pos, _ := s.tasks.QueuePosition(task.ID)
+	writeJSON(w, 202, map[string]any{
+		"task_id":        task.ID,
+		"status":         task.Status,
+		"queue_position": pos,
+	})
 }
 
 type scanTempReq struct {
@@ -271,31 +294,20 @@ func (s *Server) handleScanTemporary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 为临时扫描创建一个临时库记录（满足外键约束）
-	tempLib := &repo.Library{
-		Name: fmt.Sprintf("临时扫描-%s", filepath.Base(req.Path)),
-		Path: req.Path,
-		Kind: "mixed",
-	}
-	if err := s.libraries.Create(tempLib); err != nil {
-		writeError(w, 500, "创建临时库失败: "+err.Error())
-		return
-	}
-
-	poolSize := 4
-	if s.cfg != nil && s.cfg.Worker.PoolSize > 0 {
-		poolSize = s.cfg.Worker.PoolSize
-	}
-
-	sessionID, err := s.scanSvc.ScanLibraryAsync(r.Context(), *tempLib, "", true, poolSize)
+	dedupeKey := fmt.Sprintf("temp_scan:%s", filepath.Clean(req.Path))
+	task, err := s.runner.Enqueue(repo.TaskKindTemporaryScan, "临时扫描: "+filepath.Base(req.Path),
+		&dedupeKey, nil,
+		task.ScanPayload{LibraryPath: req.Path, LibraryName: "临时扫描-" + filepath.Base(req.Path), LibraryKind: "mixed"})
 	if err != nil {
-		writeError(w, 500, "启动临时扫描失败: "+err.Error())
+		writeError(w, 409, "相同任务已在等待或执行")
 		return
 	}
-	writeJSON(w, 200, map[string]any{
-		"session_id": sessionID,
-		"library_id": tempLib.ID,
-		"status":     "running",
+
+	pos, _ := s.tasks.QueuePosition(task.ID)
+	writeJSON(w, 202, map[string]any{
+		"task_id":        task.ID,
+		"status":         task.Status,
+		"queue_position": pos,
 	})
 }
 
@@ -504,21 +516,19 @@ func (s *Server) handleImageReport(w http.ResponseWriter, r *http.Request) {
 		req.OutputPath = "report_image.html"
 	}
 
-	det := duplicate.NewDetector(s.media, s.cfg)
-	groups, err := det.DetectImageDuplicates()
+	dedupeKey := fmt.Sprintf("report_image:%s", req.OutputPath)
+	task, err := s.runner.Enqueue(repo.TaskKindReportImage, "图片重复报告", &dedupeKey, nil,
+		task.ReportPayload{OutputPath: req.OutputPath})
 	if err != nil {
-		writeError(w, 500, "图片重复检测失败: "+err.Error())
+		writeError(w, 409, "相同任务已在等待或执行")
 		return
 	}
 
-	libs, _ := s.libraries.List()
-	if err := duplicate.GenerateHTMLReport(groups, libs, "image", s.thumbBase, req.OutputPath); err != nil {
-		writeError(w, 500, "生成报告失败: "+err.Error())
-		return
-	}
-	writeJSON(w, 200, map[string]any{
-		"report_path": req.OutputPath,
-		"groups":      len(groups),
+	pos, _ := s.tasks.QueuePosition(task.ID)
+	writeJSON(w, 202, map[string]any{
+		"task_id":        task.ID,
+		"status":         task.Status,
+		"queue_position": pos,
 	})
 }
 
@@ -528,21 +538,19 @@ func (s *Server) handleVideoReport(w http.ResponseWriter, r *http.Request) {
 		req.OutputPath = "report_video.html"
 	}
 
-	det := duplicate.NewDetector(s.media, s.cfg)
-	groups, err := det.DetectVideoDuplicates()
+	dedupeKey := fmt.Sprintf("report_video:%s", req.OutputPath)
+	t, err := s.runner.Enqueue(repo.TaskKindReportVideo, "视频重复报告", &dedupeKey, nil,
+		task.ReportPayload{OutputPath: req.OutputPath})
 	if err != nil {
-		writeError(w, 500, "视频重复检测失败: "+err.Error())
+		writeError(w, 409, "相同任务已在等待或执行")
 		return
 	}
 
-	libs, _ := s.libraries.List()
-	if err := duplicate.GenerateHTMLReport(groups, libs, "video", s.thumbBase, req.OutputPath); err != nil {
-		writeError(w, 500, "生成报告失败: "+err.Error())
-		return
-	}
-	writeJSON(w, 200, map[string]any{
-		"report_path": req.OutputPath,
-		"groups":      len(groups),
+	pos, _ := s.tasks.QueuePosition(t.ID)
+	writeJSON(w, 202, map[string]any{
+		"task_id":        t.ID,
+		"status":         t.Status,
+		"queue_position": pos,
 	})
 }
 
@@ -559,4 +567,45 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+// ===== 任务管理 =====
+
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	tasks, err := s.tasks.ListAll(100, 0)
+	if err != nil {
+		writeError(w, 500, "查询任务列表失败: "+err.Error())
+		return
+	}
+	// 计算排队位置
+	for i := range tasks {
+		if tasks[i].Status == repo.TaskStatusQueued {
+			pos, _ := s.tasks.QueuePosition(tasks[i].ID)
+			tasks[i].QueuePosition = pos
+		}
+	}
+	writeJSON(w, 200, tasks)
+}
+
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	task, err := s.tasks.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "任务不存在")
+		return
+	}
+	if task.Status == repo.TaskStatusQueued {
+		pos, _ := s.tasks.QueuePosition(task.ID)
+		task.QueuePosition = pos
+	}
+	writeJSON(w, 200, task)
+}
+
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.runner.CancelTask(id); err != nil {
+		writeError(w, 500, "取消任务失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "cancelled"})
 }

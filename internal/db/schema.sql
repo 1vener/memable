@@ -76,3 +76,35 @@ CREATE INDEX IF NOT EXISTS idx_media_kind   ON media(kind);
 CREATE INDEX IF NOT EXISTS idx_media_lib    ON media(library_id);
 
 CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT NULL;
+
+-- ============================================================
+-- 4. 后台任务（统一任务队列）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS background_tasks (
+    id                  TEXT    PRIMARY KEY,                             -- UUID
+    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','promote')),
+    status              TEXT    NOT NULL DEFAULT 'queued'
+                        CHECK (status IN ('queued','running','completed','failed','cancelled')),
+    title               TEXT    NOT NULL,                               -- 任务显示名称
+    dedupe_key          TEXT,                                           -- 去重键（仅 queued/running 时唯一）
+    library_id          INTEGER,                                        -- 关联收藏库
+    scan_session_id     TEXT,                                           -- 关联扫描会话
+    payload_json        TEXT,                                           -- 任务参数 JSON
+    phase               TEXT    NOT NULL DEFAULT 'queued',              -- 当前阶段描述
+    total_items         INTEGER NOT NULL DEFAULT 0,                     -- 总文件数
+    processed_items     INTEGER NOT NULL DEFAULT 0,                     -- 已处理数
+    succeeded_items     INTEGER NOT NULL DEFAULT 0,                     -- 成功数
+    skipped_items       INTEGER NOT NULL DEFAULT 0,                     -- 跳过数
+    failed_items        INTEGER NOT NULL DEFAULT 0,                     -- 失败数
+    result_json         TEXT,                                           -- 结果 JSON
+    error_message       TEXT,                                           -- 错误信息
+    queued_at           TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+    started_at          TIMESTAMP,
+    updated_at          TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+    finished_at         TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedupe
+    ON background_tasks(dedupe_key)
+    WHERE dedupe_key IS NOT NULL AND status IN ('queued','running');
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON background_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_queued ON background_tasks(queued_at) WHERE status IN ('queued','running');

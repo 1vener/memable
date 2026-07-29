@@ -8,6 +8,7 @@ import '../widgets/status_bar.dart';
 import '../widgets/context_menu.dart';
 import 'library_screen.dart';
 import 'scan_screen.dart';
+import 'task_screen.dart';
 import 'search_screen.dart';
 import 'report_screen.dart';
 import 'settings_screen.dart';
@@ -45,18 +46,25 @@ const _destinations = [
     shortcut: 'Ctrl+2',
   ),
   _NavDestination(
+    icon: Icons.queue_outlined,
+    selectedIcon: Icons.queue,
+    label: '任务',
+    tooltip: '任务队列与进度',
+    shortcut: 'Ctrl+3',
+  ),
+  _NavDestination(
     icon: Icons.search,
     selectedIcon: Icons.search,
     label: '搜索',
     tooltip: '文字搜索 / 以图搜图',
-    shortcut: 'Ctrl+3',
+    shortcut: 'Ctrl+4',
   ),
   _NavDestination(
     icon: Icons.assessment_outlined,
     selectedIcon: Icons.assessment,
     label: '报告',
     tooltip: '重复检测报告',
-    shortcut: 'Ctrl+4',
+    shortcut: 'Ctrl+5',
   ),
 ];
 
@@ -118,9 +126,10 @@ class _HomeScreenState extends State<HomeScreen> {
         onLibrarySelected: _onLibrarySelected,
       ),
       1 => ScanScreen(api: api, currentLibrary: _currentLibrary),
-      2 => SearchScreen(api: api),
-      3 => ReportScreen(api: api),
-      4 => SettingsScreen(api: api),
+      2 => TaskScreen(api: api),
+      3 => SearchScreen(api: api),
+      4 => ReportScreen(api: api),
+      5 => SettingsScreen(api: api),
       _ => const SizedBox.shrink(),
     };
   }
@@ -142,6 +151,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _SelectPageIntent(3),
         SingleActivator(LogicalKeyboardKey.digit5, control: true):
             _SelectPageIntent(4),
+        SingleActivator(LogicalKeyboardKey.digit6, control: true):
+            _SelectPageIntent(5),
         SingleActivator(LogicalKeyboardKey.f5): _RefreshIntent(),
       },
       child: Actions(

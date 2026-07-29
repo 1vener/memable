@@ -57,7 +57,7 @@ class ApiService {
   Future<Map<String, dynamic>> startScan({int? libraryId, String? scanPath}) async {
     if (libraryId != null) {
       final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/scan'));
-      if (res.statusCode != 200) throw Exception('启动扫描失败: ${res.body}');
+      if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动扫描失败: ${res.body}');
       return jsonDecode(res.body);
     } else if (scanPath != null) {
       final res = await http.post(
@@ -65,7 +65,7 @@ class ApiService {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'path': scanPath}),
       );
-      if (res.statusCode != 200) throw Exception('启动临时扫描失败: ${res.body}');
+      if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动临时扫描失败: ${res.body}');
       return jsonDecode(res.body);
     }
     throw Exception('必须指定 libraryId 或 scanPath');
@@ -73,14 +73,14 @@ class ApiService {
 
   Future<Map<String, dynamic>> scanLibrary(int libraryId) async {
     final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/scan'));
-    if (res.statusCode != 200) throw Exception('启动扫描失败: ${res.body}');
+    if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动扫描失败: ${res.body}');
     return jsonDecode(res.body);
   }
 
   /// 重复扫描：补采缺失元数据、补生成缩略图、采集新文件
   Future<Map<String, dynamic>> repairLibrary(int libraryId) async {
     final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/repair'));
-    if (res.statusCode != 200) throw Exception('启动修复扫描失败: ${res.body}');
+    if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动修复扫描失败: ${res.body}');
     return jsonDecode(res.body);
   }
 
@@ -90,7 +90,7 @@ class ApiService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'path': path}),
     );
-    if (res.statusCode != 200) throw Exception('启动临时扫描失败: ${res.body}');
+    if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动临时扫描失败: ${res.body}');
     return jsonDecode(res.body);
   }
 
@@ -113,6 +113,26 @@ class ApiService {
     );
     if (res.statusCode != 200) throw Exception('入库失败: ${res.body}');
     return jsonDecode(res.body);
+  }
+
+  // ===== 任务管理 =====
+
+  Future<List<BackgroundTask>> getTasks() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/tasks'));
+    if (res.statusCode != 200) throw Exception('获取任务列表失败: ${res.body}');
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list.map((e) => BackgroundTask.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  Future<BackgroundTask> getTask(String taskId) async {
+    final res = await http.get(Uri.parse('$baseUrl/api/tasks/$taskId'));
+    if (res.statusCode != 200) throw Exception('查询任务失败: ${res.body}');
+    return BackgroundTask.fromJson(jsonDecode(res.body));
+  }
+
+  Future<void> cancelTask(String taskId) async {
+    final res = await http.post(Uri.parse('$baseUrl/api/tasks/$taskId/cancel'));
+    if (res.statusCode != 200) throw Exception('取消任务失败: ${res.body}');
   }
 
   // ===== 搜索 =====
@@ -158,30 +178,36 @@ class ApiService {
 
   // ===== 重复报告 =====
 
-  /// 生成重复检测报告（图片 + 视频）
-  Future<DuplicateReport> generateReport() async {
-    // 先生成图片报告
+  /// 提交重复检测报告任务（图片 + 视频）
+  Future<Map<String, dynamic>> submitReport() async {
+    final results = <String, dynamic>{};
+
+    // 提交图片报告任务
     final imgRes = await http.post(
       Uri.parse('$baseUrl/api/reports/image'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'output_path': 'report_image.html'}),
     );
-    // 再生成视频报告
+    if (imgRes.statusCode == 200 || imgRes.statusCode == 202) {
+      final data = jsonDecode(imgRes.body);
+      results['image_task_id'] = data['task_id'];
+    }
+
+    // 提交视频报告任务
     final vidRes = await http.post(
       Uri.parse('$baseUrl/api/reports/video'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'output_path': 'report_video.html'}),
     );
-
-    Map<String, dynamic> data = {};
-    if (imgRes.statusCode == 200) {
-      data = jsonDecode(imgRes.body);
-    } else if (vidRes.statusCode == 200) {
-      data = jsonDecode(vidRes.body);
-    } else {
-      throw Exception('报告生成失败');
+    if (vidRes.statusCode == 200 || vidRes.statusCode == 202) {
+      final data = jsonDecode(vidRes.body);
+      results['video_task_id'] = data['task_id'];
     }
-    return DuplicateReport.fromJson(data);
+
+    if (results.isEmpty) {
+      throw Exception('报告任务提交失败');
+    }
+    return results;
   }
 
   Future<Map<String, dynamic>> generateImageReport({String? outputPath}) async {

@@ -393,6 +393,9 @@ func ensureThumbnail(dst string, generate func(tmp string) error) error {
 	if _, err := os.Stat(dst); err == nil {
 		return nil
 	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("创建缩略图目录: %w", err)
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".thumb-tmp-*")
 	if err != nil {
 		return fmt.Errorf("创建临时缩略图文件: %w", err)
@@ -423,4 +426,185 @@ func (s *Service) CancelScan(sessionID string) error {
 		s.cancelFuncs.Delete(sessionID)
 	}
 	return s.Sessions.UpdateStatus(sessionID, "cancelled")
+}
+
+// ExecuteScan 同步执行扫描，支持进度回调（供任务调度器调用）。
+func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int, progress repo.ProgressFunc) (*repo.ScanResult, error) {
+	if err := s.Sessions.Create(&repo.ScanSession{
+		ID:          sessionID,
+		LibraryID:   &lib.ID,
+		IsTemporary: temporary,
+		Status:      "running",
+	}); err != nil {
+		return nil, err
+	}
+
+	st := &scanState{}
+	entries, err := media.Walk(ctx, lib.Path)
+	if err != nil {
+		_ = s.Sessions.UpdateStatus(sessionID, "failed")
+		return nil, fmt.Errorf("遍历目录: %w", err)
+	}
+	progress("discovering", len(entries), 0, 0, 0, 0)
+
+	pool := worker.NewPool(poolSize)
+	pool.Start(ctx)
+
+	for _, e := range entries {
+		need, err := s.Media.NeedScan(lib.ID, e.RelativePath, e.Mtime, e.Size)
+		if err != nil {
+			slog.Error("增量判定失败", "path", e.RelativePath, "err", err)
+			st.mu.Lock()
+			st.failed++
+			total := st.imported + st.skipped + st.failed
+			st.mu.Unlock()
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			continue
+		}
+		if !need {
+			st.mu.Lock()
+			st.skipped++
+			total := st.imported + st.skipped + st.failed
+			st.mu.Unlock()
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			continue
+		}
+
+		entry := e
+		pool.Submit(&worker.ScanJob{
+			Run: func(jobCtx context.Context) error {
+				m, err := s.collect(jobCtx, lib.ID, sessionID, entry)
+				if err != nil {
+					slog.Warn("采集失败", "path", entry.AbsPath, "err", err)
+					st.mu.Lock()
+					st.failed++
+					total := st.imported + st.skipped + st.failed
+					st.mu.Unlock()
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					return err
+				}
+				if err := s.Media.Upsert(m); err != nil {
+					slog.Error("入库失败", "path", entry.RelativePath, "err", err)
+					st.mu.Lock()
+					st.failed++
+					total := st.imported + st.skipped + st.failed
+					st.mu.Unlock()
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					return err
+				}
+				st.mu.Lock()
+				st.imported++
+				total := st.imported + st.skipped + st.failed
+				st.mu.Unlock()
+				progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+				return nil
+			},
+		})
+	}
+
+	pool.Stop()
+	_ = s.Sessions.UpdateStatus(sessionID, "completed")
+	slog.Info("扫描完成",
+		"library_id", lib.ID, "session_id", sessionID,
+		"found", len(entries), "imported", st.imported,
+		"skipped", st.skipped, "failed", st.failed)
+
+	session, _ := s.Sessions.GetByID(sessionID)
+	return &repo.ScanResult{
+		Session:  session,
+		Found:    len(entries),
+		Imported: st.imported,
+		Skipped:  st.skipped,
+		Failed:   st.failed,
+	}, nil
+}
+
+// ExecuteRepair 同步执行修复扫描，支持进度回调（供任务调度器调用）。
+func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID string, poolSize int, progress repo.ProgressFunc) (*repo.ScanResult, error) {
+	if err := s.Sessions.Create(&repo.ScanSession{
+		ID:        sessionID,
+		LibraryID: &lib.ID,
+		Status:    "running",
+	}); err != nil {
+		return nil, err
+	}
+
+	st := &scanState{}
+	entries, err := media.Walk(ctx, lib.Path)
+	if err != nil {
+		_ = s.Sessions.UpdateStatus(sessionID, "failed")
+		return nil, fmt.Errorf("遍历目录: %w", err)
+	}
+	progress("discovering", len(entries), 0, 0, 0, 0)
+
+	pool := worker.NewPool(poolSize)
+	pool.Start(ctx)
+
+	for _, e := range entries {
+		need, err := s.Media.NeedRepair(lib.ID, e.RelativePath, string(e.Kind))
+		if err != nil {
+			slog.Error("完整性判定失败", "path", e.RelativePath, "err", err)
+			st.mu.Lock()
+			st.failed++
+			total := st.imported + st.skipped + st.failed
+			st.mu.Unlock()
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			continue
+		}
+		if !need {
+			st.mu.Lock()
+			st.skipped++
+			total := st.imported + st.skipped + st.failed
+			st.mu.Unlock()
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			continue
+		}
+
+		entry := e
+		pool.Submit(&worker.ScanJob{
+			Run: func(jobCtx context.Context) error {
+				m, err := s.collect(jobCtx, lib.ID, sessionID, entry)
+				if err != nil {
+					slog.Warn("修补采集失败", "path", entry.AbsPath, "err", err)
+					st.mu.Lock()
+					st.failed++
+					total := st.imported + st.skipped + st.failed
+					st.mu.Unlock()
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					return err
+				}
+				if err := s.Media.Upsert(m); err != nil {
+					slog.Error("修补入库失败", "path", entry.RelativePath, "err", err)
+					st.mu.Lock()
+					st.failed++
+					total := st.imported + st.skipped + st.failed
+					st.mu.Unlock()
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					return err
+				}
+				st.mu.Lock()
+				st.imported++
+				total := st.imported + st.skipped + st.failed
+				st.mu.Unlock()
+				progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+				return nil
+			},
+		})
+	}
+
+	pool.Stop()
+	_ = s.Sessions.UpdateStatus(sessionID, "completed")
+	slog.Info("修复扫描完成",
+		"library_id", lib.ID, "session_id", sessionID,
+		"found", len(entries), "repaired", st.imported,
+		"skipped", st.skipped, "failed", st.failed)
+
+	session, _ := s.Sessions.GetByID(sessionID)
+	return &repo.ScanResult{
+		Session:  session,
+		Found:    len(entries),
+		Imported: st.imported,
+		Skipped:  st.skipped,
+		Failed:   st.failed,
+	}, nil
 }

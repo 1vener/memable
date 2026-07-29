@@ -17,7 +17,7 @@ import (
 var schemaSQL string
 
 // schemaVersion 当前迁移版本；schema.sql 每次变更须 +1 并在 Migrate 中追加对应迁移。
-const schemaVersion = 2
+const schemaVersion = 3
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
 func Open(cfg *config.Config) (*sql.DB, error) {
@@ -66,6 +66,41 @@ func Migrate(db *sql.DB) error {
 			CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT NULL;
 			INSERT INTO schema_version(version) VALUES (2);`); err != nil {
 			return fmt.Errorf("迁移到 v2: %w", err)
+		}
+	}
+
+	// v3：新增后台任务表
+	if cur < 3 {
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS background_tasks (
+			id                  TEXT    PRIMARY KEY,
+			kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','promote')),
+			status              TEXT    NOT NULL DEFAULT 'queued'
+			                    CHECK (status IN ('queued','running','completed','failed','cancelled')),
+			title               TEXT    NOT NULL,
+			dedupe_key          TEXT,
+			library_id          INTEGER,
+			scan_session_id     TEXT,
+			payload_json        TEXT,
+			phase               TEXT    NOT NULL DEFAULT 'queued',
+			total_items         INTEGER NOT NULL DEFAULT 0,
+			processed_items     INTEGER NOT NULL DEFAULT 0,
+			succeeded_items     INTEGER NOT NULL DEFAULT 0,
+			skipped_items       INTEGER NOT NULL DEFAULT 0,
+			failed_items        INTEGER NOT NULL DEFAULT 0,
+			result_json         TEXT,
+			error_message       TEXT,
+			queued_at           TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+			started_at          TIMESTAMP,
+			updated_at          TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+			finished_at         TIMESTAMP
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedupe
+			ON background_tasks(dedupe_key)
+			WHERE dedupe_key IS NOT NULL AND status IN ('queued','running');
+		CREATE INDEX IF NOT EXISTS idx_tasks_status ON background_tasks(status);
+		CREATE INDEX IF NOT EXISTS idx_tasks_queued ON background_tasks(queued_at) WHERE status IN ('queued','running');
+		INSERT INTO schema_version(version) VALUES (3);`); err != nil {
+			return fmt.Errorf("迁移到 v3: %w", err)
 		}
 	}
 	return nil
