@@ -109,13 +109,19 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先查出关联媒体，物理删除缩略图
+	// 先查出关联媒体，按 ref-count 物理删除缩略图
 	medias, _ := s.media.ListByLibrary(id)
 	for _, m := range medias {
-		if m.ThumbnailPath != nil {
-			thumbAbs := s.thumbAbsPath(*m.ThumbnailPath)
-			_ = os.Remove(thumbAbs)
+		if m.ThumbnailPath == nil {
+			continue
 		}
+		// 检查是否有其他记录仍引用此缩略图
+		n, _ := s.media.CountByThumbnailPath(*m.ThumbnailPath, m.ID)
+		if n > 0 {
+			continue // 其他库/文件仍在使用，不删除
+		}
+		thumbAbs := s.thumbAbsPath(*m.ThumbnailPath)
+		_ = os.Remove(thumbAbs)
 	}
 
 	if err := s.libraries.Delete(id); err != nil {
@@ -177,6 +183,25 @@ func buildFileTree(basePath, relPath string) []FileTreeNode {
 		nodes = append(nodes, node)
 	}
 	return nodes
+}
+
+// handleListFiles 列出库下指定目录的所有媒体。
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的库 ID")
+		return
+	}
+	dir := r.URL.Query().Get("path")
+	medias, err := s.media.ListByDirectory(id, dir)
+	if err != nil {
+		writeError(w, 500, "查询媒体列表失败: "+err.Error())
+		return
+	}
+	if medias == nil {
+		medias = []repo.Media{}
+	}
+	writeJSON(w, 200, medias)
 }
 
 // ===== 扫描 =====
@@ -355,15 +380,7 @@ func (s *Server) handlePromoteSession(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// 迁移缩略图（从 _tmp 目录到正式目录）
-		if m.ThumbnailPath != nil {
-			srcThumb := filepath.Join(s.thumbBase, "_tmp", *m.ThumbnailPath)
-			dstThumb := filepath.Join(s.thumbBase, *m.ThumbnailPath)
-			if err := moveFile(srcThumb, dstThumb); err != nil {
-				slog.Warn("迁移缩略图失败", "src", srcThumb, "err", err)
-			}
-		}
-
+		// 缩略图已使用内容寻址路径，无需迁移
 		// 更新 media 记录的 library_id
 		if err := s.media.UpdateLibrary(m.ID, req.LibraryID); err != nil {
 			slog.Error("更新媒体库归属失败", "media_id", m.ID, "err", err)

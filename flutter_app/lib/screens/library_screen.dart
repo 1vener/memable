@@ -8,21 +8,6 @@ import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
 import '../widgets/path_dialog.dart';
 
-/// 文件树节点
-class FileTreeNode {
-  final String name;
-  final String fullPath;
-  final bool isDir;
-  final List<FileTreeNode> children;
-
-  FileTreeNode({
-    required this.name,
-    required this.fullPath,
-    required this.isDir,
-    this.children = const [],
-  });
-}
-
 class LibraryScreen extends StatefulWidget {
   final ApiService api;
   final ValueChanged<String> onLibrarySelected;
@@ -186,7 +171,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   void _onLibraryTap(Library lib) {
     setState(() => _selected = lib);
-    widget.onLibrarySelected(lib.name);
   }
 
   @override
@@ -308,7 +292,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                     ],
                   ),
                 )
-              : _LibraryDetail(library: _selected!, api: widget.api),
+              : _FileTreePanel(library: _selected!, api: widget.api),
         ),
       ],
     );
@@ -425,108 +409,340 @@ class _LibraryCard extends StatelessWidget {
   }
 }
 
-/// 库详情面板
-class _LibraryDetail extends StatelessWidget {
+/// 文件树 + 缩略图浏览面板
+class _FileTreePanel extends StatefulWidget {
   final Library library;
   final ApiService api;
 
-  const _LibraryDetail({required this.library, required this.api});
+  const _FileTreePanel({required this.library, required this.api});
+
+  @override
+  State<_FileTreePanel> createState() => _FileTreePanelState();
+}
+
+class _FileTreePanelState extends State<_FileTreePanel> {
+  List<FileTreeNode>? _tree;
+  String? _error;
+  bool _loadingTree = true;
+
+  String _selectedDir = '';
+  List<Media> _files = [];
+  bool _loadingFiles = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTree();
+  }
+
+  Future<void> _loadTree() async {
+    setState(() { _loadingTree = true; _error = null; });
+    try {
+      final tree = await widget.api.getFileTree(widget.library.id);
+      if (mounted) setState(() { _tree = tree; _loadingTree = false; });
+    } catch (e) {
+      if (mounted) setState(() { _error = '$e'; _loadingTree = false; });
+    }
+  }
+
+  Future<void> _selectDir(String dir) async {
+    setState(() { _selectedDir = dir; _loadingFiles = true; _files = []; });
+    try {
+      final files = await widget.api.getFiles(widget.library.id, path: dir);
+      if (mounted) setState(() { _files = files; _loadingFiles = false; });
+    } catch (e) {
+      if (mounted) setState(() { _files = []; _loadingFiles = false; });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 库名称
-          Row(
-            children: [
-              Icon(Icons.folder, size: 28, color: cs.primary),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  library.name,
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700, color: cs.onSurface),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
+    return Row(
+      children: [
+        // 左侧：目录树
+        SizedBox(
+          width: 260,
+          child: _loadingTree
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null
+                  ? Center(child: Text(_error!, style: TextStyle(color: cs.error)))
+                  : _tree == null || _tree!.isEmpty
+                      ? Center(child: Text('目录为空', style: TextStyle(color: cs.outline)))
+                      : Column(
+                          children: [
+                            // 头部：库名 + 操作
+                            Container(
+                              height: 52,
+                              padding: const EdgeInsets.symmetric(horizontal: 16),
+                              decoration: BoxDecoration(
+                                border: Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      widget.library.name,
+                                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.healing, size: 18),
+                                    tooltip: '修复扫描',
+                                    onPressed: () async {
+                                      try {
+                                        await widget.api.repairLibrary(widget.library.id);
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(content: const Text('修复扫描已启动'), backgroundColor: const Color(0xFF2563EB)),
+                                          );
+                                        }
+                                      } catch (e) {
+                                        if (context.mounted) {
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(content: Text('修复扫描失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+                                          );
+                                        }
+                                      }
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.refresh, size: 18),
+                                    tooltip: '刷新文件树',
+                                    onPressed: _loadTree,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Expanded(
+                              child: ListView(
+                                padding: const EdgeInsets.all(8),
+                                children: [
+                                  _TreeDirTile(
+                                    name: '(根目录)',
+                                    path: '',
+                                    selected: _selectedDir == '',
+                                    onTap: () => _selectDir(''),
+                                  ),
+                                  ..._buildDirTiles(_tree!),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+        ),
+        // 分隔线
+        VerticalDivider(width: 1, color: cs.outlineVariant),
+        // 右侧：缩略图网格
+        Expanded(
+          child: _loadingFiles
+              ? const Center(child: CircularProgressIndicator())
+              : _files.isEmpty
+                  ? Center(child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.image_outlined, size: 64, color: cs.outline.withValues(alpha: 0.5)),
+                        const SizedBox(height: 16),
+                        Text('此目录暂无媒体文件', style: TextStyle(fontSize: 15, color: cs.outline)),
+                      ],
+                    ))
+                  : _buildThumbnailGrid(cs),
+        ),
+      ],
+    );
+  }
 
-          // 基本信息卡片
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('基本信息', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
-                  const SizedBox(height: 16),
-                  _InfoRow(label: '库 ID', value: library.id.toString()),
-                  const SizedBox(height: 8),
-                  _InfoRow(label: '路径', value: library.path),
-                ],
+  List<Widget> _buildDirTiles(List<FileTreeNode> nodes) {
+    final tiles = <Widget>[];
+    for (final node in nodes) {
+      if (!node.isDir) continue;
+      tiles.add(_TreeDirTile(
+        name: node.name,
+        path: node.path,
+        selected: _selectedDir == node.path,
+        onTap: () => _selectDir(node.path),
+      ));
+      if (node.children.isNotEmpty) {
+        tiles.add(Padding(
+          padding: const EdgeInsets.only(left: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: _buildDirTiles(node.children),
+          ),
+        ));
+      }
+    }
+    return tiles;
+  }
+
+  Widget _buildThumbnailGrid(ColorScheme cs) {
+    return RefreshIndicator(
+      onRefresh: () => _selectDir(_selectedDir),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 面包屑/路径
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Text(
+                _selectedDir.isEmpty ? '(根目录)' : _selectedDir,
+                style: TextStyle(fontSize: 13, color: cs.outline),
+                overflow: TextOverflow.ellipsis,
               ),
             ),
-          ),
-          const SizedBox(height: 16),
-          // 操作按钮
-          Row(
-            children: [
-              FilledButton.icon(
-                onPressed: () async {
-                  try {
-                    await api.repairLibrary(library.id);
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('修复扫描已启动: ${library.name}'),
-                          backgroundColor: const Color(0xFF2563EB),
-                        ),
-                      );
-                    }
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('修复扫描失败: $e'), backgroundColor: const Color(0xFFEF4444)),
-                      );
-                    }
-                  }
+            Expanded(
+              child: GridView.builder(
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 180,
+                  crossAxisSpacing: 12,
+                  mainAxisSpacing: 12,
+                  childAspectRatio: 1,
+                ),
+                itemCount: _files.length,
+                itemBuilder: (context, index) {
+                  final m = _files[index];
+                  final thumbUrl = m.thumbnailPath != null
+                      ? widget.api.thumbnailUrl(m.thumbnailPath!)
+                      : null;
+                  return _MediaThumbCard(
+                    media: m,
+                    thumbUrl: thumbUrl,
+                  );
                 },
-                icon: const Icon(Icons.healing, size: 18),
-                label: const Text('修复扫描'),
               ),
-            ],
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _InfoRow extends StatelessWidget {
-  final String label;
-  final String value;
-  const _InfoRow({required this.label, required this.value});
+/// 目录树条目
+class _TreeDirTile extends StatelessWidget {
+  final String name;
+  final String path;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _TreeDirTile({
+    required this.name,
+    required this.path,
+    required this.selected,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 80,
-          child: Text(label, style: TextStyle(fontSize: 13, color: cs.outline)),
+    return Padding(
+      padding: const EdgeInsets.all(2),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: selected
+                  ? cs.primary.withValues(alpha: Theme.of(context).brightness == Brightness.dark ? 0.15 : 0.1)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+              border: selected
+                  ? Border.all(color: cs.primary.withValues(alpha: 0.3))
+                  : null,
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  selected ? Icons.folder_open : Icons.folder,
+                  size: 18,
+                  color: selected ? cs.primary : cs.outline,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    name,
+                    style: TextStyle(fontSize: 13, color: cs.onSurface),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
-        Expanded(
-          child: SelectableText(value, style: TextStyle(fontSize: 13, color: cs.onSurface)),
-        ),
-      ],
+      ),
+    );
+  }
+}
+
+/// 缩略图卡片
+class _MediaThumbCard extends StatelessWidget {
+  final Media media;
+  final String? thumbUrl;
+
+  const _MediaThumbCard({required this.media, required this.thumbUrl});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: thumbUrl != null
+                ? Image.network(
+                    thumbUrl!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _placeholder(cs),
+                    loadingBuilder: (_, child, progress) {
+                      if (progress == null) return child;
+                      return Center(child: CircularProgressIndicator(strokeWidth: 2));
+                    },
+                  )
+                : _placeholder(cs),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  media.relativePath.split('/').last.split('\\').last,
+                  style: TextStyle(fontSize: 11, color: cs.onSurface),
+                  overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
+                ),
+                if (media.width != null && media.height != null)
+                  Text(
+                    '${media.width}×${media.height}',
+                    style: TextStyle(fontSize: 10, color: cs.outline),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _placeholder(ColorScheme cs) {
+    return Container(
+      color: cs.surfaceContainerHighest,
+      child: Icon(
+        media.kind == 'video' ? Icons.videocam_outlined : Icons.image_outlined,
+        size: 40,
+        color: cs.outline,
+      ),
     );
   }
 }

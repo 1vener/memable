@@ -62,6 +62,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/libraries/{id}", s.handleUpdateLibrary)
 	mux.HandleFunc("DELETE /api/libraries/{id}", s.handleDeleteLibrary)
 	mux.HandleFunc("GET /api/libraries/{id}/tree", s.handleFileTree)
+	mux.HandleFunc("GET /api/libraries/{id}/files", s.handleListFiles)
 
 	// 扫描
 	mux.HandleFunc("POST /api/libraries/{id}/scan", s.handleScanLibrary)

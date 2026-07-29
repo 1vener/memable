@@ -143,6 +143,18 @@ func (r *MediaRepo) ListByKind(kind string) ([]Media, error) {
 		WHERE m.kind = ? AND COALESCE(s.is_temporary, 0) = 0 ORDER BY m.library_id, m.relative_path`, kind)
 }
 
+// ListByDirectory 列出库下指定目录内的全部媒体。
+func (r *MediaRepo) ListByDirectory(libraryID int64, relDir string) ([]Media, error) {
+	prefix := strings.TrimPrefix(strings.TrimPrefix(relDir, "/"), "\\")
+	if prefix != "" {
+		prefix = strings.ReplaceAll(prefix, "\\", "/") + "/"
+	}
+	return r.query(
+		`SELECT `+mediaCols+` FROM media WHERE library_id = ? AND relative_path LIKE ? ORDER BY relative_path`,
+		libraryID, prefix+"%",
+	)
+}
+
 // SearchByPath 全路径模糊搜索（拼接 library.path 后匹配）。
 func (r *MediaRepo) SearchByPath(pattern string) ([]Media, error) {
 	// JOIN 查询需为列加 m. 前缀避免歧义
@@ -165,6 +177,22 @@ func (r *MediaRepo) Delete(id int64) error {
 		return errx.Newf("媒体 id=%d 不存在", id)
 	}
 	return nil
+}
+
+// CountByThumbnailPath 统计使用同一缩略图路径的媒体记录数（排除指定 id）。
+func (r *MediaRepo) CountByThumbnailPath(thumbPath string, excludeID int64) (int, error) {
+	var n int
+	err := r.db.QueryRow(
+		`SELECT COUNT(*) FROM media WHERE thumbnail_path = ? AND id <> ?`,
+		thumbPath, excludeID,
+	).Scan(&n)
+	return n, err
+}
+
+// UpdateThumbnailPath 更新媒体的缩略图路径。
+func (r *MediaRepo) UpdateThumbnailPath(id int64, thumbPath *string) error {
+	_, err := r.db.Exec(`UPDATE media SET thumbnail_path = ? WHERE id = ?`, thumbPath, id)
+	return errx.Wrapf(err, "更新缩略图路径 id=%d", id)
 }
 
 // UpdateLibrary 更新媒体的归属库（临时扫描入库时使用）。

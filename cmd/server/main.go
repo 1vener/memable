@@ -53,10 +53,10 @@ func main() {
 	sessionRepo := repo.NewSessionRepo(dbh)
 	mediaRepo := repo.NewMediaRepo(dbh)
 
-	// 初始化服务层
-	thumbBase := cfg.Thumbnail.ImageDir
-	if thumbBase == "" {
-		thumbBase = "thumbnail"
+	// 初始化服务层：使用统一的缩略图根目录（内容寻址路径含 image/video 前缀）
+	thumbBase := "thumbnail"
+	if cfg.Thumbnail.ImageDir != "" {
+		thumbBase = cfg.Thumbnail.ImageDir
 	}
 
 	scanSvc := &scan.Service{

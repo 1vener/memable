@@ -213,6 +213,17 @@ class ApiService {
     return list.map((e) => FileTreeNode.fromJson(e as Map<String, dynamic>)).toList();
   }
 
+  /// 列出库下指定目录的所有媒体
+  Future<List<Media>> getFiles(int libraryId, {String path = ''}) async {
+    final uri = Uri.parse('$baseUrl/api/libraries/$libraryId/files').replace(
+      queryParameters: path.isNotEmpty ? {'path': path} : null,
+    );
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('获取文件列表失败: ${res.body}');
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list.map((e) => Media.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
   /// 缩略图 URL
   String thumbnailUrl(String thumbnailPath) {
     return '$baseUrl/api/thumbnails/$thumbnailPath';

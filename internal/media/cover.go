@@ -21,20 +21,20 @@ type CoverResult struct {
 	UsedTimeMs    int64  // 实际使用的封面时间点
 }
 
-// ExtractVideoCover 从视频中提取封面并生成缩略图。
+// ExtractVideoCover 从视频中提取封面并生成缩略图到 outputPath。
 // 规则：
 //   - duration < 10s → 50%；10s~60s → 30%；>= 60s → 10%
 //   - 黑屏/近纯色时在该时间点前后按 10% duration 间隔重试，最多 5 个时间点
 //   - 仍失败时回退到 50% duration，最后回退到 0s
-func ExtractVideoCover(ctx context.Context, videoPath, outDir string, maxEdge int, durationMs int64) (*CoverResult, error) {
+//   - 临时抽帧文件使用 os.CreateTemp 避免多 worker 冲突
+func ExtractVideoCover(ctx context.Context, videoPath, outputPath string, maxEdge int, durationMs int64) (*CoverResult, error) {
 	if maxEdge <= 0 {
 		maxEdge = 300
 	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return nil, fmt.Errorf("创建封面目录: %w", err)
 	}
 
-	// 候选时间点列表
 	candidates := buildCoverCandidates(durationMs)
 
 	for _, tMs := range candidates {
@@ -44,9 +44,14 @@ func ExtractVideoCover(ctx context.Context, videoPath, outDir string, maxEdge in
 		default:
 		}
 
-		rawPath := filepath.Join(outDir, "_cover_raw.jpg")
+		rawFile, err := os.CreateTemp("", "cover-raw-*.jpg")
+		if err != nil {
+			return nil, fmt.Errorf("创建临时抽帧文件: %w", err)
+		}
+		rawPath := rawFile.Name()
+		rawFile.Close()
+
 		if err := ffmpegExtractFrame(ctx, videoPath, tMs, rawPath); err != nil {
-			// 抽帧失败，尝试下一个时间点
 			_ = os.Remove(rawPath)
 			continue
 		}
@@ -56,16 +61,12 @@ func ExtractVideoCover(ctx context.Context, videoPath, outDir string, maxEdge in
 			continue
 		}
 
-		// 有效帧：resize 后保存为缩略图
-		thumbName := fmt.Sprintf("cover_%s", filepath.Base(videoPath))
-		thumbName = ReplaceExt(thumbName, ".png")
-		thumbPath := filepath.Join(outDir, thumbName)
-		if err := GenerateImageThumbnail(rawPath, thumbPath, maxEdge); err != nil {
-			_ = os.Remove(rawPath)
+		err = GenerateImageThumbnail(rawPath, outputPath, maxEdge)
+		_ = os.Remove(rawPath)
+		if err != nil {
 			continue
 		}
-		_ = os.Remove(rawPath)
-		return &CoverResult{ThumbnailPath: thumbPath, UsedTimeMs: tMs}, nil
+		return &CoverResult{ThumbnailPath: outputPath, UsedTimeMs: tMs}, nil
 	}
 
 	return nil, fmt.Errorf("视频 %q 在 %d 个时间点均无法提取有效封面", videoPath, len(candidates))

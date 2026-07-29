@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -79,7 +79,6 @@ func (s *Service) runScan(ctx context.Context, lib repo.Library, sessionID strin
 		return
 	}
 
-	thumbDir := s.thumbDir(temporary)
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
 
@@ -102,7 +101,7 @@ func (s *Service) runScan(ctx context.Context, lib repo.Library, sessionID strin
 		entry := e // 捕获循环变量
 		pool.Submit(&worker.ScanJob{
 			Run: func(jobCtx context.Context) error {
-				m, err := s.collect(jobCtx, lib.ID, sessionID, entry, thumbDir)
+				m, err := s.collect(jobCtx, lib.ID, sessionID, entry)
 				if err != nil {
 					slog.Warn("采集失败", "path", entry.AbsPath, "err", err)
 					st.mu.Lock()
@@ -168,7 +167,6 @@ func (s *Service) runRepair(ctx context.Context, lib repo.Library, sessionID str
 		return
 	}
 
-	thumbDir := s.thumbDir(temporary)
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
 
@@ -191,7 +189,7 @@ func (s *Service) runRepair(ctx context.Context, lib repo.Library, sessionID str
 		entry := e
 		pool.Submit(&worker.ScanJob{
 			Run: func(jobCtx context.Context) error {
-				m, err := s.collect(jobCtx, lib.ID, sessionID, entry, thumbDir)
+				m, err := s.collect(jobCtx, lib.ID, sessionID, entry)
 				if err != nil {
 					slog.Warn("修补采集失败", "path", entry.AbsPath, "err", err)
 					st.mu.Lock()
@@ -256,9 +254,6 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 	}
 	stats.Found = len(entries)
 
-	// 临时扫描使用独立的临时缩略图目录
-	thumbDir := s.thumbDir(temporary)
-
 	for _, e := range entries {
 		need, err := s.Media.NeedScan(lib.ID, e.RelativePath, e.Mtime, e.Size)
 		if err != nil {
@@ -271,7 +266,7 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 			continue
 		}
 
-		m, err := s.collect(ctx, lib.ID, sessionID, e, thumbDir)
+		m, err := s.collect(ctx, lib.ID, sessionID, e)
 		if err != nil {
 			slog.Warn("采集失败", "path", e.AbsPath, "err", err)
 			stats.Failed++
@@ -295,7 +290,7 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 	return stats, nil
 }
 
-func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string, e media.FileEntry, thumbDir string) (*repo.Media, error) {
+func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string, e media.FileEntry) (*repo.Media, error) {
 	sha1, err := media.SHA1File(e.AbsPath)
 	if err != nil {
 		return nil, fmt.Errorf("计算 SHA1 %q: %w", e.AbsPath, err)
@@ -313,6 +308,11 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 	maxEdge := 300
 	if s.Config != nil && s.Config.Thumbnail.MaxEdge > 0 {
 		maxEdge = s.Config.Thumbnail.MaxEdge
+	}
+
+	thumbBase := s.ThumbBase
+	if thumbBase == "" {
+		thumbBase = "thumbnail"
 	}
 
 	switch e.Kind {
@@ -333,14 +333,16 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		m.Dhash = &hashes.DHash
 		m.Ahash = &hashes.AHash
 
-		// 生成图片缩略图（相对路径落盘）
-		thumbRel := thumbRelPath("image", e.RelativePath, ".png")
-		thumbAbs := filepath.Join(thumbDir, thumbRel)
-		if err := media.GenerateImageThumbnail(e.AbsPath, thumbAbs, maxEdge); err != nil {
+		// 内容寻址缩略图
+		storageKey := media.ThumbnailKey("image", sha1, maxEdge)
+		thumbRel := media.ThumbnailStoragePath("image", storageKey)
+		thumbAbs := filepath.Join(thumbBase, thumbRel)
+		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
+			return media.GenerateImageThumbnail(e.AbsPath, tmp, maxEdge)
+		}); err != nil {
 			slog.Warn("生成图片缩略图失败", "path", e.AbsPath, "err", err)
 		} else {
-			thumbPath := NormalizeRelPath(thumbRel)
-			m.ThumbnailPath = &thumbPath
+			m.ThumbnailPath = &thumbRel
 		}
 
 	case media.KindVideo:
@@ -362,16 +364,17 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		m.BitRate = &meta.BitRate
 		m.Oshash = &oshash
 
-		// 生成视频封面缩略图
-		coverOutDir := filepath.Join(thumbDir, "video")
-		cover, err := media.ExtractVideoCover(ctx, e.AbsPath, coverOutDir, maxEdge, meta.DurationMs)
-		if err != nil {
+		// 内容寻址视频封面缩略图
+		storageKey := media.ThumbnailKey("video", sha1, maxEdge)
+		thumbRel := media.ThumbnailStoragePath("video", storageKey)
+		thumbAbs := filepath.Join(thumbBase, thumbRel)
+		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
+			_, err := media.ExtractVideoCover(ctx, e.AbsPath, tmp, maxEdge, meta.DurationMs)
+			return err
+		}); err != nil {
 			slog.Warn("生成视频封面失败", "path", e.AbsPath, "err", err)
 		} else {
-			// 存储相对 thumbDir 的路径
-			rel, _ := filepath.Rel(thumbDir, cover.ThumbnailPath)
-			thumbPath := NormalizeRelPath(filepath.ToSlash(rel))
-			m.ThumbnailPath = &thumbPath
+			m.ThumbnailPath = &thumbRel
 		}
 
 		// 计算 sprite pHash（临时截图计算后自动清理）
@@ -385,6 +388,34 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 	return m, nil
 }
 
+// ensureThumbnail 原子性地生成缩略图：目标文件已存在则跳过，否则生成到临时文件再重命名。
+func ensureThumbnail(dst string, generate func(tmp string) error) error {
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".thumb-tmp-*")
+	if err != nil {
+		return fmt.Errorf("创建临时缩略图文件: %w", err)
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+
+	if err := generate(tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		// 若目标已存在（另一 worker 抢先完成），则视为成功
+		if _, statErr := os.Stat(dst); statErr == nil {
+			return nil
+		}
+		return fmt.Errorf("安装缩略图: %w", err)
+	}
+	return nil
+}
+
 // CancelScan 取消扫描会话。
 func (s *Service) CancelScan(sessionID string) error {
 	if v, ok := s.cancelFuncs.Load(sessionID); ok {
@@ -392,26 +423,4 @@ func (s *Service) CancelScan(sessionID string) error {
 		s.cancelFuncs.Delete(sessionID)
 	}
 	return s.Sessions.UpdateStatus(sessionID, "cancelled")
-}
-
-// thumbDir 返回缩略图根目录；临时扫描使用 _tmp 前缀。
-func (s *Service) thumbDir(temporary bool) string {
-	base := s.ThumbBase
-	if base == "" {
-		base = "thumbnail"
-	}
-	if temporary {
-		return filepath.Join(base, "_tmp")
-	}
-	return base
-}
-
-// thumbRelPath 生成缩略图相对路径：kind/subpath.png
-func thumbRelPath(kind, relPath, newExt string) string {
-	return NormalizeRelPath(filepath.Join(kind, media.ReplaceExt(filepath.Base(relPath), newExt)))
-}
-
-// NormalizeRelPath 统一路径分隔符为正斜杠。
-func NormalizeRelPath(p string) string {
-	return strings.ReplaceAll(p, "\\", "/")
 }

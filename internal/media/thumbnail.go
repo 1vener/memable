@@ -1,9 +1,11 @@
 // thumbnail.go：图片缩略图生成（最大边 300px，仅用 Go 标准库）。
-// 代码注释使用中文。
+// 代码注释使用中文
 package media
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -12,6 +14,22 @@ import (
 	"os"
 	"path/filepath"
 )
+
+// ThumbnailKey 生成内容寻址缩略图存储键。
+// storageKey 用于文件命名和路径分片；recipe 形如 "v1-300"。
+func ThumbnailKey(kind, sha1 string, maxEdge int) (storageKey string) {
+	recipe := fmt.Sprintf("v1-%d", maxEdge)
+	input := kind + ":" + sha1 + ":" + recipe
+	h := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(h[:])
+}
+
+// ThumbnailStoragePath 返回缩略图相对 thumbBase 的存储路径。
+// 格式：{kind}/{storageKey[:2]}/{storageKey}.png
+func ThumbnailStoragePath(kind, storageKey string) string {
+	dir := storageKey[:2]
+	return filepath.ToSlash(filepath.Join(kind, dir, storageKey+".png"))
+}
 
 // GenerateImageThumbnail 生成图片缩略图并保存到 outPath。
 // 最大边不超过 maxEdge；使用最近邻缩放，输出 PNG 格式。
