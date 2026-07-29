@@ -7,6 +7,7 @@ import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
 import '../widgets/path_dialog.dart';
+import '../widgets/resizable_split.dart';
 
 class LibraryScreen extends StatefulWidget {
   final ApiService api;
@@ -205,96 +206,90 @@ class _LibraryScreenState extends State<LibraryScreen> {
       );
     }
 
-    return Row(
-      children: [
-        // ========== 左侧：库列表 ==========
-        SizedBox(
-          width: 280,
-          child: Column(
-            children: [
-              // 工具栏
-              Container(
-                height: 52,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  border: Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
+    return ResizableSplit(
+      initialRatio: 0.28,
+      minLeftWidth: 200,
+      maxLeftWidth: 500,
+      minRightWidth: 300,
+      hitAreaWidth: 4,
+      left: Column(
+        children: [
+          // 工具栏
+          Container(
+            height: 52,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
+            ),
+            child: Row(
+              children: [
+                Text(
+                  '收藏库 (${_libraries.length})',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface),
                 ),
-                child: Row(
-                  children: [
-                    Text(
-                      '收藏库 (${_libraries.length})',
-                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface),
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.add, size: 20),
-                      tooltip: '添加库',
-                      onPressed: _addLibrary,
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.refresh, size: 20),
-                      tooltip: '刷新',
-                      onPressed: _loadLibraries,
-                    ),
-                  ],
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.add, size: 20),
+                  tooltip: '添加库',
+                  onPressed: _addLibrary,
                 ),
-              ),
-              // 库列表
-              Expanded(
-                child: _libraries.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.folder_off, size: 48, color: cs.outline),
-                            const SizedBox(height: 12),
-                            Text('暂无收藏库', style: TextStyle(fontSize: 14, color: cs.outline)),
-                            const SizedBox(height: 16),
-                            FilledButton.tonalIcon(
-                              onPressed: _addLibrary,
-                              icon: const Icon(Icons.add, size: 18),
-                              label: const Text('添加库'),
-                            ),
-                          ],
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(8),
-                        itemCount: _libraries.length,
-                        itemBuilder: (context, index) {
-                          final lib = _libraries[index];
-                          final selected = _selected?.id == lib.id;
-                          return _LibraryCard(
-                            library: lib,
-                            selected: selected,
-                            onTap: () => _onLibraryTap(lib),
-                            onDelete: () => _deleteLibrary(lib),
-                            onRepair: () => _repairLibrary(lib),
-                          );
-                        },
-                      ),
-              ),
-            ],
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 20),
+                  tooltip: '刷新',
+                  onPressed: _loadLibraries,
+                ),
+              ],
+            ),
           ),
-        ),
-        // ========== 分隔线 ==========
-        VerticalDivider(width: 1, color: cs.outlineVariant),
-        // ========== 右侧：库详情 ==========
-        Expanded(
-          child: _selected == null
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.folder_open, size: 64, color: cs.outline.withValues(alpha: 0.5)),
-                      const SizedBox(height: 16),
-                      Text('选择一个库查看详情', style: TextStyle(fontSize: 15, color: cs.outline)),
-                    ],
+          // 库列表
+          Expanded(
+            child: _libraries.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.folder_off, size: 48, color: cs.outline),
+                        const SizedBox(height: 12),
+                        Text('暂无收藏库', style: TextStyle(fontSize: 14, color: cs.outline)),
+                        const SizedBox(height: 16),
+                        FilledButton.tonalIcon(
+                          onPressed: _addLibrary,
+                          icon: const Icon(Icons.add, size: 18),
+                          label: const Text('添加库'),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.all(8),
+                    itemCount: _libraries.length,
+                    itemBuilder: (context, index) {
+                      final lib = _libraries[index];
+                      final selected = _selected?.id == lib.id;
+                      return _LibraryCard(
+                        library: lib,
+                        selected: selected,
+                        onTap: () => _onLibraryTap(lib),
+                        onDelete: () => _deleteLibrary(lib),
+                        onRepair: () => _repairLibrary(lib),
+                      );
+                    },
                   ),
-                )
-              : _FileTreePanel(library: _selected!, api: widget.api),
-        ),
-      ],
+          ),
+        ],
+      ),
+      right: _selected == null
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.folder_open, size: 64, color: cs.outline.withValues(alpha: 0.5)),
+                  const SizedBox(height: 16),
+                  Text('选择一个库查看详情', style: TextStyle(fontSize: 15, color: cs.outline)),
+                ],
+              ),
+            )
+          : _FileTreePanel(library: _selected!, api: widget.api),
     );
   }
 }
@@ -459,98 +454,92 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return Row(
-      children: [
-        // 左侧：目录树
-        SizedBox(
-          width: 260,
-          child: _loadingTree
-              ? const Center(child: CircularProgressIndicator())
-              : _error != null
-                  ? Center(child: Text(_error!, style: TextStyle(color: cs.error)))
-                  : _tree == null || _tree!.isEmpty
-                      ? Center(child: Text('目录为空', style: TextStyle(color: cs.outline)))
-                      : Column(
-                          children: [
-                            // 头部：库名 + 操作
-                            Container(
-                              height: 52,
-                              padding: const EdgeInsets.symmetric(horizontal: 16),
-                              decoration: BoxDecoration(
-                                border: Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
-                              ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      widget.library.name,
-                                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.healing, size: 18),
-                                    tooltip: '修复扫描',
-                                    onPressed: () async {
-                                      try {
-                                        await widget.api.repairLibrary(widget.library.id);
-                                        if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(content: const Text('修复扫描已启动'), backgroundColor: const Color(0xFF2563EB)),
-                                          );
-                                        }
-                                      } catch (e) {
-                                        if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(content: Text('修复扫描失败: $e'), backgroundColor: const Color(0xFFEF4444)),
-                                          );
-                                        }
-                                      }
-                                    },
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.refresh, size: 18),
-                                    tooltip: '刷新文件树',
-                                    onPressed: _loadTree,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Expanded(
-                              child: ListView(
-                                padding: const EdgeInsets.all(8),
-                                children: [
-                                  _TreeDirTile(
-                                    name: '(根目录)',
-                                    path: '',
-                                    selected: _selectedDir == '',
-                                    onTap: () => _selectDir(''),
-                                  ),
-                                  ..._buildDirTiles(_tree!),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-        ),
-        // 分隔线
-        VerticalDivider(width: 1, color: cs.outlineVariant),
-        // 右侧：缩略图网格
-        Expanded(
-          child: _loadingFiles
-              ? const Center(child: CircularProgressIndicator())
-              : _files.isEmpty
-                  ? Center(child: Column(
-                      mainAxisSize: MainAxisSize.min,
+    return ResizableSplit(
+      initialRatio: 0.35,
+      minLeftWidth: 180,
+      maxLeftWidth: 500,
+      minRightWidth: 300,
+      hitAreaWidth: 4,
+      left: _loadingTree
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(child: Text(_error!, style: TextStyle(color: cs.error)))
+              : _tree == null || _tree!.isEmpty
+                  ? Center(child: Text('目录为空', style: TextStyle(color: cs.outline)))
+                  : Column(
                       children: [
-                        Icon(Icons.image_outlined, size: 64, color: cs.outline.withValues(alpha: 0.5)),
-                        const SizedBox(height: 16),
-                        Text('此目录暂无媒体文件', style: TextStyle(fontSize: 15, color: cs.outline)),
+                        // 头部：库名 + 操作
+                        Container(
+                          height: 52,
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          decoration: BoxDecoration(
+                            border: Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  widget.library.name,
+                                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.healing, size: 18),
+                                tooltip: '修复扫描',
+                                onPressed: () async {
+                                  try {
+                                    await widget.api.repairLibrary(widget.library.id);
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('修复扫描已启动'), backgroundColor: Color(0xFF2563EB)),
+                                      );
+                                    }
+                                  } catch (e) {
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('修复扫描失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+                                      );
+                                    }
+                                  }
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.refresh, size: 18),
+                                tooltip: '刷新文件树',
+                                onPressed: _loadTree,
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView(
+                            padding: const EdgeInsets.all(8),
+                            children: [
+                              _TreeDirTile(
+                                name: '(根目录)',
+                                path: '',
+                                selected: _selectedDir == '',
+                                onTap: () => _selectDir(''),
+                              ),
+                              ..._buildDirTiles(_tree!),
+                            ],
+                          ),
+                        ),
                       ],
-                    ))
-                  : _buildThumbnailGrid(cs),
-        ),
-      ],
+                    ),
+      right: _loadingFiles
+          ? const Center(child: CircularProgressIndicator())
+          : _files.isEmpty
+              ? Center(child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.image_outlined, size: 64, color: cs.outline.withValues(alpha: 0.5)),
+                    const SizedBox(height: 16),
+                    Text('此目录暂无媒体文件', style: TextStyle(fontSize: 15, color: cs.outline)),
+                  ],
+                ))
+              : _buildThumbnailGrid(cs),
     );
   }
 
@@ -706,7 +695,7 @@ class _MediaThumbCard extends StatelessWidget {
                     errorBuilder: (_, __, ___) => _placeholder(cs),
                     loadingBuilder: (_, child, progress) {
                       if (progress == null) return child;
-                      return Center(child: CircularProgressIndicator(strokeWidth: 2));
+                      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
                     },
                   )
                 : _placeholder(cs),

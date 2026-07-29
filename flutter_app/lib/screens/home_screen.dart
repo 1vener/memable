@@ -1,4 +1,4 @@
-// home_screen.dart：主框架，固定侧边栏 + 顶部工具栏 + 内容区 + 底部状态栏
+// home_screen.dart：主框架，可收起侧边栏 + 顶部工具栏 + 内容区 + 底部状态栏
 // 代码注释使用中文
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -81,6 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _currentLibrary;
   String? _scanProgress;
   String _apiStatus = 'unknown';
+  static const double _sidebarWidth = 220;
 
   ApiService get api => widget.api;
 
@@ -175,7 +176,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Scaffold(
             body: Row(
               children: [
-                // ========== 固定侧边栏 ==========
+                // ========== 左侧导航栏 ==========
                 _buildSidebar(cs, isDark),
                 // ========== 右侧区域 ==========
                 Expanded(
@@ -202,10 +203,10 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// 构建固定侧边栏
+  /// 构建左侧导航栏
   Widget _buildSidebar(ColorScheme cs, bool isDark) {
     return Container(
-      width: 220,
+      width: _sidebarWidth,
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1E293B) : Colors.white,
         border: Border(
@@ -235,28 +236,24 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 8),
           // 导航项
           for (int i = 0; i < _destinations.length; i++)
             _buildNavItem(i, cs, isDark),
           const Spacer(),
-          // 底部：主题切换 + 设置
+          // 底部：设置
           Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
               children: [
                 Divider(height: 1, color: cs.outlineVariant),
                 const SizedBox(height: 8),
-                // 主题切换
-                _buildThemeToggle(cs, isDark),
-                const SizedBox(height: 4),
-                // 设置按钮
                 _buildBottomItem(
                   icon: Icons.settings_outlined,
                   label: '设置',
-                  selected: _selectedIndex == 4,
+                  selected: _selectedIndex == 5,
                   cs: cs,
-                  onTap: () => _onSelectPage(4),
+                  onTap: () => _onSelectPage(5),
                 ),
               ],
             ),
@@ -340,50 +337,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ],
               ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 主题切换按钮
-  Widget _buildThemeToggle(ColorScheme cs, bool isDark) {
-    final mode = themeNotifier.mode;
-    final icon = switch (mode) {
-      ThemeMode.light => Icons.light_mode_outlined,
-      ThemeMode.dark => Icons.dark_mode_outlined,
-      ThemeMode.system => Icons.brightness_auto_outlined,
-    };
-    final tooltip = switch (mode) {
-      ThemeMode.light => '当前：亮色（点击切换暗色）',
-      ThemeMode.dark => '当前：暗色（点击跟随系统）',
-      ThemeMode.system => '当前：跟随系统（点击切换亮色）',
-    };
-
-    return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(8),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(8),
-          onTap: () => themeNotifier.toggle(),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Row(
-              children: [
-                Icon(icon, size: 20, color: cs.onSurfaceVariant),
-                const SizedBox(width: 12),
-                Text(
-                  switch (mode) {
-                    ThemeMode.light => '亮色模式',
-                    ThemeMode.dark => '暗色模式',
-                    ThemeMode.system => '跟随系统',
-                  },
-                  style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
-                ),
-              ],
             ),
           ),
         ),

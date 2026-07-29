@@ -155,14 +155,14 @@ class FileTreeNode {
   final String path;
   final bool isDir;
   final int size;
-  final List<FileTreeNode> children;
+  final bool hasChildren;
 
   FileTreeNode({
     required this.name,
     required this.path,
     required this.isDir,
     this.size = 0,
-    this.children = const [],
+    this.hasChildren = false,
   });
 
   factory FileTreeNode.fromJson(Map<String, dynamic> json) {
@@ -171,10 +171,7 @@ class FileTreeNode {
       path: (json['path'] as String?) ?? '',
       isDir: (json['is_dir'] as bool?) ?? false,
       size: (json['size'] as num?)?.toInt() ?? 0,
-      children: (json['children'] as List<dynamic>?)
-              ?.map((e) => FileTreeNode.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
+      hasChildren: (json['has_children'] as bool?) ?? false,
     );
   }
 }

@@ -232,14 +232,18 @@ class ApiService {
 
   // ===== 文件树 =====
 
-  Future<List<FileTreeNode>> getFileTree(int libraryId) async {
-    final res = await http.get(Uri.parse('$baseUrl/api/libraries/$libraryId/tree'));
+  /// 获取目录的直属子项（懒加载，展开时按需获取）
+  Future<List<FileTreeNode>> getFileTree(int libraryId, {String path = ''}) async {
+    final uri = Uri.parse('$baseUrl/api/libraries/$libraryId/tree').replace(
+      queryParameters: path.isNotEmpty ? {'path': path} : null,
+    );
+    final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('获取文件树失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
     return list.map((e) => FileTreeNode.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  /// 列出库下指定目录的所有媒体
+  /// 列出库下指定目录的直属媒体（仅直接包含的文件，不含子目录）
   Future<List<Media>> getFiles(int libraryId, {String path = ''}) async {
     final uri = Uri.parse('$baseUrl/api/libraries/$libraryId/files').replace(
       queryParameters: path.isNotEmpty ? {'path': path} : null,
@@ -248,6 +252,17 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('获取文件列表失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
     return list.map((e) => Media.fromJson(e as Map<String, dynamic>)).toList();
+  }
+
+  /// 删除目录（提交后台任务）
+  Future<Map<String, dynamic>> deleteDirectory(int libraryId, String dirPath) async {
+    final res = await http.delete(
+      Uri.parse('$baseUrl/api/libraries/$libraryId/directories'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'path': dirPath}),
+    );
+    if (res.statusCode != 202) throw Exception('提交删除任务失败: ${res.body}');
+    return jsonDecode(res.body);
   }
 
   /// 缩略图 URL

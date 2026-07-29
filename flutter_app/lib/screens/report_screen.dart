@@ -86,7 +86,7 @@ class _ReportScreenState extends State<ReportScreen> {
                   padding: const EdgeInsets.all(24),
                   child: Column(
                     children: [
-                      Icon(Icons.check_circle, size: 48, color: const Color(0xFF22C55E)),
+                      const Icon(Icons.check_circle, size: 48, color: Color(0xFF22C55E)),
                       const SizedBox(height: 12),
                       Text('报告任务已提交', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
                       const SizedBox(height: 6),

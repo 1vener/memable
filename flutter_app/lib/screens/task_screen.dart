@@ -182,7 +182,7 @@ class _TaskScreenState extends State<TaskScreen> {
 
                       // 等待中任务
                       if (_queuedTasks.isNotEmpty) ...[
-                        _SectionHeader(title: '等待中', icon: Icons.schedule, color: const Color(0xFFF59E0B)),
+                        const _SectionHeader(title: '等待中', icon: Icons.schedule, color: Color(0xFFF59E0B)),
                         const SizedBox(height: 8),
                         for (final task in _queuedTasks) _TaskCard(task: task, onCancel: () => _cancelTask(task)),
                         const SizedBox(height: 20),
