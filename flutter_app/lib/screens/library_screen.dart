@@ -1,10 +1,12 @@
 // library_screen.dart：收藏库管理页面（左列表 + 右文件树 + 右键菜单）
 // 代码注释使用中文
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
+import '../widgets/path_dialog.dart';
 
 /// 文件树节点
 class FileTreeNode {
@@ -74,14 +76,37 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _addLibrary() async {
-    final dir = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择媒体库目录',
-    );
-    if (dir == null) return;
+    String? dir;
+
+    // Web 无法通过浏览器获得服务端本机的真实目录路径，改为手动输入。
+    if (kIsWeb) {
+      dir = await _showPathDialog();
+    } else {
+      try {
+        dir = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: '选择媒体库目录',
+        );
+      } on UnimplementedError {
+        // 部分平台未实现目录选择接口时，回退到手动输入。
+        dir = await _showPathDialog();
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('目录选择器不可用，请手动输入路径：$e'),
+            backgroundColor: const Color(0xFFF59E0B),
+          ),
+        );
+        dir = await _showPathDialog();
+      }
+    }
+
+    if (dir == null || dir.trim().isEmpty || !mounted) return;
+    dir = dir.trim();
 
     final name = await showDialog<String>(
       context: context,
-      builder: (ctx) => _NameDialog(defaultName: dir.split('/').last.split('\\').last),
+      builder: (ctx) => _NameDialog(defaultName: dir!.split('/').last.split('\\').last),
     );
     if (name == null || name.isEmpty) return;
 
@@ -95,6 +120,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
         );
       }
     }
+  }
+
+  // 手动输入服务端可访问的本地绝对路径。
+  Future<String?> _showPathDialog() {
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => const PathDialog(
+        title: '输入媒体库目录',
+        description: '请输入 Go 服务端所在电脑可访问的绝对路径。',
+      ),
+    );
   }
 
   Future<void> _deleteLibrary(Library lib) async {
@@ -367,7 +403,6 @@ class _LibraryDetail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final baseUrl = api.baseUrl;
 
     return Padding(
       padding: const EdgeInsets.all(32),
@@ -403,38 +438,6 @@ class _LibraryDetail extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 16),
-
-          // 缩略图预览（如果有）
-          if (library.thumbnailDir != null && library.thumbnailDir!.isNotEmpty)
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('缩略图', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
-                    const SizedBox(height: 12),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(
-                        '$baseUrl/thumbnail/${library.id}/preview',
-                        height: 180,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                          height: 180,
-                          width: double.infinity,
-                          color: cs.surfaceContainerHighest,
-                          child: Center(
-                            child: Text('暂无缩略图', style: TextStyle(color: cs.outline)),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
         ],
       ),
     );

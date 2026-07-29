@@ -174,16 +174,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
             // ========== 关于 ==========
             _SectionTitle(title: '关于', icon: Icons.info_outline, cs: cs),
             const SizedBox(height: 16),
-            Card(
+            const Card(
               child: Padding(
-                padding: const EdgeInsets.all(20),
+                padding: EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _AboutRow(label: '版本', value: 'v1.0.0'),
-                    const SizedBox(height: 8),
+                    SizedBox(height: 8),
                     _AboutRow(label: '技术栈', value: 'Flutter + Go + SQLite'),
-                    const SizedBox(height: 8),
+                    SizedBox(height: 8),
                     _AboutRow(label: '功能', value: '本地媒体重复检测与相似度搜索'),
                   ],
                 ),

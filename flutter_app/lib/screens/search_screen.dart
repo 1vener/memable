@@ -312,7 +312,6 @@ class _ResultGridCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final baseUrl = api.baseUrl;
 
     return Tooltip(
       message: '${result.fullPath}\n相似度: ${(result.score * 100).toStringAsFixed(1)}%',
@@ -328,7 +327,7 @@ class _ResultGridCard extends StatelessWidget {
               items: [
                 const ContextMenuItem(icon: Icons.folder_open, label: '在库中查看'),
                 const ContextMenuItem(icon: Icons.copy, label: '复制路径', shortcut: 'Ctrl+C'),
-                ContextMenuItem.divider(),
+                const ContextMenuItem.divider(),
                 const ContextMenuItem(icon: Icons.open_in_new, label: '打开文件'),
               ],
             );
@@ -351,7 +350,7 @@ class _ResultGridCard extends StatelessWidget {
                       children: [
                         result.thumbnailUrl != null
                             ? Image.network(
-                                '$baseUrl${result.thumbnailUrl}',
+                                api.thumbnailUrl(result.thumbnailUrl!),
                                 fit: BoxFit.cover,
                                 errorBuilder: (_, __, ___) => _PlaceholderIcon(cs: cs),
                               )
@@ -410,7 +409,6 @@ class _ResultListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final baseUrl = api.baseUrl;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
@@ -422,7 +420,7 @@ class _ResultListTile extends StatelessWidget {
             items: [
               const ContextMenuItem(icon: Icons.folder_open, label: '在库中查看'),
               const ContextMenuItem(icon: Icons.copy, label: '复制路径', shortcut: 'Ctrl+C'),
-              ContextMenuItem.divider(),
+              const ContextMenuItem.divider(),
               const ContextMenuItem(icon: Icons.open_in_new, label: '打开文件'),
             ],
           );
@@ -432,7 +430,7 @@ class _ResultListTile extends StatelessWidget {
             ? ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: Image.network(
-                  '$baseUrl${result.thumbnailUrl}',
+                  api.thumbnailUrl(result.thumbnailUrl!),
                   width: 48,
                   height: 48,
                   fit: BoxFit.cover,

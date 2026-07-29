@@ -121,15 +121,15 @@ class ApiService {
     return results.map((e) => SearchResult.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  /// 以图搜图（通过文件上传）
+  /// 以图搜图（通过文件上传，服务端计算 pHash）
   Future<List<SearchResult>> searchImage({required File file, int maxDistance = 12}) async {
-    final bytes = await file.readAsBytes();
-    final base64Image = base64Encode(bytes);
-    final res = await http.post(
-      Uri.parse('$baseUrl/api/search/image'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'phash': base64Image, 'max_distance': maxDistance}),
+    final req = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/api/search/image/upload'),
     );
+    req.files.add(await http.MultipartFile.fromPath('image', file.path));
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
     if (res.statusCode != 200) throw Exception('以图搜图失败: ${res.body}');
     final data = jsonDecode(res.body);
     final results = data['results'] as List<dynamic>;

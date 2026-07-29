@@ -106,7 +106,7 @@ class _ReportScreenState extends State<ReportScreen> {
                     children: [
                       Row(
                         children: [
-                          Icon(Icons.check_circle, size: 24, color: const Color(0xFF22C55E)),
+                          const Icon(Icons.check_circle, size: 24, color: Color(0xFF22C55E)),
                           const SizedBox(width: 10),
                           Text(
                             '报告已生成',
@@ -123,20 +123,6 @@ class _ReportScreenState extends State<ReportScreen> {
                             value: '${_report!.groupCount}',
                             icon: Icons.group_work,
                             color: cs.primary,
-                          ),
-                          const SizedBox(width: 16),
-                          _StatCard(
-                            label: '涉及文件',
-                            value: '${_report!.fileCount}',
-                            icon: Icons.insert_drive_file,
-                            color: const Color(0xFFF59E0B),
-                          ),
-                          const SizedBox(width: 16),
-                          _StatCard(
-                            label: '报告大小',
-                            value: _report!.fileSize,
-                            icon: Icons.storage,
-                            color: const Color(0xFF8B5CF6),
                           ),
                         ],
                       ),

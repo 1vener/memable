@@ -268,3 +268,26 @@
 
 ### 文件变更
 - 修改：`internal/api/handlers.go`、`internal/media/cover.go`、`internal/media/thumbnail.go`、`internal/repo/media_repo.go`、`internal/scan/service.go`、`process.md`
+
+---
+
+## 2026-07-29（Flutter Web 兼容修复 + lint 清零）
+
+### 已完成
+
+#### file_picker Web 兼容修复
+- **问题**：`scan_screen.dart` 的 `_pickTempPath()` 直接调用 `FilePicker.platform.getDirectoryPath()`，在 Flutter Web 上触发 `UnimplementedError`（与之前 `library_screen.dart` 相同的问题）。
+- **修复**：添加 `kIsWeb` 检查 + `try/catch UnimplementedError` + 手动路径输入对话框回退，与 `library_screen.dart` 方案一致。
+- **共享组件提取**：将 `library_screen.dart` 中的私有 `_PathDialog` 提取为共享 widget `lib/widgets/path_dialog.dart`（`PathDialog`），支持自定义标题/标签/提示/描述。两个页面均改为引用共享版本，消除重复代码。
+
+#### Dart analyze 全量清零
+- 修复 `scan_screen.dart` 空安全 error（`dir.trim()` 在 nullable 上下文中）。
+- 清除全部 12 个 `info` 级 const 优化提示（`prefer_const_constructors` / `prefer_const_literals_to_create_immutables`），涉及 `home_screen.dart`、`report_screen.dart`、`search_screen.dart`、`settings_screen.dart`、`top_search_bar.dart`。
+- **最终结果**：`flutter analyze lib/` → **No issues found!**（0 errors / 0 warnings / 0 info）
+
+### 验证
+- `flutter analyze lib/` 通过（0 issues）
+
+### 文件变更
+- 新增：`flutter_app/lib/widgets/path_dialog.dart`
+- 修改：`flutter_app/lib/screens/scan_screen.dart`（kIsWeb + PathDialog 回退 + 空安全修复）、`flutter_app/lib/screens/library_screen.dart`（引用共享 PathDialog，删除私有 _PathDialog）、`flutter_app/lib/screens/home_screen.dart`、`flutter_app/lib/screens/report_screen.dart`、`flutter_app/lib/screens/search_screen.dart`、`flutter_app/lib/screens/settings_screen.dart`、`flutter_app/lib/widgets/top_search_bar.dart`（const 优化）

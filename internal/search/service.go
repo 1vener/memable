@@ -18,9 +18,9 @@ type Service struct {
 
 // SearchResult 搜索结果条目。
 type SearchResult struct {
-	Media    repo.Media
-	FullPath string // library.path + relative_path
-	Distance int    // 以图搜图时的 Hamming 距离（文本搜索为 0）
+	Media    repo.Media `json:"media"`
+	FullPath string     `json:"full_path"` // library.path + relative_path
+	Distance int        `json:"distance"`  // 以图搜图时的 Hamming 距离（文本搜索为 0）
 }
 
 // NewService 创建搜索服务。

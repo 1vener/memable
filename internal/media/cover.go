@@ -62,7 +62,7 @@ func ExtractVideoCover(ctx context.Context, videoPath, outDir string, maxEdge in
 		thumbPath := filepath.Join(outDir, thumbName)
 		if err := GenerateImageThumbnail(rawPath, thumbPath, maxEdge); err != nil {
 			_ = os.Remove(rawPath)
-			return nil, fmt.Errorf("生成封面缩略图: %w", err)
+			continue
 		}
 		_ = os.Remove(rawPath)
 		return &CoverResult{ThumbnailPath: thumbPath, UsedTimeMs: tMs}, nil

@@ -1,9 +1,11 @@
 // scan_screen.dart：扫描页面（库选择 + 临时扫描 + 进度 + 历史）
 // 代码注释使用中文
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../widgets/path_dialog.dart';
 
 class ScanScreen extends StatefulWidget {
   final ApiService api;
@@ -18,6 +20,7 @@ class _ScanScreenState extends State<ScanScreen> {
   List<Library> _libraries = [];
   int? _selectedLibraryId;
   bool _scanning = false;
+  String? _sessionId;
   String? _statusMessage;
   String? _error;
 
@@ -38,27 +41,33 @@ class _ScanScreenState extends State<ScanScreen> {
       final match = _libraries.where((l) => l.name == widget.currentLibrary).toList();
       if (match.isNotEmpty) {
         setState(() => _selectedLibraryId = match.first.id);
+      } else {
+        // 库不存在于当前列表中，重置选择
+        setState(() => _selectedLibraryId = null);
       }
     }
   }
 
   Future<void> _loadLibraries() async {
     try {
-      final data = await widget.api.getLibraries();
+      var data = await widget.api.getLibraries();
+      // 过滤掉 ID ≤ 0 的无效库（SQLite AUTOINCREMENT 从 1 开始）
+      data = data.where((l) => l.id > 0).toList();
       if (mounted) {
+        // 合并一次 setState，避免中间态
+        int? newId = _selectedLibraryId;
+        final currentIds = data.map((l) => l.id).toList();
+        // 如果当前选中值不在返回的列表中，重置为第一个有效值
+        if (widget.currentLibrary != null) {
+          final match = data.where((l) => l.name == widget.currentLibrary).toList();
+          newId = match.isNotEmpty ? match.first.id : null;
+        } else if (newId == null || !currentIds.contains(newId)) {
+          newId = data.isNotEmpty ? data.first.id : null;
+        }
         setState(() {
           _libraries = data;
-          if (_selectedLibraryId == null && _libraries.isNotEmpty) {
-            _selectedLibraryId = _libraries.first.id;
-          }
+          _selectedLibraryId = newId;
         });
-        // 自动选中 currentLibrary
-        if (widget.currentLibrary != null) {
-          final match = _libraries.where((l) => l.name == widget.currentLibrary).toList();
-          if (match.isNotEmpty) {
-            setState(() => _selectedLibraryId = match.first.id);
-          }
-        }
       }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -85,9 +94,12 @@ class _ScanScreenState extends State<ScanScreen> {
         scanPath: scanPath,
       );
 
-      final sessionId = result['session_id'] ?? '';
+      final sid = result['session_id'] ?? '';
       if (mounted) {
-        setState(() => _statusMessage = '扫描完成 · 会话: $sessionId');
+        setState(() {
+          _sessionId = sid;
+          _statusMessage = '扫描完成 · 会话: $sid';
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -98,13 +110,79 @@ class _ScanScreenState extends State<ScanScreen> {
     }
   }
 
-  Future<void> _pickTempPath() async {
-    final dir = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择临时扫描目录',
-    );
-    if (dir != null) {
-      setState(() => _tempPath = dir);
+  Future<void> _cancelScan() async {
+    if (_sessionId == null) {
+      setState(() => _scanning = false);
+      return;
     }
+    try {
+      await widget.api.cancelSession(_sessionId!);
+      if (mounted) {
+        setState(() {
+          _statusMessage = '扫描已取消';
+          _scanning = false;
+          _sessionId = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = '取消失败: $e';
+          _scanning = false;
+          _sessionId = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _pickTempPath() async {
+    String? dir;
+
+    // Web 无法通过浏览器获得服务端本机的真实目录路径，改为手动输入。
+    if (kIsWeb) {
+      dir = await showDialog<String>(
+        context: context,
+        builder: (ctx) => const PathDialog(
+          title: '输入临时扫描目录',
+          description: '请输入 Go 服务端所在电脑可访问的绝对路径。',
+        ),
+      );
+    } else {
+      try {
+        dir = await FilePicker.platform.getDirectoryPath(
+          dialogTitle: '选择临时扫描目录',
+        );
+      } on UnimplementedError {
+        // 部分平台未实现目录选择接口时，回退到手动输入。
+        if (!mounted) return;
+        dir = await showDialog<String>(
+          context: context,
+          builder: (ctx) => const PathDialog(
+            title: '输入临时扫描目录',
+            description: '目录选择器不可用，请手动输入 Go 服务端所在电脑可访问的绝对路径。',
+          ),
+        );
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('目录选择器不可用，请手动输入路径：$e'),
+            backgroundColor: const Color(0xFFF59E0B),
+          ),
+        );
+        dir = await showDialog<String>(
+          context: context,
+          builder: (ctx) => const PathDialog(
+            title: '输入临时扫描目录',
+            description: '目录选择器不可用，请手动输入 Go 服务端所在电脑可访问的绝对路径。',
+          ),
+        );
+      }
+    }
+
+    if (dir == null || dir.trim().isEmpty || !mounted) return;
+    final path = dir.trim();
+    setState(() => _tempPath = path);
   }
 
   @override
@@ -179,15 +257,26 @@ class _ScanScreenState extends State<ScanScreen> {
                             ),
                           ),
                         )
+                      else if (_selectedLibraryId == null)
+                        Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text('正在加载...', style: TextStyle(fontSize: 13, color: cs.outline)),
+                          ),
+                        )
                       else
                         DropdownButtonFormField<int>(
                           value: _selectedLibraryId,
                           isExpanded: true,
                           decoration: const InputDecoration(hintText: '选择一个库'),
-                          items: _libraries.map((lib) {
+                          items: _libraries.where((l) => l.id > 0).map((lib) {
                             return DropdownMenuItem(value: lib.id, child: Text(lib.name));
                           }).toList(),
-                          onChanged: (v) => setState(() => _selectedLibraryId = v),
+                          onChanged: (v) {
+                            if (v != null && v > 0) {
+                              setState(() => _selectedLibraryId = v);
+                            }
+                          },
                         ),
                     ],
                   ),
@@ -243,7 +332,7 @@ class _ScanScreenState extends State<ScanScreen> {
                 if (_scanning) ...[
                   const SizedBox(width: 12),
                   OutlinedButton(
-                    onPressed: () => setState(() => _scanning = false),
+                    onPressed: _cancelScan,
                     child: const Text('取消'),
                   ),
                 ],

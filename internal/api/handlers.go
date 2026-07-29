@@ -4,22 +4,31 @@ package api
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 
 	"memable/internal/duplicate"
+	"memable/internal/media"
 	"memable/internal/repo"
 )
 
 // ===== 收藏库管理（阶段 8）=====
 
 func (s *Server) handleListLibraries(w http.ResponseWriter, r *http.Request) {
-	libs, err := s.libraries.List()
+	all, err := s.libraries.List()
 	if err != nil {
 		writeError(w, 500, "查询收藏库失败: "+err.Error())
 		return
+	}
+	// 过滤掉 ID ≤ 0 的无效库记录（SQLite AUTOINCREMENT 从 1 开始）
+	libs := make([]repo.Library, 0, len(all))
+	for _, l := range all {
+		if l.ID > 0 {
+			libs = append(libs, l)
+		}
 	}
 	writeJSON(w, 200, libs)
 }
@@ -386,6 +395,51 @@ func (s *Server) handleSearchImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	results, err := s.searchSvc.SearchByImage(req.Phash, req.MaxDistance)
+	if err != nil {
+		writeError(w, 500, "以图搜图失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"results": results,
+		"count":   len(results),
+	})
+}
+
+func (s *Server) handleSearchImageUpload(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 32<<20) // 32 MB 上限
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeError(w, 400, "解析上传失败: "+err.Error())
+		return
+	}
+
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		writeError(w, 400, "缺少 image 字段")
+		return
+	}
+	defer file.Close()
+
+	tmpFile, err := os.CreateTemp("", "search-upload-*.png")
+	if err != nil {
+		writeError(w, 500, "创建临时文件失败")
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		writeError(w, 500, "写入临时文件失败")
+		return
+	}
+	tmpFile.Close()
+
+	hashes, err := media.ImagePerceptualHashes(tmpFile.Name())
+	if err != nil {
+		writeError(w, 500, "计算 pHash 失败: "+err.Error())
+		return
+	}
+
+	results, err := s.searchSvc.SearchByImage(hashes.PHash, 12)
 	if err != nil {
 		writeError(w, 500, "以图搜图失败: "+err.Error())
 		return

@@ -20,11 +20,12 @@ import (
 
 // Service 扫描服务，负责遍历目录、增量判定、采集 metadata 并入库。
 type Service struct {
-	Sessions  *repo.SessionRepo
-	Media     *repo.MediaRepo
-	Config    *config.Config
-	ThumbBase string // 缩略图根目录（绝对路径）
-	Libraries *repo.LibraryRepo
+	Sessions    *repo.SessionRepo
+	Media       *repo.MediaRepo
+	Config      *config.Config
+	ThumbBase   string // 缩略图根目录（绝对路径）
+	Libraries   *repo.LibraryRepo
+	cancelFuncs sync.Map // sessionID -> context.CancelFunc
 }
 
 // Progress 扫描进度，供外部查询。
@@ -47,6 +48,7 @@ type scanState struct {
 
 // ScanLibraryAsync 使用 Worker Pool 并发扫描；返回 sessionID 和 error。
 // 调用方可通过 Progress(sessionID) 查询进度。
+// 注意：扫描在独立的 goroutine 中执行，不受 HTTP 请求生命周期影响。
 func (s *Service) ScanLibraryAsync(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int) (string, error) {
 	if sessionID == "" {
 		sessionID = uuid.NewString()
@@ -60,7 +62,9 @@ func (s *Service) ScanLibraryAsync(ctx context.Context, lib repo.Library, sessio
 		return "", err
 	}
 
-	go s.runScan(ctx, lib, sessionID, temporary, poolSize)
+	scanCtx, cancel := context.WithCancel(context.Background())
+	s.cancelFuncs.Store(sessionID, cancel)
+	go s.runScan(scanCtx, lib, sessionID, temporary, poolSize)
 	return sessionID, nil
 }
 
@@ -294,6 +298,10 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 
 // CancelScan 取消扫描会话。
 func (s *Service) CancelScan(sessionID string) error {
+	if v, ok := s.cancelFuncs.Load(sessionID); ok {
+		v.(context.CancelFunc)()
+		s.cancelFuncs.Delete(sessionID)
+	}
 	return s.Sessions.UpdateStatus(sessionID, "cancelled")
 }
 

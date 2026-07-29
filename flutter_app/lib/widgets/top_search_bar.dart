@@ -45,9 +45,9 @@ class _TopSearchBarState extends State<TopSearchBar> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Shortcuts(
-      shortcuts: {
-        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
-            const _FocusSearchIntent(),
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            _FocusSearchIntent(),
       },
       child: Actions(
         actions: {

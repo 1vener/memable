@@ -23,9 +23,9 @@ class Library {
 
   factory Library.fromJson(Map<String, dynamic> json) {
     return Library(
-      id: json['id'] as int,
-      name: json['name'] as String,
-      path: json['path'] as String,
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      name: (json['name'] as String?) ?? '',
+      path: (json['path'] as String?) ?? '',
       kind: json['kind'] as String? ?? 'image',
       thumbnailDir: json['thumbnail_dir'] as String?,
       createdAt: json['created_at'] as String?,
@@ -64,17 +64,17 @@ class Media {
 
   factory Media.fromJson(Map<String, dynamic> json) {
     return Media(
-      id: json['id'] as int,
-      libraryId: json['library_id'] as int,
-      kind: json['kind'] as String,
-      relativePath: json['relative_path'] as String,
-      fileSize: json['file_size'] as int,
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      libraryId: (json['library_id'] as num?)?.toInt() ?? 0,
+      kind: (json['kind'] as String?) ?? '',
+      relativePath: (json['relative_path'] as String?) ?? '',
+      fileSize: (json['file_size'] as num?)?.toInt() ?? 0,
       sha1: json['sha1'] as String?,
       phash: json['phash'] as String?,
       thumbnailPath: json['thumbnail_path'] as String?,
-      width: json['width'] as int?,
-      height: json['height'] as int?,
-      durationMs: json['duration_ms'] as int?,
+      width: (json['width'] as num?)?.toInt(),
+      height: (json['height'] as num?)?.toInt(),
+      durationMs: (json['duration_ms'] as num?)?.toInt(),
     );
   }
 }
@@ -105,10 +105,10 @@ class ScanSession {
 
   factory ScanSession.fromJson(Map<String, dynamic> json) {
     return ScanSession(
-      id: json['id'] as String,
-      libraryId: json['library_id'] as int?,
+      id: (json['id'] as String?) ?? '',
+      libraryId: (json['library_id'] as num?)?.toInt(),
       isTemporary: json['is_temporary'] == 1 || json['is_temporary'] == true,
-      status: json['status'] as String,
+      status: (json['status'] as String?) ?? 'unknown',
       scanned: json['scanned'] as int? ?? 0,
       imported: json['imported'] as int? ?? 0,
       skipped: json['skipped'] as int? ?? 0,
@@ -167,10 +167,10 @@ class FileTreeNode {
 
   factory FileTreeNode.fromJson(Map<String, dynamic> json) {
     return FileTreeNode(
-      name: json['name'] as String,
-      path: json['path'] as String,
-      isDir: json['is_dir'] as bool,
-      size: json['size'] as int? ?? 0,
+      name: (json['name'] as String?) ?? '',
+      path: (json['path'] as String?) ?? '',
+      isDir: (json['is_dir'] as bool?) ?? false,
+      size: (json['size'] as num?)?.toInt() ?? 0,
       children: (json['children'] as List<dynamic>?)
               ?.map((e) => FileTreeNode.fromJson(e as Map<String, dynamic>))
               .toList() ??
@@ -182,23 +182,17 @@ class FileTreeNode {
 /// 重复检测报告
 class DuplicateReport {
   final int groupCount;
-  final int fileCount;
-  final String fileSize;
   final String path;
 
   DuplicateReport({
     required this.groupCount,
-    required this.fileCount,
-    required this.fileSize,
     required this.path,
   });
 
   factory DuplicateReport.fromJson(Map<String, dynamic> json) {
     return DuplicateReport(
-      groupCount: json['group_count'] as int? ?? 0,
-      fileCount: json['file_count'] as int? ?? 0,
-      fileSize: json['file_size'] as String? ?? '',
-      path: json['path'] as String? ?? '',
+      groupCount: json['groups'] as int? ?? 0,
+      path: json['report_path'] as String? ?? '',
     );
   }
 }

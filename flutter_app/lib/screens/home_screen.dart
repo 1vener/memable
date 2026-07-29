@@ -103,7 +103,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 当前页面标题
-  String get _currentPageTitle => _destinations[_selectedIndex].label;
+  String get _currentPageTitle {
+    if (_selectedIndex < _destinations.length) {
+      return _destinations[_selectedIndex].label;
+    }
+    return '设置';
+  }
 
   /// 当前页面内容
   Widget _buildContent() {
@@ -126,18 +131,18 @@ class _HomeScreenState extends State<HomeScreen> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Shortcuts(
-      shortcuts: {
-        const SingleActivator(LogicalKeyboardKey.digit1, control: true):
-            const _SelectPageIntent(0),
-        const SingleActivator(LogicalKeyboardKey.digit2, control: true):
-            const _SelectPageIntent(1),
-        const SingleActivator(LogicalKeyboardKey.digit3, control: true):
-            const _SelectPageIntent(2),
-        const SingleActivator(LogicalKeyboardKey.digit4, control: true):
-            const _SelectPageIntent(3),
-        const SingleActivator(LogicalKeyboardKey.digit5, control: true):
-            const _SelectPageIntent(4),
-        const SingleActivator(LogicalKeyboardKey.f5): const _RefreshIntent(),
+      shortcuts: const {
+        SingleActivator(LogicalKeyboardKey.digit1, control: true):
+            _SelectPageIntent(0),
+        SingleActivator(LogicalKeyboardKey.digit2, control: true):
+            _SelectPageIntent(1),
+        SingleActivator(LogicalKeyboardKey.digit3, control: true):
+            _SelectPageIntent(2),
+        SingleActivator(LogicalKeyboardKey.digit4, control: true):
+            _SelectPageIntent(3),
+        SingleActivator(LogicalKeyboardKey.digit5, control: true):
+            _SelectPageIntent(4),
+        SingleActivator(LogicalKeyboardKey.f5): _RefreshIntent(),
       },
       child: Actions(
         actions: {
