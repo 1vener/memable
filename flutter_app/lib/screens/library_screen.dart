@@ -133,6 +133,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
     );
   }
 
+  Future<void> _repairLibrary(Library lib) async {
+    try {
+      await widget.api.repairLibrary(lib.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('修复扫描已启动: ${lib.name}'),
+            backgroundColor: const Color(0xFF2563EB),
+          ),
+        );
+      }
+      widget.onLibrarySelected(lib.name);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('启动修复扫描失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+        );
+      }
+    }
+  }
+
   Future<void> _deleteLibrary(Library lib) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -261,6 +282,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                             selected: selected,
                             onTap: () => _onLibraryTap(lib),
                             onDelete: () => _deleteLibrary(lib),
+                            onRepair: () => _repairLibrary(lib),
                           );
                         },
                       ),
@@ -296,12 +318,14 @@ class _LibraryCard extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
   final VoidCallback onDelete;
+  final VoidCallback onRepair;
 
   const _LibraryCard({
     required this.library,
     required this.selected,
     required this.onTap,
     required this.onDelete,
+    required this.onRepair,
   });
 
   @override
@@ -326,6 +350,11 @@ class _LibraryCard extends StatelessWidget {
                     icon: Icons.play_arrow,
                     label: '开始扫描',
                     onTap: onTap,
+                  ),
+                  ContextMenuItem(
+                    icon: Icons.healing,
+                    label: '修复扫描',
+                    onTap: onRepair,
                   ),
                   ContextMenuItem(
                     icon: Icons.delete_outline,
@@ -437,6 +466,35 @@ class _LibraryDetail extends StatelessWidget {
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 16),
+          // 操作按钮
+          Row(
+            children: [
+              FilledButton.icon(
+                onPressed: () async {
+                  try {
+                    await api.repairLibrary(library.id);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('修复扫描已启动: ${library.name}'),
+                          backgroundColor: const Color(0xFF2563EB),
+                        ),
+                      );
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('修复扫描失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+                      );
+                    }
+                  }
+                },
+                icon: const Icon(Icons.healing, size: 18),
+                label: const Text('修复扫描'),
+              ),
+            ],
           ),
         ],
       ),

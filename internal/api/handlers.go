@@ -210,6 +210,31 @@ func (s *Server) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"session_id": sessionID, "status": "running"})
 }
 
+func (s *Server) handleRepairLibrary(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的库 ID")
+		return
+	}
+	lib, err := s.libraries.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+
+	poolSize := 4
+	if s.cfg != nil && s.cfg.Worker.PoolSize > 0 {
+		poolSize = s.cfg.Worker.PoolSize
+	}
+
+	sessionID, err := s.scanSvc.RepairLibraryAsync(r.Context(), *lib, "", false, poolSize)
+	if err != nil {
+		writeError(w, 500, "启动修复扫描失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"session_id": sessionID, "status": "running"})
+}
+
 type scanTempReq struct {
 	Path string `json:"path"`
 }

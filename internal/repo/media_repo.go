@@ -89,6 +89,32 @@ func (r *MediaRepo) NeedScan(libraryID int64, relPath string, mtime time.Time, s
 	return false, nil // 未变化，跳过
 }
 
+// NeedRepair 检查记录是否需要修补（缺失元数据或缩略图）。
+// 新文件或已有记录中 phash/尺寸/缩略图 任一项缺失时返回 true。
+func (r *MediaRepo) NeedRepair(libraryID int64, relPath string, kind string) (bool, error) {
+	m, err := r.GetByPath(libraryID, relPath)
+	if err != nil {
+		return false, err
+	}
+	if m == nil {
+		return true, nil // 新文件，需要采集
+	}
+	switch kind {
+	case "image":
+		if m.Phash == nil || m.Width == nil || m.Height == nil {
+			return true, nil
+		}
+	case "video":
+		if m.Phash == nil || m.Oshash == nil || m.Width == nil || m.Height == nil || m.DurationMs == nil {
+			return true, nil
+		}
+	}
+	if m.ThumbnailPath == nil {
+		return true, nil
+	}
+	return false, nil // 元数据完整，跳过
+}
+
 // FindBySha1 按 SHA1 查询完全相同文件。
 func (r *MediaRepo) FindBySha1(sha1 string) ([]Media, error) {
 	return r.query(`SELECT `+mediaCols+` FROM media WHERE sha1 = ?`, sha1)

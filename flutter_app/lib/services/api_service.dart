@@ -77,6 +77,13 @@ class ApiService {
     return jsonDecode(res.body);
   }
 
+  /// 重复扫描：补采缺失元数据、补生成缩略图、采集新文件
+  Future<Map<String, dynamic>> repairLibrary(int libraryId) async {
+    final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/repair'));
+    if (res.statusCode != 200) throw Exception('启动修复扫描失败: ${res.body}');
+    return jsonDecode(res.body);
+  }
+
   Future<Map<String, dynamic>> scanTemporary(String path) async {
     final res = await http.post(
       Uri.parse('$baseUrl/api/scan/temporary'),

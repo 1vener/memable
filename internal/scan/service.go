@@ -136,6 +136,95 @@ func (s *Service) runScan(ctx context.Context, lib repo.Library, sessionID strin
 		"skipped", st.skipped, "failed", st.failed)
 }
 
+// RepairLibraryAsync 重复扫描：补采缺失元数据、补生成缩略图、采集新文件。
+// 与 ScanLibraryAsync 的区别：不依赖 mtime/size 变化，而是检查记录完整性。
+func (s *Service) RepairLibraryAsync(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int) (string, error) {
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
+	if err := s.Sessions.Create(&repo.ScanSession{
+		ID:          sessionID,
+		LibraryID:   &lib.ID,
+		IsTemporary: temporary,
+		Status:      "running",
+	}); err != nil {
+		return "", err
+	}
+
+	scanCtx, cancel := context.WithCancel(context.Background())
+	s.cancelFuncs.Store(sessionID, cancel)
+	go s.runRepair(scanCtx, lib, sessionID, temporary, poolSize)
+	return sessionID, nil
+}
+
+// runRepair 执行重复扫描（在 goroutine 中运行）。
+func (s *Service) runRepair(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int) {
+	st := &scanState{}
+
+	entries, err := media.Walk(ctx, lib.Path)
+	if err != nil {
+		slog.Error("遍历目录失败", "path", lib.Path, "err", err)
+		_ = s.Sessions.UpdateStatus(sessionID, "failed")
+		return
+	}
+
+	thumbDir := s.thumbDir(temporary)
+	pool := worker.NewPool(poolSize)
+	pool.Start(ctx)
+
+	for _, e := range entries {
+		need, err := s.Media.NeedRepair(lib.ID, e.RelativePath, string(e.Kind))
+		if err != nil {
+			slog.Error("完整性判定失败", "path", e.RelativePath, "err", err)
+			st.mu.Lock()
+			st.failed++
+			st.mu.Unlock()
+			continue
+		}
+		if !need {
+			st.mu.Lock()
+			st.skipped++
+			st.mu.Unlock()
+			continue
+		}
+
+		entry := e
+		pool.Submit(&worker.ScanJob{
+			Run: func(jobCtx context.Context) error {
+				m, err := s.collect(jobCtx, lib.ID, sessionID, entry, thumbDir)
+				if err != nil {
+					slog.Warn("修补采集失败", "path", entry.AbsPath, "err", err)
+					st.mu.Lock()
+					st.failed++
+					st.mu.Unlock()
+					return err
+				}
+				if err := s.Media.Upsert(m); err != nil {
+					slog.Error("修补入库失败", "path", entry.RelativePath, "err", err)
+					st.mu.Lock()
+					st.failed++
+					st.mu.Unlock()
+					return err
+				}
+				st.mu.Lock()
+				st.imported++
+				st.mu.Unlock()
+				return nil
+			},
+		})
+	}
+
+	pool.Stop()
+
+	if err := s.Sessions.UpdateStatus(sessionID, "completed"); err != nil {
+		slog.Error("更新会话状态失败", "session", sessionID, "err", err)
+	}
+	slog.Info("重复扫描完成",
+		"library_id", lib.ID, "session_id", sessionID,
+		"found", len(entries), "repaired", st.imported,
+		"skipped", st.skipped, "failed", st.failed)
+}
+
 // Stats 扫描统计。
 type Stats struct {
 	SessionID string
