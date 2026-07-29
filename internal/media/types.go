@@ -26,7 +26,7 @@ type FileEntry struct {
 }
 
 var imageExts = map[string]bool{
-	".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+	".jpg": true, ".jpeg": true, ".png": true,
 }
 var videoExts = map[string]bool{
 	".mp4": true, ".mkv": true, ".avi": true, ".mov": true,
