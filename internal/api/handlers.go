@@ -597,7 +597,9 @@ func (s *Server) handleOpenMedia(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. 跨平台执行打开命令
+	slog.Info("打开系统文件/目录", "media_id", id, "action", req.Action, "path", fileAbs)
 	if err := openFile(req.Action, fileAbs); err != nil {
+		slog.Error("打开系统文件/目录失败", "media_id", id, "action", req.Action, "path", fileAbs, "err", err)
 		writeError(w, 500, "打开失败: "+err.Error())
 		return
 	}

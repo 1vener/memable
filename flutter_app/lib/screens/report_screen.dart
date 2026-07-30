@@ -604,11 +604,13 @@ class _DuplicateCard extends StatelessWidget {
   );
 
   Future<void> _open(bool directory) async {
+    debugPrint('[打开${directory ? "目录" : "文件"}] mediaId=${item.id}');
     try {
       directory
           ? await api.openMediaDirectory(item.id)
           : await api.openMediaFile(item.id);
     } catch (e) {
+      debugPrint('[打开${directory ? "目录" : "文件"}] 失败: $e');
       onError('打开失败: $e');
     }
   }

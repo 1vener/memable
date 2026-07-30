@@ -950,9 +950,11 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   }
 
   Future<void> _openMediaFile(int mediaId, BuildContext context) async {
+    debugPrint('[打开文件] mediaId=$mediaId');
     try {
       await widget.api.openMediaFile(mediaId);
     } catch (e) {
+      debugPrint('[打开文件] 失败: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -965,9 +967,11 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   }
 
   Future<void> _openMediaDirectory(int mediaId, BuildContext context) async {
+    debugPrint('[打开目录] mediaId=$mediaId');
     try {
       await widget.api.openMediaDirectory(mediaId);
     } catch (e) {
+      debugPrint('[打开目录] 失败: $e');
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
