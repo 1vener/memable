@@ -24,10 +24,16 @@ class ApiService {
     final res = await http.get(Uri.parse('$baseUrl/api/libraries'));
     if (res.statusCode != 200) throw Exception('获取库列表失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
-    return list.map((e) => Library.fromJson(e as Map<String, dynamic>)).toList();
+    return list
+        .map((e) => Library.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
-  Future<Library> createLibrary(String name, String path, {String kind = 'image'}) async {
+  Future<Library> createLibrary(
+    String name,
+    String path, {
+    String kind = 'image',
+  }) async {
     final res = await http.post(
       Uri.parse('$baseUrl/api/libraries'),
       headers: {'Content-Type': 'application/json'},
@@ -53,11 +59,20 @@ class ApiService {
 
   // ===== 扫描 =====
 
-  /// 启动库扫描
-  Future<Map<String, dynamic>> startScan({int? libraryId, String? scanPath}) async {
+  /// 启动同步扫描；force 仅适用于正式收藏库。
+  Future<Map<String, dynamic>> startScan({
+    int? libraryId,
+    String? scanPath,
+    bool force = false,
+  }) async {
     if (libraryId != null) {
-      final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/scan'));
-      if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动扫描失败: ${res.body}');
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/libraries/$libraryId/scan'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'force': force}),
+      );
+      if (res.statusCode != 200 && res.statusCode != 202)
+        throw Exception('启动同步扫描失败: ${res.body}');
       return jsonDecode(res.body);
     } else if (scanPath != null) {
       final res = await http.post(
@@ -65,22 +80,24 @@ class ApiService {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'path': scanPath}),
       );
-      if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动临时扫描失败: ${res.body}');
+      if (res.statusCode != 200 && res.statusCode != 202)
+        throw Exception('启动临时扫描失败: ${res.body}');
       return jsonDecode(res.body);
     }
     throw Exception('必须指定 libraryId 或 scanPath');
   }
 
-  Future<Map<String, dynamic>> scanLibrary(int libraryId) async {
-    final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/scan'));
-    if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动扫描失败: ${res.body}');
-    return jsonDecode(res.body);
-  }
-
-  /// 重复扫描：补采缺失元数据、补生成缩略图、采集新文件
-  Future<Map<String, dynamic>> repairLibrary(int libraryId) async {
-    final res = await http.post(Uri.parse('$baseUrl/api/libraries/$libraryId/repair'));
-    if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动修复扫描失败: ${res.body}');
+  Future<Map<String, dynamic>> scanLibrary(
+    int libraryId, {
+    bool force = false,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/libraries/$libraryId/scan'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'force': force}),
+    );
+    if (res.statusCode != 200 && res.statusCode != 202)
+      throw Exception('启动同步扫描失败: ${res.body}');
     return jsonDecode(res.body);
   }
 
@@ -90,7 +107,8 @@ class ApiService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'path': path}),
     );
-    if (res.statusCode != 200 && res.statusCode != 202) throw Exception('启动临时扫描失败: ${res.body}');
+    if (res.statusCode != 200 && res.statusCode != 202)
+      throw Exception('启动临时扫描失败: ${res.body}');
     return jsonDecode(res.body);
   }
 
@@ -101,11 +119,16 @@ class ApiService {
   }
 
   Future<void> cancelSession(String sessionId) async {
-    final res = await http.post(Uri.parse('$baseUrl/api/sessions/$sessionId/cancel'));
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/sessions/$sessionId/cancel'),
+    );
     if (res.statusCode != 200) throw Exception('取消扫描失败: ${res.body}');
   }
 
-  Future<Map<String, dynamic>> promoteSession(String sessionId, int libraryId) async {
+  Future<Map<String, dynamic>> promoteSession(
+    String sessionId,
+    int libraryId,
+  ) async {
     final res = await http.post(
       Uri.parse('$baseUrl/api/sessions/$sessionId/promote'),
       headers: {'Content-Type': 'application/json'},
@@ -121,7 +144,9 @@ class ApiService {
     final res = await http.get(Uri.parse('$baseUrl/api/tasks'));
     if (res.statusCode != 200) throw Exception('获取任务列表失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
-    return list.map((e) => BackgroundTask.fromJson(e as Map<String, dynamic>)).toList();
+    return list
+        .map((e) => BackgroundTask.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   Future<BackgroundTask> getTask(String taskId) async {
@@ -145,11 +170,16 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('搜索失败: ${res.body}');
     final data = jsonDecode(res.body);
     final results = data['results'] as List<dynamic>;
-    return results.map((e) => SearchResult.fromJson(e as Map<String, dynamic>)).toList();
+    return results
+        .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   /// 以图搜图（通过文件上传，服务端计算 pHash）
-  Future<List<SearchResult>> searchImage({required File file, int maxDistance = 12}) async {
+  Future<List<SearchResult>> searchImage({
+    required File file,
+    int maxDistance = 12,
+  }) async {
     final req = http.MultipartRequest(
       'POST',
       Uri.parse('$baseUrl/api/search/image/upload'),
@@ -160,11 +190,16 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('以图搜图失败: ${res.body}');
     final data = jsonDecode(res.body);
     final results = data['results'] as List<dynamic>;
-    return results.map((e) => SearchResult.fromJson(e as Map<String, dynamic>)).toList();
+    return results
+        .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   /// 以图搜图（通过 phash）
-  Future<List<SearchResult>> searchImageByPhash(String phash, {int maxDistance = 12}) async {
+  Future<List<SearchResult>> searchImageByPhash(
+    String phash, {
+    int maxDistance = 12,
+  }) async {
     final res = await http.post(
       Uri.parse('$baseUrl/api/search/image'),
       headers: {'Content-Type': 'application/json'},
@@ -173,7 +208,9 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('以图搜图失败: ${res.body}');
     final data = jsonDecode(res.body);
     final results = data['results'] as List<dynamic>;
-    return results.map((e) => SearchResult.fromJson(e as Map<String, dynamic>)).toList();
+    return results
+        .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   // ===== 重复报告 =====
@@ -233,21 +270,26 @@ class ApiService {
   // ===== 文件树 =====
 
   /// 获取目录的直属子项（懒加载，展开时按需获取）
-  Future<List<FileTreeNode>> getFileTree(int libraryId, {String path = ''}) async {
-    final uri = Uri.parse('$baseUrl/api/libraries/$libraryId/tree').replace(
-      queryParameters: path.isNotEmpty ? {'path': path} : null,
-    );
+  Future<List<FileTreeNode>> getFileTree(
+    int libraryId, {
+    String path = '',
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/libraries/$libraryId/tree',
+    ).replace(queryParameters: path.isNotEmpty ? {'path': path} : null);
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('获取文件树失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
-    return list.map((e) => FileTreeNode.fromJson(e as Map<String, dynamic>)).toList();
+    return list
+        .map((e) => FileTreeNode.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   /// 列出库下指定目录的直属媒体（仅直接包含的文件，不含子目录）
   Future<List<Media>> getFiles(int libraryId, {String path = ''}) async {
-    final uri = Uri.parse('$baseUrl/api/libraries/$libraryId/files').replace(
-      queryParameters: path.isNotEmpty ? {'path': path} : null,
-    );
+    final uri = Uri.parse(
+      '$baseUrl/api/libraries/$libraryId/files',
+    ).replace(queryParameters: path.isNotEmpty ? {'path': path} : null);
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('获取文件列表失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
@@ -255,7 +297,10 @@ class ApiService {
   }
 
   /// 删除目录（提交后台任务）
-  Future<Map<String, dynamic>> deleteDirectory(int libraryId, String dirPath) async {
+  Future<Map<String, dynamic>> deleteDirectory(
+    int libraryId,
+    String dirPath,
+  ) async {
     final res = await http.delete(
       Uri.parse('$baseUrl/api/libraries/$libraryId/directories'),
       headers: {'Content-Type': 'application/json'},
@@ -268,5 +313,43 @@ class ApiService {
   /// 缩略图 URL
   String thumbnailUrl(String thumbnailPath) {
     return '$baseUrl/api/thumbnails/$thumbnailPath';
+  }
+
+  // ===== 工具 - 文件统计 =====
+
+  /// 创建文件统计（传入目录路径，服务端遍历计算）。
+  Future<FileStats> createFileStats(String dirPath) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/tools/file-stats'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'dir_path': dirPath}),
+    );
+    if (res.statusCode != 201) throw Exception('统计失败: ${res.body}');
+    return FileStats.fromJson(jsonDecode(res.body));
+  }
+
+  /// 获取所有统计记录。
+  Future<List<FileStats>> getFileStatsList() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/tools/file-stats'));
+    if (res.statusCode != 200) throw Exception('获取统计列表失败: ${res.body}');
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list
+        .map((e) => FileStats.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// 获取单条统计记录。
+  Future<FileStats> getFileStats(int id) async {
+    final res = await http.get(Uri.parse('$baseUrl/api/tools/file-stats/$id'));
+    if (res.statusCode != 200) throw Exception('查询统计记录失败: ${res.body}');
+    return FileStats.fromJson(jsonDecode(res.body));
+  }
+
+  /// 删除统计记录。
+  Future<void> deleteFileStats(int id) async {
+    final res = await http.delete(
+      Uri.parse('$baseUrl/api/tools/file-stats/$id'),
+    );
+    if (res.statusCode != 200) throw Exception('删除统计记录失败: ${res.body}');
   }
 }

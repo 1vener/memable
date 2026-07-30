@@ -27,6 +27,7 @@ type Server struct {
 	sessions  *repo.SessionRepo
 	media     *repo.MediaRepo
 	tasks     *repo.TaskRepo
+	fileStats *repo.FileStatsRepo
 	scanSvc   *scan.Service
 	searchSvc *search.Service
 	runner    *task.Runner
@@ -35,13 +36,14 @@ type Server struct {
 }
 
 // NewServer 创建 HTTP API 服务器。
-func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, tr *repo.TaskRepo, scanSvc *scan.Service, searchSvc *search.Service, runner *task.Runner, thumbBase string) *Server {
+func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, tr *repo.TaskRepo, fsr *repo.FileStatsRepo, scanSvc *scan.Service, searchSvc *search.Service, runner *task.Runner, thumbBase string) *Server {
 	s := &Server{
 		cfg:       cfg,
 		libraries: lr,
 		sessions:  sr,
 		media:     mr,
 		tasks:     tr,
+		fileStats: fsr,
 		scanSvc:   scanSvc,
 		searchSvc: searchSvc,
 		runner:    runner,
@@ -68,10 +70,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/libraries/{id}", s.handleDeleteLibrary)
 	mux.HandleFunc("GET /api/libraries/{id}/tree", s.handleFileTree)
 	mux.HandleFunc("GET /api/libraries/{id}/files", s.handleListFiles)
+	mux.HandleFunc("DELETE /api/libraries/{id}/directories", s.handleDeleteDirectory)
 
 	// 扫描
 	mux.HandleFunc("POST /api/libraries/{id}/scan", s.handleScanLibrary)
-	mux.HandleFunc("POST /api/libraries/{id}/repair", s.handleRepairLibrary)
 	mux.HandleFunc("POST /api/scan/temporary", s.handleScanTemporary)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
 	mux.HandleFunc("POST /api/sessions/{id}/cancel", s.handleCancelSession)
@@ -96,6 +98,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
 	mux.HandleFunc("GET /api/tasks/{id}", s.handleGetTask)
 	mux.HandleFunc("POST /api/tasks/{id}/cancel", s.handleCancelTask)
+
+	// 工具 - 文件统计
+	mux.HandleFunc("POST /api/tools/file-stats", s.handleCreateFileStats)
+	mux.HandleFunc("GET /api/tools/file-stats", s.handleListFileStats)
+	mux.HandleFunc("GET /api/tools/file-stats/{id}", s.handleGetFileStats)
+	mux.HandleFunc("DELETE /api/tools/file-stats/{id}", s.handleDeleteFileStats)
 }
 
 // Start 启动 HTTP 服务器。

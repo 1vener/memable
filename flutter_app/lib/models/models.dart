@@ -1,5 +1,6 @@
 // models.dart：数据模型
 // 代码注释使用中文
+import 'dart:convert';
 
 /// 收藏库模型
 class Library {
@@ -136,7 +137,8 @@ class SearchResult {
 
   factory SearchResult.fromJson(Map<String, dynamic> json) {
     final media = Media.fromJson(json['Media'] ?? json['media'] ?? json);
-    final fullPath = (json['FullPath'] ?? json['full_path'] ?? media.relativePath) as String;
+    final fullPath =
+        (json['FullPath'] ?? json['full_path'] ?? media.relativePath) as String;
     final distance = (json['Distance'] ?? json['distance'] ?? 0) as int;
     // 将 distance 转换为 0-1 相似度分数（distance 越小越相似）
     final score = distance > 0 ? (1.0 - distance / 64.0).clamp(0.0, 1.0) : 1.0;
@@ -181,10 +183,7 @@ class DuplicateReport {
   final int groupCount;
   final String path;
 
-  DuplicateReport({
-    required this.groupCount,
-    required this.path,
-  });
+  DuplicateReport({required this.groupCount, required this.path});
 
   factory DuplicateReport.fromJson(Map<String, dynamic> json) {
     return DuplicateReport(
@@ -271,24 +270,177 @@ class BackgroundTask {
 
   String get kindLabel {
     switch (kind) {
-      case 'scan': return '扫描';
-      case 'repair': return '修复扫描';
-      case 'temporary_scan': return '临时扫描';
-      case 'report_image': return '图片报告';
-      case 'report_video': return '视频报告';
-      case 'promote': return '入库';
-      default: return kind;
+      case 'scan':
+        return '同步扫描';
+      case 'repair':
+        return '修复扫描';
+      case 'temporary_scan':
+        return '临时扫描';
+      case 'report_image':
+        return '图片报告';
+      case 'report_video':
+        return '视频报告';
+      case 'promote':
+        return '入库';
+      case 'directory_delete':
+        return '删除目录';
+      default:
+        return kind;
     }
   }
 
   String get statusLabel {
     switch (status) {
-      case 'queued': return '等待中';
-      case 'running': return '运行中';
-      case 'completed': return '已完成';
-      case 'failed': return '失败';
-      case 'cancelled': return '已取消';
-      default: return status;
+      case 'queued':
+        return '等待中';
+      case 'running':
+        return '运行中';
+      case 'completed':
+        return '已完成';
+      case 'failed':
+        return '失败';
+      case 'cancelled':
+        return '已取消';
+      default:
+        return status;
     }
+  }
+}
+
+/// 文件统计记录模型。
+class FileStats {
+  final int id;
+  final String dirPath;
+  final int totalBytes;
+  final int totalCount;
+  final List<ExtStat> extStats;
+  final List<FileTreeStatNode> fileTree;
+  final String? createdAt;
+
+  FileStats({
+    required this.id,
+    required this.dirPath,
+    required this.totalBytes,
+    required this.totalCount,
+    required this.extStats,
+    required this.fileTree,
+    this.createdAt,
+  });
+
+  factory FileStats.fromJson(Map<String, dynamic> json) {
+    final extStatsRaw = json['ext_stats'];
+    final fileTreeRaw = json['file_tree'];
+    List<ExtStat> extList = [];
+    List<FileTreeStatNode> treeList = [];
+
+    if (extStatsRaw is String && extStatsRaw.isNotEmpty) {
+      final parsed = jsonDecode(extStatsRaw) as List<dynamic>;
+      extList =
+          parsed
+              .map((e) => ExtStat.fromJson(e as Map<String, dynamic>))
+              .toList();
+    } else if (extStatsRaw is List) {
+      extList =
+          extStatsRaw
+              .map((e) => ExtStat.fromJson(e as Map<String, dynamic>))
+              .toList();
+    }
+
+    if (fileTreeRaw is String && fileTreeRaw.isNotEmpty) {
+      final parsed = jsonDecode(fileTreeRaw) as List<dynamic>;
+      treeList =
+          parsed
+              .map((e) => FileTreeStatNode.fromJson(e as Map<String, dynamic>))
+              .toList();
+    } else if (fileTreeRaw is List) {
+      treeList =
+          fileTreeRaw
+              .map((e) => FileTreeStatNode.fromJson(e as Map<String, dynamic>))
+              .toList();
+    }
+
+    return FileStats(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      dirPath: (json['dir_path'] as String?) ?? '',
+      totalBytes: (json['total_bytes'] as num?)?.toInt() ?? 0,
+      totalCount: (json['total_count'] as num?)?.toInt() ?? 0,
+      extStats: extList,
+      fileTree: treeList,
+      createdAt: json['created_at'] as String?,
+    );
+  }
+
+  String get totalBytesFormatted {
+    if (totalBytes < 1024) return '$totalBytes B';
+    if (totalBytes < 1024 * 1024)
+      return '${(totalBytes / 1024).toStringAsFixed(1)} KB';
+    if (totalBytes < 1024 * 1024 * 1024)
+      return '${(totalBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(totalBytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+}
+
+/// 扩展名统计。
+class ExtStat {
+  final String ext;
+  final int bytes;
+  final int count;
+  final double pctCount;
+  final double pctBytes;
+
+  ExtStat({
+    required this.ext,
+    required this.bytes,
+    required this.count,
+    required this.pctCount,
+    required this.pctBytes,
+  });
+
+  factory ExtStat.fromJson(Map<String, dynamic> json) {
+    return ExtStat(
+      ext: (json['ext'] as String?) ?? '',
+      bytes: (json['bytes'] as num?)?.toInt() ?? 0,
+      count: (json['count'] as num?)?.toInt() ?? 0,
+      pctCount: (json['pct_count'] as num?)?.toDouble() ?? 0.0,
+      pctBytes: (json['pct_bytes'] as num?)?.toDouble() ?? 0.0,
+    );
+  }
+}
+
+/// 文件树节点（递归结构）。
+class FileTreeStatNode {
+  final String name;
+  final String path;
+  final bool isDir;
+  final String? ext;
+  final int? size;
+  final List<FileTreeStatNode>? children;
+
+  FileTreeStatNode({
+    required this.name,
+    required this.path,
+    required this.isDir,
+    this.ext,
+    this.size,
+    this.children,
+  });
+
+  factory FileTreeStatNode.fromJson(Map<String, dynamic> json) {
+    List<FileTreeStatNode>? children;
+    if (json['children'] != null) {
+      children =
+          (json['children'] as List<dynamic>)
+              .map((e) => FileTreeStatNode.fromJson(e as Map<String, dynamic>))
+              .toList();
+    }
+
+    return FileTreeStatNode(
+      name: (json['name'] as String?) ?? '',
+      path: (json['path'] as String?) ?? '',
+      isDir: (json['is_dir'] as bool?) ?? false,
+      ext: json['ext'] as String?,
+      size: (json['size'] as num?)?.toInt(),
+      children: children,
+    );
   }
 }

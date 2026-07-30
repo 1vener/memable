@@ -76,3 +76,17 @@ CREATE INDEX IF NOT EXISTS idx_media_kind   ON media(kind);
 CREATE INDEX IF NOT EXISTS idx_media_lib    ON media(library_id);
 
 CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT NULL;
+
+-- ============================================================
+-- 5. 文件统计记录
+-- ============================================================
+CREATE TABLE IF NOT EXISTS file_stats (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    dir_path        TEXT NOT NULL,                                      -- 统计的目录路径
+    total_bytes     INTEGER NOT NULL DEFAULT 0,                        -- 文件总大小
+    total_count     INTEGER NOT NULL DEFAULT 0,                        -- 文件总数
+    ext_stats       TEXT NOT NULL DEFAULT '[]',                        -- JSON: [{ext, bytes, count, pct_count, pct_bytes}]
+    file_tree       TEXT NOT NULL DEFAULT '[]',                        -- JSON: 递归树节点
+    created_at      TIMESTAMP NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_file_stats_created ON file_stats(created_at DESC);

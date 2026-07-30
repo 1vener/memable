@@ -72,7 +72,7 @@ func TestDeleteLibraryRemovesRelatedDataAndUnreferencedThumbnails(t *testing.T) 
 		}
 	}
 
-	server := NewServer(cfg, libraries, sessions, mediaRepo, nil, nil, nil, nil, thumbBase)
+	server := NewServer(cfg, libraries, sessions, mediaRepo, nil, nil, nil, nil, nil, thumbBase)
 	request := httptest.NewRequest(http.MethodDelete, "/api/libraries/"+formatInt64(deletedLibrary.ID), nil)
 	response := httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)

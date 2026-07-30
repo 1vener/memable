@@ -76,6 +76,92 @@ func TestScanLibraryImageIncremental(t *testing.T) {
 	}
 }
 
+func TestExecuteScanRepairsMissingThumbnailAndSupportsForce(t *testing.T) {
+	dbh := newTestDB(t)
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+
+	dir := t.TempDir()
+	thumbDir := t.TempDir()
+	imgPath := filepath.Join(dir, "one.png")
+	writePNG(t, imgPath, 10, 7)
+	lib := &repo.Library{Name: "同步库", Path: dir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Sessions: sr, Media: mr, ThumbBase: thumbDir}
+	progress := repo.ProgressFunc(func(string, int, int, int, int, int) {})
+
+	result, err := svc.ExecuteScan(context.Background(), *lib, "sync-1", false, false, 1, progress)
+	if err != nil || result.Imported != 1 {
+		t.Fatalf("首次同步扫描错误: result=%+v err=%v", result, err)
+	}
+	stored, err := mr.GetByPath(lib.ID, "one.png")
+	if err != nil || stored == nil || stored.ThumbnailPath == nil {
+		t.Fatalf("媒体或缩略图未写入: media=%+v err=%v", stored, err)
+	}
+	thumbPath := filepath.Join(thumbDir, filepath.FromSlash(*stored.ThumbnailPath))
+	if err := os.Remove(thumbPath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = svc.ExecuteScan(context.Background(), *lib, "sync-2", false, false, 1, progress)
+	if err != nil || result.Imported != 1 || result.Skipped != 0 {
+		t.Fatalf("缩略图丢失后应重新处理: result=%+v err=%v", result, err)
+	}
+	if _, err := os.Stat(thumbPath); err != nil {
+		t.Fatalf("缩略图未修复: %v", err)
+	}
+
+	result, err = svc.ExecuteScan(context.Background(), *lib, "sync-3", false, true, 1, progress)
+	if err != nil || result.Imported != 1 || result.Skipped != 0 {
+		t.Fatalf("强制同步应重新处理未变化文件: result=%+v err=%v", result, err)
+	}
+}
+
+func TestExecuteScanCleansMissingMediaAndThumbnail(t *testing.T) {
+	dbh := newTestDB(t)
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+
+	dir := t.TempDir()
+	thumbDir := t.TempDir()
+	imgPath := filepath.Join(dir, "gone.png")
+	writePNG(t, imgPath, 8, 8)
+	lib := &repo.Library{Name: "清理库", Path: dir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Sessions: sr, Media: mr, ThumbBase: thumbDir}
+	progress := repo.ProgressFunc(func(string, int, int, int, int, int) {})
+
+	if _, err := svc.ExecuteScan(context.Background(), *lib, "clean-1", false, false, 1, progress); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := mr.GetByPath(lib.ID, "gone.png")
+	if err != nil || stored == nil || stored.ThumbnailPath == nil {
+		t.Fatalf("媒体未写入: media=%+v err=%v", stored, err)
+	}
+	thumbPath := filepath.Join(thumbDir, filepath.FromSlash(*stored.ThumbnailPath))
+	if err := os.Remove(imgPath); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.ExecuteScan(context.Background(), *lib, "clean-2", false, false, 1, progress)
+	if err != nil || result.Cleaned != 1 {
+		t.Fatalf("缺失媒体清理错误: result=%+v err=%v", result, err)
+	}
+	stored, err = mr.GetByPath(lib.ID, "gone.png")
+	if err != nil || stored != nil {
+		t.Fatalf("本地缺失记录仍存在: media=%+v err=%v", stored, err)
+	}
+	if _, err := os.Stat(thumbPath); !os.IsNotExist(err) {
+		t.Fatalf("失效缩略图未删除: %v", err)
+	}
+}
+
 func newTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dbh, err := db.Open(&config.Config{Database: config.DatabaseConfig{Path: ":memory:"}})

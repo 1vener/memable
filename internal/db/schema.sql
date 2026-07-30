@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT
 -- ============================================================
 CREATE TABLE IF NOT EXISTS background_tasks (
     id                  TEXT    PRIMARY KEY,                             -- UUID
-    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','promote')),
+    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','promote','directory_delete')),
     status              TEXT    NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued','running','completed','failed','cancelled')),
     title               TEXT    NOT NULL,                               -- 任务显示名称
@@ -108,3 +108,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedupe
     WHERE dedupe_key IS NOT NULL AND status IN ('queued','running');
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON background_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_queued ON background_tasks(queued_at) WHERE status IN ('queued','running');
+
+-- ============================================================
+-- 5. 文件统计记录
+-- ============================================================
+CREATE TABLE IF NOT EXISTS file_stats (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    dir_path        TEXT NOT NULL,                                      -- 统计的目录路径
+    total_bytes     INTEGER NOT NULL DEFAULT 0,                        -- 文件总大小
+    total_count     INTEGER NOT NULL DEFAULT 0,                        -- 文件总数
+    ext_stats       TEXT NOT NULL DEFAULT '[]',                        -- JSON: [{ext, bytes, count, pct_count, pct_bytes}]
+    file_tree       TEXT NOT NULL DEFAULT '[]',                        -- JSON: 递归树节点
+    created_at      TIMESTAMP NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_file_stats_created ON file_stats(created_at DESC);

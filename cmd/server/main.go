@@ -54,6 +54,7 @@ func main() {
 	sessionRepo := repo.NewSessionRepo(dbh)
 	mediaRepo := repo.NewMediaRepo(dbh)
 	taskRepo := repo.NewTaskRepo(dbh)
+	fileStatsRepo := repo.NewFileStatsRepo(dbh)
 
 	// 初始化服务层：使用统一的缩略图根目录（内容寻址路径含 image/video 前缀）
 	thumbBase := "thumbnail"
@@ -78,7 +79,7 @@ func main() {
 	runner.Start(context.Background())
 
 	// 启动 HTTP API 服务器
-	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, taskRepo, scanSvc, searchSvc, runner, thumbBase)
+	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, taskRepo, fileStatsRepo, scanSvc, searchSvc, runner, thumbBase)
 
 	// 优雅关闭
 	go func() {

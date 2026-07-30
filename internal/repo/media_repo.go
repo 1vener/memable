@@ -4,6 +4,7 @@ package repo
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -155,6 +156,65 @@ func (r *MediaRepo) ListByDirectory(libraryID int64, relDir string) ([]Media, er
 	)
 }
 
+// ListByDirectoryDirect 列出库下指定目录的直属媒体（不含子目录文件）。
+func (r *MediaRepo) ListByDirectoryDirect(libraryID int64, relDir string) ([]Media, error) {
+	prefix := strings.TrimPrefix(strings.TrimPrefix(relDir, "/"), "\\")
+	if prefix != "" {
+		prefix = strings.ReplaceAll(prefix, "\\", "/") + "/"
+	}
+	// 匹配 prefix 后不再含有 / 的路径，即直属文件
+	return r.query(
+		`SELECT `+mediaCols+` FROM media WHERE library_id = ? AND relative_path LIKE ? AND relative_path NOT LIKE ? ORDER BY relative_path`,
+		libraryID, prefix+"%", prefix+"%/%",
+	)
+}
+
+// DeleteByDirectory 删除库下指定目录及其子目录的所有媒体记录，返回被删除记录的缩略图路径列表。
+func (r *MediaRepo) DeleteByDirectory(libraryID int64, relDir string) ([]string, error) {
+	prefix := strings.TrimPrefix(strings.TrimPrefix(relDir, "/"), "\\")
+	if prefix != "" {
+		prefix = strings.ReplaceAll(prefix, "\\", "/") + "/"
+	}
+	var thumbPaths []string
+	err := WithTx(r.db, 3, func(tx *sql.Tx) error {
+		thumbPaths = thumbPaths[:0]
+		// 收集待删除记录的缩略图路径
+		rows, err := tx.Query(
+			`SELECT DISTINCT thumbnail_path FROM media
+			 WHERE library_id = ? AND thumbnail_path IS NOT NULL AND thumbnail_path <> ''
+			 AND (relative_path LIKE ? OR relative_path LIKE ?)`,
+			libraryID, prefix+"%", prefix+"%/%",
+		)
+		if err != nil {
+			return errx.Wrapf(err, "查询目录 %q 的缩略图", relDir)
+		}
+		for rows.Next() {
+			var tp string
+			if err := rows.Scan(&tp); err != nil {
+				rows.Close()
+				return errx.Wrapf(err, "扫描缩略图路径")
+			}
+			thumbPaths = append(thumbPaths, tp)
+		}
+		if err := rows.Close(); err != nil {
+			return errx.Wrapf(err, "关闭缩略图查询")
+		}
+		if err := rows.Err(); err != nil {
+			return errx.Wrapf(err, "遍历缩略图")
+		}
+
+		// 删除媒体记录
+		if _, err := tx.Exec(
+			`DELETE FROM media WHERE library_id = ? AND (relative_path LIKE ? OR relative_path LIKE ?)`,
+			libraryID, prefix+"%", prefix+"%/%",
+		); err != nil {
+			return errx.Wrapf(err, "删除目录 %q 的媒体记录", relDir)
+		}
+		return nil
+	})
+	return thumbPaths, err
+}
+
 // SearchByPath 全路径模糊搜索（拼接 library.path 后匹配）。
 func (r *MediaRepo) SearchByPath(pattern string) ([]Media, error) {
 	// JOIN 查询需为列加 m. 前缀避免歧义
@@ -177,6 +237,34 @@ func (r *MediaRepo) Delete(id int64) error {
 		return errx.Newf("媒体 id=%d 不存在", id)
 	}
 	return nil
+}
+
+// DeleteByIDs 在同一事务中删除媒体记录，返回可能需要清理的缩略图路径。
+func (r *MediaRepo) DeleteByIDs(ids []int64) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	thumbPaths := make([]string, 0)
+	err := WithTx(r.db, 3, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			var thumb sql.NullString
+			err := tx.QueryRow(`SELECT thumbnail_path FROM media WHERE id = ?`, id).Scan(&thumb)
+			if err == sql.ErrNoRows {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("查询待删除媒体 id=%d: %w", id, err)
+			}
+			if thumb.Valid && thumb.String != "" {
+				thumbPaths = append(thumbPaths, thumb.String)
+			}
+			if _, err := tx.Exec(`DELETE FROM media WHERE id = ?`, id); err != nil {
+				return fmt.Errorf("删除媒体 id=%d: %w", id, err)
+			}
+		}
+		return nil
+	})
+	return thumbPaths, errx.Wrapf(err, "批量删除媒体")
 }
 
 // CountThumbnailReferences 统计仍引用指定缩略图路径的媒体记录数。

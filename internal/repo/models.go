@@ -14,6 +14,7 @@ type ScanResult struct {
 	Imported int
 	Skipped  int
 	Failed   int
+	Cleaned  int
 }
 
 // Library 收藏库（媒体根目录）。
@@ -66,12 +67,13 @@ type Media struct {
 type TaskKind string
 
 const (
-	TaskKindScan          TaskKind = "scan"
-	TaskKindRepair        TaskKind = "repair"
-	TaskKindTemporaryScan TaskKind = "temporary_scan"
-	TaskKindReportImage   TaskKind = "report_image"
-	TaskKindReportVideo   TaskKind = "report_video"
-	TaskKindPromote       TaskKind = "promote"
+	TaskKindScan            TaskKind = "scan"
+	TaskKindRepair          TaskKind = "repair"
+	TaskKindTemporaryScan   TaskKind = "temporary_scan"
+	TaskKindReportImage     TaskKind = "report_image"
+	TaskKindReportVideo     TaskKind = "report_video"
+	TaskKindPromote         TaskKind = "promote"
+	TaskKindDirectoryDelete TaskKind = "directory_delete"
 )
 
 // TaskStatus 任务状态。
@@ -108,4 +110,15 @@ type BackgroundTask struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 	FinishedAt     *time.Time `json:"finished_at,omitempty"`
 	QueuePosition  int        `json:"queue_position,omitempty"` // 动态计算，不持久化
+}
+
+// FileStats 文件统计记录。
+type FileStats struct {
+	ID         int64     `json:"id"`
+	DirPath    string    `json:"dir_path"`
+	TotalBytes int64     `json:"total_bytes"`
+	TotalCount int64     `json:"total_count"`
+	ExtStats   string    `json:"ext_stats"` // JSON 字符串
+	FileTree   string    `json:"file_tree"` // JSON 字符串
+	CreatedAt  time.Time `json:"created_at"`
 }

@@ -40,8 +40,7 @@ type RunnerConfig struct {
 
 // ScanExecutor 扫描执行器接口。
 type ScanExecutor interface {
-	ExecuteScan(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int, progress repo.ProgressFunc) (*repo.ScanResult, error)
-	ExecuteRepair(ctx context.Context, lib repo.Library, sessionID string, poolSize int, progress repo.ProgressFunc) (*repo.ScanResult, error)
+	ExecuteScan(ctx context.Context, lib repo.Library, sessionID string, temporary, force bool, poolSize int, progress repo.ProgressFunc) (*repo.ScanResult, error)
 }
 
 // NewRunner 创建任务调度器。
@@ -210,7 +209,8 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 	case repo.TaskKindScan:
 		execErr = r.execScan(taskCtx, task, false, progress)
 	case repo.TaskKindRepair:
-		execErr = r.execRepair(taskCtx, task, progress)
+		// 兼容升级前已经持久化的修复任务，统一按强制同步扫描执行。
+		execErr = r.execLegacyRepair(taskCtx, task, progress)
 	case repo.TaskKindTemporaryScan:
 		execErr = r.execScan(taskCtx, task, true, progress)
 	case repo.TaskKindReportImage:
@@ -219,6 +219,8 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 		execErr = r.execReport(taskCtx, task, "video", progress)
 	case repo.TaskKindPromote:
 		execErr = r.execPromote(taskCtx, task, progress)
+	case repo.TaskKindDirectoryDelete:
+		execErr = r.execDirectoryDelete(taskCtx, task, progress)
 	default:
 		execErr = fmt.Errorf("未知任务类型: %s", task.Kind)
 	}
@@ -244,6 +246,7 @@ type ScanPayload struct {
 	LibraryPath string `json:"library_path"`
 	LibraryName string `json:"library_name"`
 	LibraryKind string `json:"library_kind"`
+	Force       bool   `json:"force"`
 }
 
 // execScan 执行扫描任务。
@@ -280,7 +283,7 @@ func (r *Runner) execScan(ctx context.Context, task *repo.BackgroundTask, tempor
 	sessionID := uuid.NewString()
 	_ = r.Tasks.UpdateProgress(task.ID, "discovering", 0, 0, 0, 0, 0)
 
-	result, err := r.ScanSvc.ExecuteScan(ctx, lib, sessionID, temporary, r.Config.PoolSize, progress)
+	result, err := r.ScanSvc.ExecuteScan(ctx, lib, sessionID, temporary, payload.Force, r.Config.PoolSize, progress)
 	if err != nil {
 		return err
 	}
@@ -288,6 +291,7 @@ func (r *Runner) execScan(ctx context.Context, task *repo.BackgroundTask, tempor
 	resJSON, _ := json.Marshal(map[string]any{
 		"session_id": result.Session.ID,
 		"library_id": lib.ID,
+		"cleaned":    result.Cleaned,
 	})
 	_ = r.Tasks.UpdateProgress(task.ID, "done",
 		result.Found, result.Imported+result.Skipped+result.Failed,
@@ -296,8 +300,8 @@ func (r *Runner) execScan(ctx context.Context, task *repo.BackgroundTask, tempor
 	return nil
 }
 
-// execRepair 执行修复扫描任务。
-func (r *Runner) execRepair(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
+// execLegacyRepair 执行升级前遗留的修复任务。
+func (r *Runner) execLegacyRepair(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
 	if task.LibraryID == nil {
 		return fmt.Errorf("修复任务缺少 library_id")
 	}
@@ -309,7 +313,7 @@ func (r *Runner) execRepair(ctx context.Context, task *repo.BackgroundTask, prog
 	sessionID := uuid.NewString()
 	_ = r.Tasks.UpdateProgress(task.ID, "discovering", 0, 0, 0, 0, 0)
 
-	result, err := r.ScanSvc.ExecuteRepair(ctx, *lib, sessionID, r.Config.PoolSize, progress)
+	result, err := r.ScanSvc.ExecuteScan(ctx, *lib, sessionID, false, true, r.Config.PoolSize, progress)
 	if err != nil {
 		return err
 	}
@@ -466,4 +470,70 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	return os.Remove(src)
+}
+
+// DirectoryDeletePayload 目录删除任务参数。
+type DirectoryDeletePayload struct {
+	LibraryID int64  `json:"library_id"`
+	DirPath   string `json:"dir_path"`
+}
+
+// execDirectoryDelete 执行目录删除任务：删除本地目录、数据库媒体记录和无引用缩略图。
+func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
+	var payload DirectoryDeletePayload
+	if task.PayloadJSON != nil {
+		if err := json.Unmarshal([]byte(*task.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("解析目录删除参数: %w", err)
+		}
+	}
+	if payload.LibraryID == 0 || payload.DirPath == "" {
+		return fmt.Errorf("目录删除参数不完整")
+	}
+
+	lib, err := r.Libraries.GetByID(payload.LibraryID)
+	if err != nil {
+		return fmt.Errorf("查询收藏库: %w", err)
+	}
+
+	// 阶段1：删除数据库媒体记录，收集缩略图路径
+	progress("deleting_db", 0, 0, 0, 0, 0)
+	thumbPaths, err := r.Media.DeleteByDirectory(payload.LibraryID, payload.DirPath)
+	if err != nil {
+		return fmt.Errorf("删除数据库记录: %w", err)
+	}
+
+	// 阶段2：删除本地目录
+	progress("deleting_files", 0, 0, 0, 0, 0)
+	absDir := filepath.Join(lib.Path, payload.DirPath)
+	if err := os.RemoveAll(absDir); err != nil && !os.IsNotExist(err) {
+		slog.Warn("删除本地目录失败（数据库已清理）", "path", absDir, "err", err)
+	}
+
+	// 阶段3：清理无引用缩略图
+	progress("cleaning_thumbs", 0, len(thumbPaths), 0, 0, 0)
+	deleted := 0
+	for i, thumbRel := range thumbPaths {
+		n, err := r.Media.CountThumbnailReferences(thumbRel)
+		if err != nil || n > 0 {
+			continue
+		}
+		thumbAbs := filepath.Join(r.Config.ThumbBase, thumbRel)
+		if err := os.Remove(thumbAbs); err != nil && !os.IsNotExist(err) {
+			slog.Warn("删除缩略图失败", "path", thumbAbs, "err", err)
+			continue
+		}
+		// 清理空的哈希分片目录
+		_ = os.Remove(filepath.Dir(thumbAbs))
+		deleted++
+		if (i+1)%50 == 0 || i+1 == len(thumbPaths) {
+			progress("cleaning_thumbs", len(thumbPaths), i+1, deleted, 0, 0)
+		}
+	}
+
+	result, _ := json.Marshal(map[string]any{
+		"deleted_thumbs": deleted,
+		"dir_path":       payload.DirPath,
+	})
+	_ = r.Tasks.Complete(task.ID, string(result))
+	return nil
 }

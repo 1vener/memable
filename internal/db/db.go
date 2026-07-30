@@ -17,7 +17,7 @@ import (
 var schemaSQL string
 
 // schemaVersion 当前迁移版本；schema.sql 每次变更须 +1 并在 Migrate 中追加对应迁移。
-const schemaVersion = 3
+const schemaVersion = 5
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
 func Open(cfg *config.Config) (*sql.DB, error) {
@@ -101,6 +101,62 @@ func Migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_tasks_queued ON background_tasks(queued_at) WHERE status IN ('queued','running');
 		INSERT INTO schema_version(version) VALUES (3);`); err != nil {
 			return fmt.Errorf("迁移到 v3: %w", err)
+		}
+	}
+
+	// v4：background_tasks.kind CHECK 约束新增 directory_delete
+	if cur < 4 {
+		if _, err := db.Exec(`
+			CREATE TABLE IF NOT EXISTS background_tasks_new (
+				id                  TEXT    PRIMARY KEY,
+				kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','promote','directory_delete')),
+				status              TEXT    NOT NULL DEFAULT 'queued'
+				                    CHECK (status IN ('queued','running','completed','failed','cancelled')),
+				title               TEXT    NOT NULL,
+				dedupe_key          TEXT,
+				library_id          INTEGER,
+				scan_session_id     TEXT,
+				payload_json        TEXT,
+				phase               TEXT    NOT NULL DEFAULT 'queued',
+				total_items         INTEGER NOT NULL DEFAULT 0,
+				processed_items     INTEGER NOT NULL DEFAULT 0,
+				succeeded_items     INTEGER NOT NULL DEFAULT 0,
+				skipped_items       INTEGER NOT NULL DEFAULT 0,
+				failed_items        INTEGER NOT NULL DEFAULT 0,
+				result_json         TEXT,
+				error_message       TEXT,
+				queued_at           TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+				started_at          TIMESTAMP,
+				updated_at          TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+				finished_at         TIMESTAMP
+			);
+			INSERT INTO background_tasks_new SELECT * FROM background_tasks;
+			DROP TABLE background_tasks;
+			ALTER TABLE background_tasks_new RENAME TO background_tasks;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedupe
+				ON background_tasks(dedupe_key)
+				WHERE dedupe_key IS NOT NULL AND status IN ('queued','running');
+			CREATE INDEX IF NOT EXISTS idx_tasks_status ON background_tasks(status);
+			CREATE INDEX IF NOT EXISTS idx_tasks_queued ON background_tasks(queued_at) WHERE status IN ('queued','running');
+			INSERT INTO schema_version(version) VALUES (4);`); err != nil {
+			return fmt.Errorf("迁移到 v4: %w", err)
+		}
+	}
+
+	// v5：新增文件统计表
+	if cur < 5 {
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS file_stats (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			dir_path     TEXT NOT NULL,
+			total_bytes  INTEGER NOT NULL DEFAULT 0,
+			total_count  INTEGER NOT NULL DEFAULT 0,
+			ext_stats    TEXT NOT NULL DEFAULT '[]',
+			file_tree    TEXT NOT NULL DEFAULT '[]',
+			created_at   TIMESTAMP NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_file_stats_created ON file_stats(created_at DESC);
+		INSERT INTO schema_version(version) VALUES (5);`); err != nil {
+			return fmt.Errorf("迁移到 v5: %w", err)
 		}
 	}
 	return nil

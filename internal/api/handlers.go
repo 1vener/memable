@@ -3,12 +3,14 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"memable/internal/media"
 	"memable/internal/repo"
@@ -140,11 +142,11 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 
 // FileTreeNode 文件树节点。
 type FileTreeNode struct {
-	Name     string         `json:"name"`
-	Path     string         `json:"path"`
-	IsDir    bool           `json:"is_dir"`
-	Size     int64          `json:"size,omitempty"`
-	Children []FileTreeNode `json:"children,omitempty"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	IsDir       bool   `json:"is_dir"`
+	Size        int64  `json:"size,omitempty"`
+	HasChildren bool   `json:"has_children,omitempty"`
 }
 
 func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
@@ -159,19 +161,29 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tree := buildFileTree(lib.Path, "")
-	writeJSON(w, 200, tree)
+	dir := r.URL.Query().Get("path")
+	dir = normalizePath(dir)
+	if dir == "." || dir == "/" || dir == "" {
+		dir = ""
+	}
+	// 安全检查：不允许跳出库根目录
+	if dir != "" && isUnsafePath(dir) {
+		writeError(w, 400, "路径非法")
+		return
+	}
+	nodes := listDirChildren(lib.Path, dir)
+	writeJSON(w, 200, nodes)
 }
 
-// buildFileTree 递归构建文件树。
-func buildFileTree(basePath, relPath string) []FileTreeNode {
+// listDirChildren 列出指定目录的直属子项，目录节点仅检查是否有子项（has_children），不递归。
+func listDirChildren(basePath, relPath string) []FileTreeNode {
 	absPath := filepath.Join(basePath, relPath)
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
-		return nil
+		return []FileTreeNode{}
 	}
 
-	var nodes []FileTreeNode
+	nodes := make([]FileTreeNode, 0, len(entries))
 	for _, e := range entries {
 		childRel := joinPath(relPath, e.Name())
 		node := FileTreeNode{
@@ -179,28 +191,80 @@ func buildFileTree(basePath, relPath string) []FileTreeNode {
 			Path:  childRel,
 			IsDir: e.IsDir(),
 		}
-		if !e.IsDir() {
+		if e.IsDir() {
+			// 检查子目录是否有子项（用于展开图标）
+			subEntries, err := os.ReadDir(filepath.Join(basePath, childRel))
+			node.HasChildren = err == nil && len(subEntries) > 0
+		} else {
 			info, _ := e.Info()
 			if info != nil {
 				node.Size = info.Size()
 			}
-		} else {
-			node.Children = buildFileTree(basePath, childRel)
 		}
 		nodes = append(nodes, node)
 	}
 	return nodes
 }
 
-// handleListFiles 列出库下指定目录的所有媒体。
+// isUnsafePath 检查路径是否包含 .. 等危险成分。
+func isUnsafePath(relPath string) bool {
+	clean := filepath.ToSlash(relPath)
+	if clean == ".." || clean == "." {
+		return true
+	}
+	for _, part := range splitPath(clean) {
+		if part == ".." || part == "." {
+			return true
+		}
+	}
+	return false
+}
+
+// splitPath 将正斜杠路径拆分为各段。
+func splitPath(p string) []string {
+	if p == "" {
+		return nil
+	}
+	var parts []string
+	for {
+		dir, file := filepath.Split(p)
+		if file == "" {
+			break
+		}
+		parts = append([]string{file}, parts...)
+		p = strings.TrimSuffix(dir, "/")
+		if p == "" {
+			break
+		}
+	}
+	return parts
+}
+
+// normalizePath 将路径转为正斜杠并清理。
+func normalizePath(p string) string {
+	p = filepath.ToSlash(p)
+	p = strings.TrimPrefix(p, "./")
+	p = strings.TrimPrefix(p, "/")
+	p = strings.TrimSuffix(p, "/")
+	if p == "." {
+		return ""
+	}
+	return p
+}
+
+// handleListFiles 列出库下指定目录的直属媒体（仅直接包含的文件，不含子目录）。
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	id, err := parseInt64(r.PathValue("id"))
 	if err != nil {
 		writeError(w, 400, "无效的库 ID")
 		return
 	}
-	dir := r.URL.Query().Get("path")
-	medias, err := s.media.ListByDirectory(id, dir)
+	dir := normalizePath(r.URL.Query().Get("path"))
+	if isUnsafePath(dir) {
+		writeError(w, 400, "路径非法")
+		return
+	}
+	medias, err := s.media.ListByDirectoryDirect(id, dir)
 	if err != nil {
 		writeError(w, 500, "查询媒体列表失败: "+err.Error())
 		return
@@ -211,10 +275,78 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, medias)
 }
 
+// ===== 目录删除 =====
+
+type deleteDirReq struct {
+	Path string `json:"path"`
+}
+
+func (s *Server) handleDeleteDirectory(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的库 ID")
+		return
+	}
+	lib, err := s.libraries.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+
+	var req deleteDirReq
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	req.Path = normalizePath(req.Path)
+	if req.Path == "" {
+		writeError(w, 400, "不能删除根目录")
+		return
+	}
+	if isUnsafePath(req.Path) {
+		writeError(w, 400, "路径非法")
+		return
+	}
+
+	// 检查该库是否有活跃任务
+	if active, _ := s.tasks.HasActiveForLibrary(id); active {
+		writeError(w, 409, "该库有正在运行的任务，请稍后再试")
+		return
+	}
+
+	// 验证目录存在
+	absDir := filepath.Join(lib.Path, req.Path)
+	info, err := os.Stat(absDir)
+	if err != nil || !info.IsDir() {
+		writeError(w, 404, "目录不存在")
+		return
+	}
+
+	dedupeKey := fmt.Sprintf("dir_del:%d:%s", id, req.Path)
+	libraryID := id
+	task, err := s.runner.Enqueue(
+		repo.TaskKindDirectoryDelete,
+		"删除目录: "+filepath.Base(req.Path),
+		&dedupeKey, &libraryID,
+		map[string]any{"library_id": id, "dir_path": req.Path},
+	)
+	if err != nil {
+		writeError(w, 509, "提交删除任务失败: "+err.Error())
+		return
+	}
+
+	pos, _ := s.tasks.QueuePosition(task.ID)
+	writeJSON(w, 202, map[string]any{
+		"task_id":        task.ID,
+		"queue_position": pos,
+		"status":         task.Status,
+	})
+}
+
 // ===== 扫描 =====
 
 type scanReq struct {
-	Temporary bool `json:"temporary"`
+	Force bool `json:"force"`
 }
 
 func (s *Server) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +360,11 @@ func (s *Server) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "收藏库不存在")
 		return
 	}
+	var req scanReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
 
 	// 检查是否有活动任务
 	if active, _ := s.tasks.HasActiveForLibrary(id); active {
@@ -235,41 +372,13 @@ func (s *Server) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dedupeKey := fmt.Sprintf("scan:%s", lib.Path)
-	task, err := s.runner.Enqueue(repo.TaskKindScan, "扫描库: "+lib.Name, &dedupeKey, &lib.ID,
-		task.ScanPayload{LibraryPath: lib.Path, LibraryName: lib.Name, LibraryKind: lib.Kind})
-	if err != nil {
-		writeError(w, 409, "相同任务已在等待或执行")
-		return
+	dedupeKey := fmt.Sprintf("scan:%d", lib.ID)
+	title := "同步扫描: " + lib.Name
+	if req.Force {
+		title = "强制同步扫描: " + lib.Name
 	}
-
-	pos, _ := s.tasks.QueuePosition(task.ID)
-	writeJSON(w, 202, map[string]any{
-		"task_id":        task.ID,
-		"status":         task.Status,
-		"queue_position": pos,
-	})
-}
-
-func (s *Server) handleRepairLibrary(w http.ResponseWriter, r *http.Request) {
-	id, err := parseInt64(r.PathValue("id"))
-	if err != nil {
-		writeError(w, 400, "无效的库 ID")
-		return
-	}
-	lib, err := s.libraries.GetByID(id)
-	if err != nil {
-		writeError(w, 404, "收藏库不存在")
-		return
-	}
-
-	if active, _ := s.tasks.HasActiveForLibrary(id); active {
-		writeError(w, 409, "该库已有排队中或运行中的任务")
-		return
-	}
-
-	dedupeKey := fmt.Sprintf("repair:%s", lib.Path)
-	task, err := s.runner.Enqueue(repo.TaskKindRepair, "修复扫描: "+lib.Name, &dedupeKey, &lib.ID, nil)
+	task, err := s.runner.Enqueue(repo.TaskKindScan, title, &dedupeKey, &lib.ID,
+		task.ScanPayload{LibraryPath: lib.Path, LibraryName: lib.Name, LibraryKind: lib.Kind, Force: req.Force})
 	if err != nil {
 		writeError(w, 409, "相同任务已在等待或执行")
 		return
@@ -608,4 +717,90 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "cancelled"})
+}
+
+// ===== 工具 - 文件统计 =====
+
+type createFileStatsReq struct {
+	DirPath string `json:"dir_path"`
+}
+
+func (s *Server) handleCreateFileStats(w http.ResponseWriter, r *http.Request) {
+	var req createFileStatsReq
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	if req.DirPath == "" {
+		writeError(w, 400, "dir_path 不能为空")
+		return
+	}
+
+	info, err := os.Stat(req.DirPath)
+	if err != nil || !info.IsDir() {
+		writeError(w, 400, "目录不存在或不是有效目录")
+		return
+	}
+
+	result, tree := walkDirStats(req.DirPath)
+	if result == nil {
+		writeError(w, 500, "遍历目录失败")
+		return
+	}
+
+	extStatsJSON, _ := json.Marshal(result.extStats)
+	treeJSON, _ := json.Marshal(tree)
+
+	fs := &repo.FileStats{
+		DirPath:    req.DirPath,
+		TotalBytes: result.totalBytes,
+		TotalCount: result.totalCount,
+		ExtStats:   string(extStatsJSON),
+		FileTree:   string(treeJSON),
+	}
+	if err := s.fileStats.Create(fs); err != nil {
+		writeError(w, 500, "保存统计记录失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, 201, fs)
+}
+
+func (s *Server) handleListFileStats(w http.ResponseWriter, r *http.Request) {
+	fsList, err := s.fileStats.List(50, 0)
+	if err != nil {
+		writeError(w, 500, "查询统计记录失败: "+err.Error())
+		return
+	}
+	if fsList == nil {
+		fsList = []repo.FileStats{}
+	}
+	writeJSON(w, 200, fsList)
+}
+
+func (s *Server) handleGetFileStats(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的记录 ID")
+		return
+	}
+	fs, err := s.fileStats.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "统计记录不存在")
+		return
+	}
+	writeJSON(w, 200, fs)
+}
+
+func (s *Server) handleDeleteFileStats(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的记录 ID")
+		return
+	}
+	if err := s.fileStats.Delete(id); err != nil {
+		writeError(w, 404, "统计记录不存在")
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }

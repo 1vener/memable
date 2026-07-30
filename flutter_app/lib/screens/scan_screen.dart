@@ -27,6 +27,7 @@ class _ScanScreenState extends State<ScanScreen> {
   // 临时扫描路径
   String _tempPath = '';
   bool _useExistingLib = true;
+  bool _force = false;
 
   @override
   void initState() {
@@ -37,8 +38,10 @@ class _ScanScreenState extends State<ScanScreen> {
   @override
   void didUpdateWidget(covariant ScanScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.currentLibrary != null && widget.currentLibrary != oldWidget.currentLibrary) {
-      final match = _libraries.where((l) => l.name == widget.currentLibrary).toList();
+    if (widget.currentLibrary != null &&
+        widget.currentLibrary != oldWidget.currentLibrary) {
+      final match =
+          _libraries.where((l) => l.name == widget.currentLibrary).toList();
       if (match.isNotEmpty) {
         setState(() => _selectedLibraryId = match.first.id);
       } else {
@@ -59,7 +62,8 @@ class _ScanScreenState extends State<ScanScreen> {
         final currentIds = data.map((l) => l.id).toList();
         // 如果当前选中值不在返回的列表中，重置为第一个有效值
         if (widget.currentLibrary != null) {
-          final match = data.where((l) => l.name == widget.currentLibrary).toList();
+          final match =
+              data.where((l) => l.name == widget.currentLibrary).toList();
           newId = match.isNotEmpty ? match.first.id : null;
         } else if (newId == null || !currentIds.contains(newId)) {
           newId = data.isNotEmpty ? data.first.id : null;
@@ -92,6 +96,7 @@ class _ScanScreenState extends State<ScanScreen> {
       final result = await widget.api.startScan(
         libraryId: libraryId,
         scanPath: scanPath,
+        force: _useExistingLib && _force,
       );
 
       final queuePos = result['queue_position'] ?? 0;
@@ -141,10 +146,11 @@ class _ScanScreenState extends State<ScanScreen> {
     if (kIsWeb) {
       dir = await showDialog<String>(
         context: context,
-        builder: (ctx) => const PathDialog(
-          title: '输入临时扫描目录',
-          description: '请输入 Go 服务端所在电脑可访问的绝对路径。',
-        ),
+        builder:
+            (ctx) => const PathDialog(
+              title: '输入临时扫描目录',
+              description: '请输入 Go 服务端所在电脑可访问的绝对路径。',
+            ),
       );
     } else {
       try {
@@ -156,10 +162,11 @@ class _ScanScreenState extends State<ScanScreen> {
         if (!mounted) return;
         dir = await showDialog<String>(
           context: context,
-          builder: (ctx) => const PathDialog(
-            title: '输入临时扫描目录',
-            description: '目录选择器不可用，请手动输入 Go 服务端所在电脑可访问的绝对路径。',
-          ),
+          builder:
+              (ctx) => const PathDialog(
+                title: '输入临时扫描目录',
+                description: '目录选择器不可用，请手动输入 Go 服务端所在电脑可访问的绝对路径。',
+              ),
         );
       } catch (e) {
         if (!mounted) return;
@@ -171,10 +178,11 @@ class _ScanScreenState extends State<ScanScreen> {
         );
         dir = await showDialog<String>(
           context: context,
-          builder: (ctx) => const PathDialog(
-            title: '输入临时扫描目录',
-            description: '目录选择器不可用，请手动输入 Go 服务端所在电脑可访问的绝对路径。',
-          ),
+          builder:
+              (ctx) => const PathDialog(
+                title: '输入临时扫描目录',
+                description: '目录选择器不可用，请手动输入 Go 服务端所在电脑可访问的绝对路径。',
+              ),
         );
       }
     }
@@ -201,7 +209,14 @@ class _ScanScreenState extends State<ScanScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('扫描模式', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                    Text(
+                      '扫描模式',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: cs.onSurface,
+                      ),
+                    ),
                     const SizedBox(height: 16),
                     // 模式切换
                     Row(
@@ -222,7 +237,8 @@ class _ScanScreenState extends State<ScanScreen> {
                             title: '临时扫描',
                             subtitle: '选择任意目录快速扫描',
                             selected: !_useExistingLib,
-                            onTap: () => setState(() => _useExistingLib = false),
+                            onTap:
+                                () => setState(() => _useExistingLib = false),
                           ),
                         ),
                       ],
@@ -241,7 +257,14 @@ class _ScanScreenState extends State<ScanScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('选择库', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                      Text(
+                        '选择库',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: cs.onSurface,
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       if (_libraries.isEmpty)
                         Center(
@@ -249,9 +272,19 @@ class _ScanScreenState extends State<ScanScreen> {
                             padding: const EdgeInsets.all(24),
                             child: Column(
                               children: [
-                                Icon(Icons.folder_off, size: 36, color: cs.outline),
+                                Icon(
+                                  Icons.folder_off,
+                                  size: 36,
+                                  color: cs.outline,
+                                ),
                                 const SizedBox(height: 8),
-                                Text('暂无库，请先在收藏库页面添加', style: TextStyle(fontSize: 13, color: cs.outline)),
+                                Text(
+                                  '暂无库，请先在收藏库页面添加',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: cs.outline,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -260,7 +293,10 @@ class _ScanScreenState extends State<ScanScreen> {
                         Center(
                           child: Padding(
                             padding: const EdgeInsets.all(24),
-                            child: Text('正在加载...', style: TextStyle(fontSize: 13, color: cs.outline)),
+                            child: Text(
+                              '正在加载...',
+                              style: TextStyle(fontSize: 13, color: cs.outline),
+                            ),
                           ),
                         )
                       else
@@ -268,15 +304,27 @@ class _ScanScreenState extends State<ScanScreen> {
                           value: _selectedLibraryId,
                           isExpanded: true,
                           decoration: const InputDecoration(hintText: '选择一个库'),
-                          items: _libraries.where((l) => l.id > 0).map((lib) {
-                            return DropdownMenuItem(value: lib.id, child: Text(lib.name));
-                          }).toList(),
+                          items:
+                              _libraries.where((l) => l.id > 0).map((lib) {
+                                return DropdownMenuItem(
+                                  value: lib.id,
+                                  child: Text(lib.name),
+                                );
+                              }).toList(),
                           onChanged: (v) {
                             if (v != null && v > 0) {
                               setState(() => _selectedLibraryId = v);
                             }
                           },
                         ),
+                      const SizedBox(height: 12),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('强制重新处理全部文件'),
+                        subtitle: const Text('用于彻底修复数据或算法升级后的重新计算'),
+                        value: _force,
+                        onChanged: (value) => setState(() => _force = value),
+                      ),
                     ],
                   ),
                 ),
@@ -288,14 +336,23 @@ class _ScanScreenState extends State<ScanScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('扫描路径', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                      Text(
+                        '扫描路径',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: cs.onSurface,
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       Row(
                         children: [
                           Expanded(
                             child: TextField(
                               readOnly: true,
-                              controller: TextEditingController(text: _tempPath),
+                              controller: TextEditingController(
+                                text: _tempPath,
+                              ),
                               style: const TextStyle(fontSize: 13),
                               decoration: InputDecoration(
                                 hintText: '点击选择目录',
@@ -320,13 +377,18 @@ class _ScanScreenState extends State<ScanScreen> {
               children: [
                 FilledButton.icon(
                   onPressed: _scanning ? null : _startScan,
-                  icon: _scanning
-                      ? const SizedBox(
-                          width: 18, height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        )
-                      : const Icon(Icons.play_arrow, size: 20),
-                  label: Text(_scanning ? '扫描中...' : '开始扫描'),
+                  icon:
+                      _scanning
+                          ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                          : const Icon(Icons.play_arrow, size: 20),
+                  label: Text(_scanning ? '同步中...' : '同步扫描'),
                 ),
                 if (_scanning) ...[
                   const SizedBox(width: 12),
@@ -352,7 +414,12 @@ class _ScanScreenState extends State<ScanScreen> {
                   children: [
                     Icon(Icons.info_outline, size: 18, color: cs.primary),
                     const SizedBox(width: 10),
-                    Expanded(child: Text(_statusMessage!, style: TextStyle(fontSize: 13, color: cs.onSurface))),
+                    Expanded(
+                      child: Text(
+                        _statusMessage!,
+                        style: TextStyle(fontSize: 13, color: cs.onSurface),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -362,13 +429,27 @@ class _ScanScreenState extends State<ScanScreen> {
                 decoration: BoxDecoration(
                   color: const Color(0xFFEF4444).withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.2)),
+                  border: Border.all(
+                    color: const Color(0xFFEF4444).withValues(alpha: 0.2),
+                  ),
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.error_outline, size: 18, color: Color(0xFFEF4444)),
+                    const Icon(
+                      Icons.error_outline,
+                      size: 18,
+                      color: Color(0xFFEF4444),
+                    ),
                     const SizedBox(width: 10),
-                    Expanded(child: Text(_error!, style: const TextStyle(fontSize: 13, color: Color(0xFFEF4444)))),
+                    Expanded(
+                      child: Text(
+                        _error!,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Color(0xFFEF4444),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -409,18 +490,26 @@ class _ModeCard extends StatelessWidget {
           duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: selected
-                ? cs.primary.withValues(alpha: isDark ? 0.12 : 0.08)
-                : cs.surfaceContainerHighest.withValues(alpha: 0.3),
+            color:
+                selected
+                    ? cs.primary.withValues(alpha: isDark ? 0.12 : 0.08)
+                    : cs.surfaceContainerHighest.withValues(alpha: 0.3),
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: selected ? cs.primary.withValues(alpha: 0.4) : cs.outlineVariant,
+              color:
+                  selected
+                      ? cs.primary.withValues(alpha: 0.4)
+                      : cs.outlineVariant,
               width: selected ? 1.5 : 1,
             ),
           ),
           child: Column(
             children: [
-              Icon(icon, size: 32, color: selected ? cs.primary : cs.onSurfaceVariant),
+              Icon(
+                icon,
+                size: 32,
+                color: selected ? cs.primary : cs.onSurfaceVariant,
+              ),
               const SizedBox(height: 10),
               Text(
                 title,

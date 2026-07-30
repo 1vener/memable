@@ -12,6 +12,7 @@ import 'task_screen.dart';
 import 'search_screen.dart';
 import 'report_screen.dart';
 import 'settings_screen.dart';
+import 'tool_screen.dart';
 
 /// 侧边栏导航项
 class _NavDestination {
@@ -66,6 +67,13 @@ const _destinations = [
     tooltip: '重复检测报告',
     shortcut: 'Ctrl+5',
   ),
+  _NavDestination(
+    icon: Icons.build_outlined,
+    selectedIcon: Icons.build,
+    label: '工具',
+    tooltip: '文件统计等实用工具',
+    shortcut: 'Ctrl+6',
+  ),
 ];
 
 class HomeScreen extends StatefulWidget {
@@ -116,7 +124,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_selectedIndex < _destinations.length) {
       return _destinations[_selectedIndex].label;
     }
-    return '设置';
+    if (_selectedIndex == 6) return '设置';
+    return '';
   }
 
   /// 当前页面内容
@@ -130,7 +139,8 @@ class _HomeScreenState extends State<HomeScreen> {
       2 => TaskScreen(api: api),
       3 => SearchScreen(api: api),
       4 => ReportScreen(api: api),
-      5 => SettingsScreen(api: api),
+      5 => ToolScreen(api: api),
+      6 => SettingsScreen(api: api),
       _ => const SizedBox.shrink(),
     };
   }
@@ -154,6 +164,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _SelectPageIntent(4),
         SingleActivator(LogicalKeyboardKey.digit6, control: true):
             _SelectPageIntent(5),
+        SingleActivator(LogicalKeyboardKey.digit7, control: true):
+            _SelectPageIntent(6),
         SingleActivator(LogicalKeyboardKey.f5): _RefreshIntent(),
       },
       child: Actions(
@@ -251,9 +263,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 _buildBottomItem(
                   icon: Icons.settings_outlined,
                   label: '设置',
-                  selected: _selectedIndex == 5,
+                  selected: _selectedIndex == 6,
                   cs: cs,
-                  onTap: () => _onSelectPage(5),
+                  onTap: () => _onSelectPage(6),
                 ),
               ],
             ),
