@@ -3,14 +3,11 @@
 package media
 
 import (
-	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"image"
-	_ "image/jpeg"
-	"image/png"
-	"os"
 	"path/filepath"
 )
 
@@ -30,37 +27,16 @@ func ThumbnailStoragePath(kind, storageKey string) string {
 	return filepath.ToSlash(filepath.Join(kind, dir, storageKey+".png"))
 }
 
-// GenerateImageThumbnail 生成图片缩略图并保存到 outPath。
-// 最大边不超过 maxEdge；使用最近邻缩放，输出 PNG 格式。
+// GenerateImageThumbnail 生成图片缩略图并保存到 outPath（薄封装，内部走统一解码）。
 func GenerateImageThumbnail(srcPath, outPath string, maxEdge int) error {
 	if maxEdge <= 0 {
 		maxEdge = 300
 	}
-	f, err := os.Open(srcPath)
-	if err != nil {
-		return fmt.Errorf("打开图片 %q: %w", srcPath, err)
-	}
-	defer f.Close()
-
-	img, _, err := image.Decode(f)
+	decoded, err := DecodeImage(context.Background(), srcPath, DecoderGo)
 	if err != nil {
 		return fmt.Errorf("解码图片 %q: %w", srcPath, err)
 	}
-
-	thumb := resizeImage(img, maxEdge)
-
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return fmt.Errorf("创建缩略图目录: %w", err)
-	}
-
-	var buf bytes.Buffer
-	if err := encodePNG(&buf, thumb); err != nil {
-		return fmt.Errorf("编码缩略图: %w", err)
-	}
-	if err := os.WriteFile(outPath, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("写入缩略图 %q: %w", outPath, err)
-	}
-	return nil
+	return GenerateThumbnailFromImage(decoded.Image, outPath, maxEdge)
 }
 
 // resizeImage 按最大边等比缩放；小于 maxEdge 则保持原尺寸。
@@ -87,9 +63,4 @@ func resizeImage(img image.Image, maxEdge int) image.Image {
 		}
 	}
 	return dst
-}
-
-// encodePNG 将图片编码为 PNG 写入 buf。
-func encodePNG(buf *bytes.Buffer, img image.Image) error {
-	return png.Encode(buf, img)
 }

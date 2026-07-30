@@ -73,12 +73,8 @@ func (s *Service) ScanLibraryAsync(ctx context.Context, lib repo.Library, sessio
 func (s *Service) runScan(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int) {
 	st := &scanState{}
 
-	entries, err := media.Walk(ctx, lib.Path)
-	if err != nil {
-		slog.Error("遍历目录失败", "path", lib.Path, "err", err)
-		_ = s.Sessions.UpdateStatus(sessionID, "failed")
-		return
-	}
+	result := media.Walk(ctx, lib.Path)
+	entries := result.Entries
 
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
@@ -161,12 +157,8 @@ func (s *Service) RepairLibraryAsync(ctx context.Context, lib repo.Library, sess
 func (s *Service) runRepair(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int) {
 	st := &scanState{}
 
-	entries, err := media.Walk(ctx, lib.Path)
-	if err != nil {
-		slog.Error("遍历目录失败", "path", lib.Path, "err", err)
-		_ = s.Sessions.UpdateStatus(sessionID, "failed")
-		return
-	}
+	result := media.Walk(ctx, lib.Path)
+	entries := result.Entries
 
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
@@ -248,11 +240,8 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 	}
 
 	stats := &Stats{SessionID: sessionID}
-	entries, err := media.Walk(ctx, lib.Path)
-	if err != nil {
-		_ = s.Sessions.UpdateStatus(sessionID, "failed")
-		return nil, err
-	}
+	result := media.Walk(ctx, lib.Path)
+	entries := result.Entries
 	stats.Found = len(entries)
 
 	for _, e := range entries {
@@ -318,28 +307,32 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 
 	switch e.Kind {
 	case media.KindImage:
-		meta, err := media.ProbeImage(e.AbsPath)
+		// 统一解码，仅一次 IO + 解码
+		decoded, err := media.DecodeImage(ctx, e.AbsPath, e.Decoder)
 		if err != nil {
-			return nil, fmt.Errorf("读取图片 metadata %q: %w", e.AbsPath, err)
+			return nil, fmt.Errorf("解码图片 %q: %w", e.AbsPath, err)
 		}
-		m.Format = &meta.Format
-		m.Width = &meta.Width
-		m.Height = &meta.Height
 
-		hashes, err := media.ImagePerceptualHashes(e.AbsPath)
-		if err != nil {
-			return nil, fmt.Errorf("计算图片相似哈希 %q: %w", e.AbsPath, err)
-		}
+		// metadata 直接从解码结果获取
+		b := decoded.Image.Bounds()
+		format := decoded.Format
+		w, h := b.Dx(), b.Dy()
+		m.Format = &format
+		m.Width = &w
+		m.Height = &h
+
+		// 感知哈希（复用同一次解码）
+		hashes := media.ImagePerceptualHashesFromImage(decoded.Image)
 		m.Phash = &hashes.PHash
 		m.Dhash = &hashes.DHash
 		m.Ahash = &hashes.AHash
 
-		// 内容寻址缩略图
+		// 内容寻址缩略图（复用同一次解码）
 		storageKey := media.ThumbnailKey("image", sha1, maxEdge)
 		thumbRel := media.ThumbnailStoragePath("image", storageKey)
 		thumbAbs := filepath.Join(thumbBase, thumbRel)
 		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
-			return media.GenerateImageThumbnail(e.AbsPath, tmp, maxEdge)
+			return media.GenerateThumbnailFromImage(decoded.Image, tmp, maxEdge)
 		}); err != nil {
 			slog.Warn("生成图片缩略图失败", "path", e.AbsPath, "err", err)
 		} else {
@@ -441,12 +434,10 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 	}
 
 	st := &scanState{}
-	entries, err := media.Walk(ctx, lib.Path)
-	if err != nil {
-		_ = s.Sessions.UpdateStatus(sessionID, "failed")
-		return nil, fmt.Errorf("遍历目录: %w", err)
-	}
-	progress("discovering", len(entries), 0, 0, 0, 0)
+	result := media.Walk(ctx, lib.Path)
+	entries := result.Entries
+	var err error
+	progress("discovering", len(entries), 0, 0, 0, 0, 0, (*int64)(nil))
 	localPaths := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		localPaths[entry.RelativePath] = struct{}{}
@@ -463,7 +454,7 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 			st.failed++
 			total := st.imported + st.skipped + st.failed
 			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 			continue
 		}
 		if !need {
@@ -471,7 +462,7 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 			st.skipped++
 			total := st.imported + st.skipped + st.failed
 			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 			continue
 		}
 
@@ -485,7 +476,7 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 					st.failed++
 					total := st.imported + st.skipped + st.failed
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 					return err
 				}
 				if err := s.Media.Upsert(m); err != nil {
@@ -494,14 +485,14 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 					st.failed++
 					total := st.imported + st.skipped + st.failed
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 					return err
 				}
 				st.mu.Lock()
 				st.imported++
 				total := st.imported + st.skipped + st.failed
 				st.mu.Unlock()
-				progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+				progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 				return nil
 			},
 		})
@@ -515,7 +506,7 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 
 	cleaned := 0
 	if !temporary {
-		progress("cleaning", len(entries), len(entries), st.imported, st.skipped, st.failed)
+		progress("cleaning", len(entries), len(entries), st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 		cleaned, err = s.cleanMissing(lib.ID, localPaths)
 		if err != nil {
 			_ = s.Sessions.UpdateStatus(sessionID, "failed")
@@ -646,12 +637,9 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 	}
 
 	st := &scanState{}
-	entries, err := media.Walk(ctx, lib.Path)
-	if err != nil {
-		_ = s.Sessions.UpdateStatus(sessionID, "failed")
-		return nil, fmt.Errorf("遍历目录: %w", err)
-	}
-	progress("discovering", len(entries), 0, 0, 0, 0)
+	result := media.Walk(ctx, lib.Path)
+	entries := result.Entries
+	progress("discovering", len(entries), 0, 0, 0, 0, 0, (*int64)(nil))
 
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
@@ -664,7 +652,7 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 			st.failed++
 			total := st.imported + st.skipped + st.failed
 			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 			continue
 		}
 		if !need {
@@ -672,7 +660,7 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 			st.skipped++
 			total := st.imported + st.skipped + st.failed
 			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 			continue
 		}
 
@@ -686,7 +674,7 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 					st.failed++
 					total := st.imported + st.skipped + st.failed
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 					return err
 				}
 				if err := s.Media.Upsert(m); err != nil {
@@ -695,14 +683,14 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 					st.failed++
 					total := st.imported + st.skipped + st.failed
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 					return err
 				}
 				st.mu.Lock()
 				st.imported++
 				total := st.imported + st.skipped + st.failed
 				st.mu.Unlock()
-				progress("processing", len(entries), total, st.imported, st.skipped, st.failed)
+				progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
 				return nil
 			},
 		})

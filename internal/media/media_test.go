@@ -25,10 +25,8 @@ func TestWalkProbeImageAndSHA1(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := Walk(context.Background(), dir)
-	if err != nil {
-		t.Fatalf("Walk: %v", err)
-	}
+	result := Walk(context.Background(), dir)
+	entries := result.Entries
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 media file, got %d", len(entries))
 	}
@@ -161,5 +159,144 @@ func writeTestPNG(t *testing.T, path string, w, h int) {
 	defer f.Close()
 	if err := png.Encode(f, img); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSupportedFormat 表驱动测试：覆盖全部白名单格式的 Kind 和 Decoder。
+func TestSupportedFormat(t *testing.T) {
+	tests := []struct {
+		path    string
+		kind    Kind
+		decoder DecoderKind
+	}{
+		// 图片 / Go 原生解码
+		{".jpg", KindImage, DecoderGo},
+		{".jpeg", KindImage, DecoderGo},
+		{".jfif", KindImage, DecoderGo},
+		{".png", KindImage, DecoderGo},
+		{".bmp", KindImage, DecoderGo},
+
+		// 图片 / 跳过
+		{".gif", KindImage, DecoderSkip},
+
+		// 图片 / FFmpeg 转码
+		{".heic", KindImage, DecoderFFmpeg},
+		{".cr2", KindImage, DecoderFFmpeg},
+
+		// 视频 / FFmpeg
+		{".mp4", KindVideo, DecoderFFmpeg},
+		{".mov", KindVideo, DecoderFFmpeg},
+		{".avi", KindVideo, DecoderFFmpeg},
+		{".mpg", KindVideo, DecoderFFmpeg},
+		{".mpeg", KindVideo, DecoderFFmpeg},
+		{".m4v", KindVideo, DecoderFFmpeg},
+		{".webm", KindVideo, DecoderFFmpeg},
+		{".wmv", KindVideo, DecoderFFmpeg},
+		{".flv", KindVideo, DecoderFFmpeg},
+		{".3gp", KindVideo, DecoderFFmpeg},
+		{".ts", KindVideo, DecoderFFmpeg},
+		{".mkv", KindVideo, DecoderFFmpeg},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			// 正常扩展名
+			f, ok := SupportedFormat("file" + tt.path)
+			if !ok {
+				t.Fatalf("expected %s to be supported", tt.path)
+			}
+			if f.Kind != tt.kind {
+				t.Fatalf("kind: got %q want %q", f.Kind, tt.kind)
+			}
+			if f.Decoder != tt.decoder {
+				t.Fatalf("decoder: got %q want %q", f.Decoder, tt.decoder)
+			}
+			// 大小写不敏感
+			for _, casePath := range []string{
+				"file" + tt.path,
+				"FILE" + tt.path,
+				"/some/PATH/file" + tt.path,
+			} {
+				f2, ok2 := SupportedFormat(casePath)
+				if !ok2 || f2.Kind != tt.kind || f2.Decoder != tt.decoder {
+					t.Fatalf("case-insensitive failed: %q", casePath)
+				}
+			}
+		})
+	}
+}
+
+// TestSupportedFormatSkip 验证 GIF 跳过策略。
+func TestSupportedFormatSkip(t *testing.T) {
+	f, ok := SupportedFormat("photo.gif")
+	if !ok {
+		t.Fatal("GIF should be known")
+	}
+	if f.Decoder != DecoderSkip {
+		t.Fatalf("GIF decoder should be skip, got %q", f.Decoder)
+	}
+	if f.SkipReason == "" {
+		t.Fatal("GIF skip should have a reason")
+	}
+}
+
+// TestSupportedFormatUnknown 验证不支持的扩展名。
+func TestSupportedFormatUnknown(t *testing.T) {
+	for _, ext := range []string{".exe", ".zip", ".docx", "", ".unknown"} {
+		f, ok := SupportedFormat("file" + ext)
+		if ok {
+			t.Fatalf("%q should not be supported, got %+v", ext, f)
+		}
+	}
+}
+
+// TestWalkSkipsGIF 验证 Walk 跳过 GIF 文件。
+func TestWalkSkipsGIF(t *testing.T) {
+	dir := t.TempDir()
+	// 创建一个 PNG 和一个 GIF（扩展名即可，不必真实 GIF 内容）
+	if err := os.WriteFile(filepath.Join(dir, "a.png"), []byte("png-fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.gif"), []byte("gif-fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := Walk(context.Background(), dir)
+	if len(result.Entries) != 1 {
+		t.Fatalf("expected 1 entry (PNG), got %d", len(result.Entries))
+	}
+	if result.Entries[0].Kind != KindImage || result.Entries[0].Decoder != DecoderGo {
+		t.Fatalf("expected image/go, got %+v", result.Entries[0])
+	}
+	if result.SkippedGIF != 1 {
+		t.Fatalf("expected 1 skipped GIF, got %d", result.SkippedGIF)
+	}
+	if result.Unsupported > 0 {
+		t.Fatalf("expected 0 unsupported, got %d", result.Unsupported)
+	}
+}
+
+// TestFileEntryDecoder 验证 FileEntry 的 Decoder 字段正确。
+func TestFileEntryDecoder(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "photo.jpg"), []byte("jpg-fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "movie.mp4"), []byte("mp4-fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result := Walk(context.Background(), dir)
+	if len(result.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(result.Entries))
+	}
+	for _, e := range result.Entries {
+		switch e.Kind {
+		case KindImage:
+			if e.Decoder != DecoderGo {
+				t.Fatalf("JPG decoder should be go, got %q", e.Decoder)
+			}
+		case KindVideo:
+			if e.Decoder != DecoderFFmpeg {
+				t.Fatalf("MP4 decoder should be ffmpeg, got %q", e.Decoder)
+			}
+		}
 	}
 }

@@ -2,6 +2,7 @@
 // 代码注释使用中文
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../main.dart';
 import '../widgets/status_bar.dart';
@@ -89,7 +90,11 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _currentLibrary;
   String? _scanProgress;
   String _apiStatus = 'unknown';
-  static const double _sidebarWidth = 220;
+  static const double _sidebarExpandedWidth = 220;
+  static const double _sidebarCollapsedWidth = 64;
+
+  bool _userCollapsed = false;
+  final bool _autoCollapseThreshold = true;
 
   ApiService get api => widget.api;
 
@@ -97,6 +102,25 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _checkApi();
+    _loadSidebarPref();
+  }
+
+  Future<void> _loadSidebarPref() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (mounted) {
+        setState(() => _userCollapsed = prefs.getBool('ui.sidebar_collapsed') ?? false);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleSidebar() async {
+    final next = !_userCollapsed;
+    setState(() => _userCollapsed = next);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('ui.sidebar_collapsed', next);
+    } catch (_) {}
   }
 
   Future<void> _checkApi() async {
@@ -186,28 +210,29 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Focus(
           autofocus: true,
           child: Scaffold(
-            body: Row(
-              children: [
-                // ========== 左侧导航栏 ==========
-                _buildSidebar(cs, isDark),
-                // ========== 右侧区域 ==========
-                Expanded(
-                  child: Column(
-                    children: [
-                      // 顶部工具栏
-                      _buildToolbar(cs),
-                      // 内容区
-                      Expanded(child: _buildContent()),
-                      // 底部状态栏
-                      StatusBar(
-                        apiStatus: _apiStatus,
-                        currentLibrary: _currentLibrary,
-                        scanProgress: _scanProgress,
+            body: LayoutBuilder(
+              builder: (context, constraints) {
+                final collapsed = _userCollapsed ||
+                    (constraints.maxWidth < 900 && _autoCollapseThreshold);
+                return Row(
+                  children: [
+                    _buildSidebar(cs, isDark, collapsed),
+                    Expanded(
+                      child: Column(
+                        children: [
+                          _buildToolbar(cs, collapsed),
+                          Expanded(child: _buildContent()),
+                          StatusBar(
+                            apiStatus: _apiStatus,
+                            currentLibrary: _currentLibrary,
+                            scanProgress: _scanProgress,
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
-              ],
+                    ),
+                  ],
+                );
+              },
             ),
           ),
         ),
@@ -216,9 +241,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 构建左侧导航栏
-  Widget _buildSidebar(ColorScheme cs, bool isDark) {
-    return Container(
-      width: _sidebarWidth,
+  Widget _buildSidebar(ColorScheme cs, bool isDark, bool collapsed) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+      width: collapsed ? _sidebarCollapsedWidth : _sidebarExpandedWidth,
       decoration: BoxDecoration(
         color: isDark ? const Color(0xFF1E293B) : Colors.white,
         border: Border(
@@ -227,33 +254,65 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: Column(
         children: [
-          // 应用标题
+          // 标题区
           Container(
             height: 56,
-            padding: const EdgeInsets.symmetric(horizontal: 20),
-            alignment: Alignment.centerLeft,
-            child: Row(
-              children: [
-                Icon(Icons.grid_view_rounded, size: 22, color: cs.primary),
-                const SizedBox(width: 10),
-                Text(
-                  'memable',
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: cs.onSurface,
-                    letterSpacing: -0.3,
-                  ),
-                ),
-              ],
+            padding: EdgeInsets.symmetric(
+              horizontal: collapsed ? 16 : 20,
             ),
+            alignment: Alignment.centerLeft,
+            child: collapsed
+                ? Tooltip(
+                    message: '展开导航栏',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: _toggleSidebar,
+                      child: Icon(
+                        Icons.grid_view_rounded,
+                        size: 22,
+                        color: cs.primary,
+                      ),
+                    ),
+                  )
+                : Row(
+                    children: [
+                      Icon(
+                        Icons.grid_view_rounded,
+                        size: 22,
+                        color: cs.primary,
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        'memable',
+                        style: TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w700,
+                          color: cs.onSurface,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+                      const Spacer(),
+                      Tooltip(
+                        message: '收起导航栏',
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: _toggleSidebar,
+                          child: Icon(
+                            Icons.chevron_left,
+                            size: 18,
+                            color: cs.outline,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
           ),
           const SizedBox(height: 8),
           // 导航项
           for (int i = 0; i < _destinations.length; i++)
-            _buildNavItem(i, cs, isDark),
+            _buildNavItem(i, cs, isDark, collapsed: collapsed),
           const Spacer(),
-          // 底部：设置
+          // 底部设置
           Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -266,6 +325,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   selected: _selectedIndex == 6,
                   cs: cs,
                   onTap: () => _onSelectPage(6),
+                  collapsed: collapsed,
                 ),
               ],
             ),
@@ -276,14 +336,19 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 构建侧边栏导航项
-  Widget _buildNavItem(int index, ColorScheme cs, bool isDark) {
+  Widget _buildNavItem(int index, ColorScheme cs, bool isDark,
+      {bool collapsed = false}) {
     final dest = _destinations[index];
     final selected = _selectedIndex == index;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      padding: EdgeInsets.symmetric(
+        horizontal: collapsed ? 16 : 12,
+        vertical: 2,
+      ),
       child: Tooltip(
-        message: '${dest.tooltip} (${dest.shortcut})',
+        message:
+            collapsed ? '${dest.tooltip} (${dest.shortcut})' : '${dest.tooltip} (${dest.shortcut})',
         child: Material(
           color: Colors.transparent,
           borderRadius: BorderRadius.circular(8),
@@ -313,42 +378,57 @@ class _HomeScreenState extends State<HomeScreen> {
             },
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 150),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: EdgeInsets.symmetric(
+                horizontal: collapsed ? 0 : 14,
+                vertical: 10,
+              ),
               decoration: BoxDecoration(
                 color: selected
                     ? cs.primary.withValues(alpha: isDark ? 0.15 : 0.1)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Row(
-                children: [
-                  Icon(
-                    selected ? dest.selectedIcon : dest.icon,
-                    size: 20,
-                    color: selected ? cs.primary : cs.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      dest.label,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                        color: selected ? cs.primary : cs.onSurfaceVariant,
+              child: collapsed
+                  ? Center(
+                      child: Icon(
+                        selected ? dest.selectedIcon : dest.icon,
+                        size: 20,
+                        color:
+                            selected ? cs.primary : cs.onSurfaceVariant,
                       ),
+                    )
+                  : Row(
+                      children: [
+                        Icon(
+                          selected ? dest.selectedIcon : dest.icon,
+                          size: 20,
+                          color:
+                              selected ? cs.primary : cs.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            dest.label,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight:
+                                  selected ? FontWeight.w600 : FontWeight.w400,
+                              color:
+                                  selected ? cs.primary : cs.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                        Text(
+                          dest.shortcut.replaceAll('Ctrl+', ''),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: selected
+                                ? cs.primary.withValues(alpha: 0.6)
+                                : cs.outline,
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  Text(
-                    dest.shortcut.replaceAll('Ctrl+', ''),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: selected
-                          ? cs.primary.withValues(alpha: 0.6)
-                          : cs.outline,
-                    ),
-                  ),
-                ],
-              ),
             ),
           ),
         ),
@@ -363,6 +443,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required bool selected,
     required ColorScheme cs,
     required VoidCallback onTap,
+    bool collapsed = false,
   }) {
     return Material(
       color: Colors.transparent,
@@ -371,24 +452,32 @@ class _HomeScreenState extends State<HomeScreen> {
         borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          child: Row(
-            children: [
-              Icon(icon, size: 20, color: cs.onSurfaceVariant),
-              const SizedBox(width: 12),
-              Text(
-                label,
-                style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
-              ),
-            ],
+          padding: EdgeInsets.symmetric(
+            horizontal: collapsed ? 0 : 14,
+            vertical: 10,
           ),
+          child: collapsed
+              ? Center(
+                  child: Icon(icon, size: 20, color: cs.onSurfaceVariant),
+                )
+              : Row(
+                  children: [
+                    Icon(icon, size: 20, color: cs.onSurfaceVariant),
+                    const SizedBox(width: 12),
+                    Text(
+                      label,
+                      style:
+                          TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
+                    ),
+                  ],
+                ),
         ),
       ),
     );
   }
 
   /// 顶部工具栏
-  Widget _buildToolbar(ColorScheme cs) {
+  Widget _buildToolbar(ColorScheme cs, bool collapsed) {
     return Container(
       height: 56,
       padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -398,6 +487,16 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: Row(
         children: [
+          if (collapsed) ...[
+            Tooltip(
+              message: '展开导航栏',
+              child: IconButton(
+                icon: Icon(Icons.menu, size: 20, color: cs.outline),
+                onPressed: _toggleSidebar,
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           // 页面标题
           Expanded(
             child: Text(

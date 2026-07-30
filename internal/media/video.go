@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -32,6 +33,9 @@ type ffprobeOutput struct {
 		Height     int    `json:"height"`
 		AvgFPS     string `json:"avg_frame_rate"`
 		RFrameRate string `json:"r_frame_rate"`
+		Duration   string `json:"duration"`
+		DurationTS int64  `json:"duration_ts"`
+		TimeBase   string `json:"time_base"`
 	} `json:"streams"`
 	Format struct {
 		FormatName string `json:"format_name"`
@@ -63,8 +67,30 @@ func ProbeVideo(ctx context.Context, path string) (*VideoMeta, error) {
 	}
 
 	m := &VideoMeta{Format: p.Format.FormatName}
-	if seconds, err := strconv.ParseFloat(p.Format.Duration, 64); err == nil {
-		m.DurationMs = int64(seconds * 1000)
+
+	// 时长获取：format → 视频流 duration → duration_ts × time_base
+	m.DurationMs = parseDurationMs(p.Format.Duration)
+	if m.DurationMs <= 0 {
+		for _, s := range p.Streams {
+			if s.CodecType != "video" {
+				continue
+			}
+			if ms := parseDurationMs(s.Duration); ms > 0 {
+				m.DurationMs = ms
+				break
+			}
+			if s.DurationTS > 0 {
+				tb := parseRational(s.TimeBase)
+				if tb > 0 {
+					m.DurationMs = int64(float64(s.DurationTS) * tb * 1000)
+					break
+				}
+			}
+		}
+	}
+	// 未知时长不报错，后续封面回退到 0s
+	if m.DurationMs <= 0 {
+		slog.Warn("未知视频时长", "path", path)
 	}
 	if br, err := strconv.ParseInt(p.Format.BitRate, 10, 64); err == nil {
 		m.BitRate = br
@@ -94,6 +120,18 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// parseDurationMs 解析 ffprobe 的 duration 字符串为毫秒。
+func parseDurationMs(s string) int64 {
+	if s == "" || s == "N/A" {
+		return 0
+	}
+	seconds, err := strconv.ParseFloat(s, 64)
+	if err != nil || seconds <= 0 {
+		return 0
+	}
+	return int64(seconds * 1000)
 }
 
 func parseRational(s string) float64 {

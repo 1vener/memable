@@ -190,6 +190,17 @@ class _ReportScreenState extends State<ReportScreen> {
   Widget _buildToolbar(ColorScheme cs) {
     final groupCount = _groups.length;
     final fileCount = _items.length;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        if (w >= 1050) return _buildWideToolbar(cs, groupCount, fileCount);
+        if (w >= 700) return _buildMediumToolbar(cs, groupCount, fileCount);
+        return _buildCompactToolbar(cs, groupCount, fileCount);
+      },
+    );
+  }
+
+  Widget _buildWideToolbar(ColorScheme cs, int groupCount, int fileCount) {
     return Container(
       height: 64,
       padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -200,76 +211,110 @@ class _ReportScreenState extends State<ReportScreen> {
         children: [
           Icon(Icons.content_copy_rounded, color: cs.primary),
           const SizedBox(width: 10),
-          Text(
-            '重复统计',
-            style: TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w700,
-              color: cs.onSurface,
-            ),
-          ),
+          Text('重复统计', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: cs.onSurface)),
           const SizedBox(width: 14),
-          Text(
-            '$groupCount 组 · $fileCount 个文件',
-            style: TextStyle(fontSize: 12, color: cs.outline),
-          ),
+          Text('$groupCount 组 · $fileCount 个文件', style: TextStyle(fontSize: 12, color: cs.outline)),
           const SizedBox(width: 24),
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'all', label: Text('全部')),
-              ButtonSegment(
-                value: 'image',
-                label: Text('图片'),
-                icon: Icon(Icons.image_outlined, size: 16),
-              ),
-              ButtonSegment(
-                value: 'video',
-                label: Text('视频'),
-                icon: Icon(Icons.videocam_outlined, size: 16),
-              ),
-            ],
-            selected: {_kind},
-            onSelectionChanged:
-                (value) => setState(() {
-                  _kind = value.first;
-                  _selectedDirectory = null;
-                }),
-          ),
+          _mediaTypeSegmented(cs),
           const Spacer(),
-          SegmentedButton<_ReportView>(
-            segments: const [
-              ButtonSegment(
-                value: _ReportView.directory,
-                label: Text('目录树'),
-                icon: Icon(Icons.account_tree_outlined, size: 16),
-              ),
-              ButtonSegment(
-                value: _ReportView.group,
-                label: Text('重复分组'),
-                icon: Icon(Icons.grid_view_outlined, size: 16),
-              ),
-            ],
-            selected: {_view},
-            onSelectionChanged: (value) => setState(() => _view = value.first),
-          ),
+          _viewModeSegmented(cs),
           const SizedBox(width: 12),
-          FilledButton.icon(
-            onPressed:
-                _submitting || _pendingTaskIds.isNotEmpty
-                    ? null
-                    : _submitReport,
-            icon:
-                _pendingTaskIds.isNotEmpty
-                    ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                    : const Icon(Icons.refresh, size: 18),
-            label: Text(_pendingTaskIds.isNotEmpty ? '统计中' : '重新统计'),
+          _submitButton(cs),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMediumToolbar(ColorScheme cs, int groupCount, int fileCount) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: cs.outlineVariant)),
+      ),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Icon(Icons.content_copy_rounded, color: cs.primary),
+          Text('重复统计', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: cs.onSurface)),
+          Text('$groupCount 组 · $fileCount 个文件', style: TextStyle(fontSize: 12, color: cs.outline)),
+          _submitButton(cs),
+          _mediaTypeSegmented(cs),
+          _viewModeSegmented(cs),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCompactToolbar(ColorScheme cs, int groupCount, int fileCount) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: cs.outlineVariant)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.content_copy_rounded, size: 20, color: cs.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('重复统计', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: cs.onSurface)),
+              ),
+              _submitButton(cs),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('$groupCount 组 · $fileCount 个文件', style: TextStyle(fontSize: 12, color: cs.outline)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              _mediaTypeSegmented(cs),
+              _viewModeSegmented(cs),
+            ],
           ),
         ],
       ),
+    );
+  }
+
+  Widget _mediaTypeSegmented(ColorScheme cs) {
+    return SegmentedButton<String>(
+      segments: const [
+        ButtonSegment(value: 'all', label: Text('全部')),
+        ButtonSegment(value: 'image', label: Text('图片'), icon: Icon(Icons.image_outlined, size: 16)),
+        ButtonSegment(value: 'video', label: Text('视频'), icon: Icon(Icons.videocam_outlined, size: 16)),
+      ],
+      selected: {_kind},
+      onSelectionChanged: (value) => setState(() {
+        _kind = value.first;
+        _selectedDirectory = null;
+      }),
+    );
+  }
+
+  Widget _viewModeSegmented(ColorScheme cs) {
+    return SegmentedButton<_ReportView>(
+      segments: const [
+        ButtonSegment(value: _ReportView.directory, label: Text('目录树'), icon: Icon(Icons.account_tree_outlined, size: 16)),
+        ButtonSegment(value: _ReportView.group, label: Text('重复分组'), icon: Icon(Icons.grid_view_outlined, size: 16)),
+      ],
+      selected: {_view},
+      onSelectionChanged: (value) => setState(() => _view = value.first),
+    );
+  }
+
+  Widget _submitButton(ColorScheme cs) {
+    return FilledButton.icon(
+      onPressed: _submitting || _pendingTaskIds.isNotEmpty ? null : _submitReport,
+      icon: _pendingTaskIds.isNotEmpty
+          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+          : const Icon(Icons.refresh, size: 18),
+      label: Text(_pendingTaskIds.isNotEmpty ? '统计中' : '重新统计'),
     );
   }
 
@@ -309,21 +354,51 @@ class _ReportScreenState extends State<ReportScreen> {
             : _items
                 .where((item) => _parentPath(item.fullPath) == selected)
                 .toList();
-    return Row(
-      children: [
-        SizedBox(
-          width: 320,
-          child: ListView(
-            padding: const EdgeInsets.all(10),
-            children:
-                roots
-                    .expand((node) => _buildTreeRows(node, 0, selected, cs))
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth >= 800) {
+          // 宽屏：树 + 网格并排
+          return Row(
+            children: [
+              SizedBox(
+                width: 320,
+                child: _buildTreeList(roots, selected, cs),
+              ),
+              VerticalDivider(width: 1, color: cs.outlineVariant),
+              Expanded(child: _buildItemGrid(files, cs, emptyText: '此目录没有直属重复文件')),
+            ],
+          );
+        }
+        // 窄屏：顶部下拉 + 网格
+        final dirNames = roots.map((r) => r.path).toList();
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: DropdownButtonFormField<String>(
+                value: dirNames.contains(selected ?? '') ? selected : (dirNames.isNotEmpty ? dirNames.first : null),
+                items: dirNames
+                    .map((d) => DropdownMenuItem(value: d, child: Text(d, style: TextStyle(fontSize: 13))))
                     .toList(),
-          ),
-        ),
-        VerticalDivider(width: 1, color: cs.outlineVariant),
-        Expanded(child: _buildItemGrid(files, cs, emptyText: '此目录没有直属重复文件')),
-      ],
+                onChanged: (v) => setState(() => _selectedDirectory = v),
+                decoration: const InputDecoration(
+                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  isDense: true,
+                ),
+              ),
+            ),
+            Expanded(child: _buildItemGrid(files, cs, emptyText: '此目录没有直属重复文件')),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildTreeList(List<_DirectoryNode> roots, String? selected, ColorScheme cs) {
+    return ListView(
+      padding: const EdgeInsets.all(10),
+      children: roots.expand((node) => _buildTreeRows(node, 0, selected, cs)).toList(),
     );
   }
 

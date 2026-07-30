@@ -117,19 +117,38 @@ func buildCoverCandidates(durationMs int64) []int64 {
 }
 
 // ffmpegExtractFrame 用 ffmpeg 在指定时间点抽取单张 jpg。
+// 先尝试快速定位（-ss 在 -i 前），失败后重试准确但较慢的定位（-ss 在 -i 后）。
 func ffmpegExtractFrame(ctx context.Context, videoPath string, timeMs int64, outPath string) error {
 	sec := float64(timeMs) / 1000.0
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	ts := fmt.Sprintf("%.3f", sec)
+
+	// 第一次尝试：快速定位
+	fastCtx, fastCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer fastCancel()
+	cmd := exec.CommandContext(fastCtx, "ffmpeg",
 		"-y",
-		"-ss", fmt.Sprintf("%.3f", sec),
+		"-ss", ts,
 		"-i", videoPath,
 		"-frames:v", "1",
 		"-q:v", "2",
 		outPath,
 	)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if _, err := cmd.CombinedOutput(); err == nil {
+		return nil
+	}
+
+	// 第二次尝试：准确定位（-ss 在 -i 后）
+	preciseCtx, preciseCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer preciseCancel()
+	cmd2 := exec.CommandContext(preciseCtx, "ffmpeg",
+		"-y",
+		"-i", videoPath,
+		"-ss", ts,
+		"-frames:v", "1",
+		"-q:v", "2",
+		outPath,
+	)
+	if out, err := cmd2.CombinedOutput(); err != nil {
 		return fmt.Errorf("ffmpeg 抽帧 t=%.3f: %w\n%s", sec, err, string(out))
 	}
 	return nil

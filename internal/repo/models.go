@@ -5,7 +5,7 @@ package repo
 import "time"
 
 // ProgressFunc 进度回调函数（扫描/修复过程中调用）。
-type ProgressFunc func(phase string, total, processed, succeeded, skipped, failed int)
+type ProgressFunc func(phase string, total, processed, succeeded, skipped, failed int, rate float64, etaSeconds *int64)
 
 // ScanResult 扫描执行结果。
 type ScanResult struct {
@@ -105,6 +105,8 @@ type BackgroundTask struct {
 	FailedItems    int        `json:"failed_items"`
 	ResultJSON     *string    `json:"result_json,omitempty"`
 	ErrorMessage   *string    `json:"error_message,omitempty"`
+	ProcessingRate float64    `json:"processing_rate"`
+	EtaSeconds     *int64     `json:"eta_seconds,omitempty"`
 	QueuedAt       time.Time  `json:"queued_at"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
 	UpdatedAt      time.Time  `json:"updated_at"`

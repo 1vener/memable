@@ -4,8 +4,6 @@ package media
 
 import (
 	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"os"
 )
 
@@ -29,4 +27,14 @@ func ProbeImage(path string) (*ImageMeta, error) {
 		return nil, err
 	}
 	return &ImageMeta{Format: format, Width: cfg.Width, Height: cfg.Height}, nil
+}
+
+// probeDecoded 从已解码的图片获取 metadata（免二次 IO）。
+func probeDecoded(img image.Image, format string) *ImageMeta {
+	b := img.Bounds()
+	return &ImageMeta{
+		Format: format,
+		Width:  b.Dx(),
+		Height: b.Dy(),
+	}
 }

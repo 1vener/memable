@@ -762,7 +762,14 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 // ===== 健康检查 =====
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]string{"status": "ok"})
+	resp := map[string]interface{}{"status": "ok"}
+	if s.ffmpegCaps != nil {
+		resp["ffmpeg"] = s.ffmpegCaps
+	}
+	if s.ffprobeCaps != nil {
+		resp["ffprobe"] = s.ffprobeCaps
+	}
+	writeJSON(w, 200, resp)
 }
 
 // ===== 任务管理 =====

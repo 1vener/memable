@@ -96,6 +96,8 @@ CREATE TABLE IF NOT EXISTS background_tasks (
     succeeded_items     INTEGER NOT NULL DEFAULT 0,                     -- 成功数
     skipped_items       INTEGER NOT NULL DEFAULT 0,                     -- 跳过数
     failed_items        INTEGER NOT NULL DEFAULT 0,                     -- 失败数
+    processing_rate     REAL    NOT NULL DEFAULT 0,                     -- 处理速度（文件/秒）
+    eta_seconds         INTEGER,                                         -- 预计剩余秒数
     result_json         TEXT,                                           -- 结果 JSON
     error_message       TEXT,                                           -- 错误信息
     queued_at           TIMESTAMP NOT NULL DEFAULT (datetime('now')),

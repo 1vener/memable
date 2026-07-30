@@ -3,13 +3,11 @@
 package media
 
 import (
+	"context"
 	"fmt"
 	"image"
-	_ "image/jpeg"
-	_ "image/png"
 	"math"
 	"math/bits"
-	"os"
 	"sort"
 )
 
@@ -20,17 +18,13 @@ type ImageHashes struct {
 	PHash string
 }
 
-// ImagePerceptualHashes 计算图片 aHash/dHash/pHash。
+// ImagePerceptualHashes 从文件路径计算图片 aHash/dHash/pHash。
 func ImagePerceptualHashes(path string) (*ImageHashes, error) {
-	img, err := decodeImage(path)
+	decoded, err := DecodeImage(context.Background(), path, DecoderGo)
 	if err != nil {
 		return nil, err
 	}
-	return &ImageHashes{
-		AHash: aHash(img),
-		DHash: dHash(img),
-		PHash: pHash(img),
-	}, nil
+	return ImagePerceptualHashesFromImage(decoded.Image), nil
 }
 
 // HammingHex64 计算两个 64 bit 十六进制哈希的 Hamming 距离。
@@ -43,16 +37,6 @@ func HammingHex64(a, b string) (int, error) {
 		return 0, err
 	}
 	return bits.OnesCount64(x ^ y), nil
-}
-
-func decodeImage(path string) (image.Image, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	img, _, err := image.Decode(f)
-	return img, err
 }
 
 func aHash(img image.Image) string {

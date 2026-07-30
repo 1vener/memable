@@ -17,7 +17,7 @@ import (
 var schemaSQL string
 
 // schemaVersion 当前迁移版本；schema.sql 每次变更须 +1 并在 Migrate 中追加对应迁移。
-const schemaVersion = 5
+const schemaVersion = 6
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
 func Open(cfg *config.Config) (*sql.DB, error) {
@@ -157,6 +157,24 @@ func Migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_file_stats_created ON file_stats(created_at DESC);
 		INSERT INTO schema_version(version) VALUES (5);`); err != nil {
 			return fmt.Errorf("迁移到 v5: %w", err)
+		}
+	}
+
+	// v6：任务增加速度和 ETA 字段
+	if cur < 6 {
+		// 先尝试添加列；SQLite 不支持 IF NOT EXISTS 对 ADD COLUMN，忽略重复列错误
+		if _, err := db.Exec(`ALTER TABLE background_tasks ADD COLUMN processing_rate REAL NOT NULL DEFAULT 0`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("迁移到 v6 (processing_rate): %w", err)
+			}
+		}
+		if _, err := db.Exec(`ALTER TABLE background_tasks ADD COLUMN eta_seconds INTEGER`); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("迁移到 v6 (eta_seconds): %w", err)
+			}
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version(version) VALUES (6)`); err != nil {
+			return fmt.Errorf("迁移到 v6 (version): %w", err)
 		}
 	}
 	return nil

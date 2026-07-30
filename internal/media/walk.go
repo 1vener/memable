@@ -8,10 +8,18 @@ import (
 	"path/filepath"
 )
 
-// Walk 递归遍历 root，返回受支持图片/视频文件。
-func Walk(ctx context.Context, root string) ([]FileEntry, error) {
+// WalkResult 遍历结果。
+type WalkResult struct {
+	Entries     []FileEntry
+	SkippedGIF  int
+	Unsupported int
+}
+
+// Walk 递归遍历 root，返回受支持文件，跳过已知但不需要处理的格式（如 GIF）。
+func Walk(ctx context.Context, root string) WalkResult {
 	var out []FileEntry
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	var skippedGIF, unsupported int
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -22,8 +30,14 @@ func Walk(ctx context.Context, root string) ([]FileEntry, error) {
 			return nil
 		}
 
-		kind, ok := SupportedKind(path)
+		format, ok := SupportedFormat(path)
 		if !ok {
+			unsupported++
+			return nil
+		}
+		// 已知但按产品要求跳过的格式
+		if format.Decoder == DecoderSkip {
+			skippedGIF++
 			return nil
 		}
 		info, err := d.Info()
@@ -37,11 +51,12 @@ func Walk(ctx context.Context, root string) ([]FileEntry, error) {
 		out = append(out, FileEntry{
 			AbsPath:      path,
 			RelativePath: NormalizeRelPath(rel),
-			Kind:         kind,
+			Kind:         format.Kind,
+			Decoder:      format.Decoder,
 			Size:         info.Size(),
 			Mtime:        info.ModTime().UTC(),
 		})
 		return nil
 	})
-	return out, err
+	return WalkResult{Entries: out, SkippedGIF: skippedGIF, Unsupported: unsupported}
 }

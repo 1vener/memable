@@ -16,7 +16,8 @@ func NewTaskRepo(db *sql.DB) *TaskRepo { return &TaskRepo{db: db} }
 
 const taskCols = `id, kind, status, title, dedupe_key, library_id, scan_session_id,
 	payload_json, phase, total_items, processed_items, succeeded_items, skipped_items,
-	failed_items, result_json, error_message, queued_at, started_at, updated_at, finished_at`
+	failed_items, result_json, error_message, processing_rate, eta_seconds,
+	queued_at, started_at, updated_at, finished_at`
 
 // Create 创建任务；dedupe_key 非空时自动去重检查。
 func (r *TaskRepo) Create(t *BackgroundTask) error {
@@ -44,6 +45,7 @@ func (r *TaskRepo) GetByID(id string) (*BackgroundTask, error) {
 	).Scan(&t.ID, &t.Kind, &t.Status, &t.Title, &t.DedupeKey, &t.LibraryID,
 		&t.ScanSessionID, &t.PayloadJSON, &t.Phase, &t.TotalItems, &t.ProcessedItems,
 		&t.SucceededItems, &t.SkippedItems, &t.FailedItems, &t.ResultJSON, &t.ErrorMessage,
+		&t.ProcessingRate, &t.EtaSeconds,
 		&t.QueuedAt, &t.StartedAt, &t.UpdatedAt, &t.FinishedAt)
 	if err == sql.ErrNoRows {
 		return nil, errx.Newf("任务 %s 不存在", id)
@@ -63,6 +65,7 @@ func (r *TaskRepo) FindActiveByDedupe(dedupeKey string) (*BackgroundTask, error)
 	).Scan(&t.ID, &t.Kind, &t.Status, &t.Title, &t.DedupeKey, &t.LibraryID,
 		&t.ScanSessionID, &t.PayloadJSON, &t.Phase, &t.TotalItems, &t.ProcessedItems,
 		&t.SucceededItems, &t.SkippedItems, &t.FailedItems, &t.ResultJSON, &t.ErrorMessage,
+		&t.ProcessingRate, &t.EtaSeconds,
 		&t.QueuedAt, &t.StartedAt, &t.UpdatedAt, &t.FinishedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -103,6 +106,7 @@ func (r *TaskRepo) DequeueNext() (*BackgroundTask, error) {
 	).Scan(&t.ID, &t.Kind, &t.Status, &t.Title, &t.DedupeKey, &t.LibraryID,
 		&t.ScanSessionID, &t.PayloadJSON, &t.Phase, &t.TotalItems, &t.ProcessedItems,
 		&t.SucceededItems, &t.SkippedItems, &t.FailedItems, &t.ResultJSON, &t.ErrorMessage,
+		&t.ProcessingRate, &t.EtaSeconds,
 		&t.QueuedAt, &t.StartedAt, &t.UpdatedAt, &t.FinishedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -127,12 +131,29 @@ func (r *TaskRepo) DequeueNext() (*BackgroundTask, error) {
 	return &t, nil
 }
 
-// UpdateProgress 更新进度。
-func (r *TaskRepo) UpdateProgress(id string, phase string, total, processed, succeeded, skipped, failed int) error {
+// TaskProgress 进度快照（作为 UpdateProgress 的参数结构体）。
+type TaskProgress struct {
+	Phase          string
+	Total          int
+	Processed      int
+	Succeeded      int
+	Skipped        int
+	Failed         int
+	ProcessingRate float64
+	EtaSeconds     *int64
+}
+
+// UpdateProgress 更新进度（含速度和 ETA）。
+func (r *TaskRepo) UpdateProgress(id string, p TaskProgress) error {
 	_, err := r.db.Exec(
 		`UPDATE background_tasks SET phase = ?, total_items = ?, processed_items = ?,
-		 succeeded_items = ?, skipped_items = ?, failed_items = ?, updated_at = datetime('now')
-		 WHERE id = ?`, phase, total, processed, succeeded, skipped, failed, id,
+		 succeeded_items = ?, skipped_items = ?, failed_items = ?,
+		 processing_rate = ?, eta_seconds = ?,
+		 updated_at = datetime('now')
+		 WHERE id = ?`,
+		p.Phase, p.Total, p.Processed, p.Succeeded, p.Skipped, p.Failed,
+		p.ProcessingRate, p.EtaSeconds,
+		id,
 	)
 	return errx.Wrapf(err, "更新任务 %s 进度", id)
 }

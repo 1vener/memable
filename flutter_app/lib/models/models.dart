@@ -286,6 +286,8 @@ class BackgroundTask {
   final int failedItems;
   final String? resultJson;
   final String? errorMessage;
+  final double processingRate;
+  final int? etaSeconds;
   final String queuedAt;
   final String? startedAt;
   final String? finishedAt;
@@ -306,6 +308,8 @@ class BackgroundTask {
     this.failedItems = 0,
     this.resultJson,
     this.errorMessage,
+    this.processingRate = 0,
+    this.etaSeconds,
     required this.queuedAt,
     this.startedAt,
     this.finishedAt,
@@ -328,11 +332,37 @@ class BackgroundTask {
       failedItems: (json['failed_items'] as num?)?.toInt() ?? 0,
       resultJson: json['result_json'] as String?,
       errorMessage: json['error_message'] as String?,
+      processingRate: (json['processing_rate'] as num?)?.toDouble() ?? 0,
+      etaSeconds: (json['eta_seconds'] as num?)?.toInt(),
       queuedAt: (json['queued_at'] as String?) ?? '',
       startedAt: json['started_at'] as String?,
       finishedAt: json['finished_at'] as String?,
       queuePosition: (json['queue_position'] as num?)?.toInt() ?? 0,
     );
+  }
+
+  /// 格式化处理速度
+  String get formattedRate {
+    if (processingRate <= 0) return '';
+    if (processingRate < 10) {
+      return '${processingRate.toStringAsFixed(1)} 个/秒';
+    }
+    return '${processingRate.round()} 个/秒';
+  }
+
+  /// 格式化预计剩余时间
+  String get formattedEta {
+    if (etaSeconds == null || etaSeconds! <= 0) return '';
+    final s = etaSeconds!;
+    if (s < 60) return '预计剩余 $s 秒';
+    if (s < 3600) {
+      final m = s ~/ 60;
+      final sec = s % 60;
+      return '预计剩余 $m 分 $sec 秒';
+    }
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    return '预计剩余 $h 小时 $m 分';
   }
 
   bool get isRunning => status == 'running';

@@ -448,32 +448,54 @@ class _TaskCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 8),
-              Row(
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
                 children: [
                   _ProgressChip(
                     label: '已处理',
                     value: task.processedItems,
                     color: cs.primary,
                   ),
-                  const SizedBox(width: 8),
                   _ProgressChip(
                     label: '成功',
                     value: task.succeededItems,
                     color: const Color(0xFF22C55E),
                   ),
-                  const SizedBox(width: 8),
                   _ProgressChip(
                     label: '跳过',
                     value: task.skippedItems,
                     color: const Color(0xFFF59E0B),
                   ),
-                  const SizedBox(width: 8),
                   _ProgressChip(
                     label: '失败',
                     value: task.failedItems,
                     color: cs.error,
                   ),
-                  const Spacer(),
+                  if (task.formattedRate.isNotEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: cs.primary.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        task.formattedRate,
+                        style: TextStyle(fontSize: 11, color: cs.primary, fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  if (task.formattedEta.isNotEmpty)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: cs.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        task.formattedEta,
+                        style: TextStyle(fontSize: 11, color: cs.outline),
+                      ),
+                    ),
                   Text(
                     '共 ${task.totalItems} 项',
                     style: TextStyle(fontSize: 12, color: cs.outline),

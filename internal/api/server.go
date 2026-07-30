@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,19 +21,35 @@ import (
 	"memable/internal/task"
 )
 
+// ffmpegCaps 缓存 FFmpeg/ffprobe 能力（服务启动时执行一次）。
+type ffmpegCaps struct {
+	Available  bool   `json:"available"`
+	Version    string `json:"version"`
+	HEICDecode bool   `json:"heic_decode"`
+	CR2Decode  bool   `json:"cr2_decode"`
+}
+
+// ffprobeCaps 缓存 ffprobe 能力。
+type ffprobeCaps struct {
+	Available bool   `json:"available"`
+	Version   string `json:"version"`
+}
+
 // Server HTTP API 服务器。
 type Server struct {
-	cfg       *config.Config
-	libraries *repo.LibraryRepo
-	sessions  *repo.SessionRepo
-	media     *repo.MediaRepo
-	tasks     *repo.TaskRepo
-	fileStats *repo.FileStatsRepo
-	scanSvc   *scan.Service
-	searchSvc *search.Service
-	runner    *task.Runner
-	thumbBase string
-	http      *http.Server
+	cfg         *config.Config
+	libraries   *repo.LibraryRepo
+	sessions    *repo.SessionRepo
+	media       *repo.MediaRepo
+	tasks       *repo.TaskRepo
+	fileStats   *repo.FileStatsRepo
+	scanSvc     *scan.Service
+	searchSvc   *search.Service
+	runner      *task.Runner
+	thumbBase   string
+	ffmpegCaps  *ffmpegCaps
+	ffprobeCaps *ffprobeCaps
+	http        *http.Server
 }
 
 // NewServer 创建 HTTP API 服务器。
@@ -49,6 +66,7 @@ func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, m
 		runner:    runner,
 		thumbBase: thumbBase,
 	}
+	s.probeFFmpegCaps()
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 	s.http = &http.Server{
@@ -136,6 +154,43 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 // ===== 辅助函数 =====
+
+// probeFFmpegCaps 探测 FFmpeg/ffprobe 安装和能力（启动时执行一次，缓存结果）。
+func (s *Server) probeFFmpegCaps() {
+	s.ffmpegCaps = &ffmpegCaps{}
+	if v, err := exec.LookPath("ffmpeg"); err == nil {
+		s.ffmpegCaps.Available = true
+		if out, err := exec.Command(v, "-version").Output(); err == nil {
+			// 取版本第一行
+			if lines := strings.SplitN(string(out), "\n", 2); len(lines) > 0 {
+				s.ffmpegCaps.Version = strings.TrimSpace(lines[0])
+			}
+		}
+		// 探测 HEIC 解码能力
+		if out, err := exec.Command(v, "-decoders").Output(); err == nil {
+			s.ffmpegCaps.HEICDecode = strings.Contains(string(out), "hevc") || strings.Contains(string(out), "heic")
+		}
+		// 探测 CR2 解码能力
+		if out, err := exec.Command(v, "-formats").Output(); err == nil {
+			s.ffmpegCaps.CR2Decode = strings.Contains(string(out), "cr2") || strings.Contains(string(out), "raw")
+		}
+		slog.Info("ffmpeg 能力探测完成",
+			"version", s.ffmpegCaps.Version,
+			"heic", s.ffmpegCaps.HEICDecode,
+			"cr2", s.ffmpegCaps.CR2Decode,
+		)
+	}
+
+	s.ffprobeCaps = &ffprobeCaps{}
+	if v, err := exec.LookPath("ffprobe"); err == nil {
+		s.ffprobeCaps.Available = true
+		if out, err := exec.Command(v, "-version").Output(); err == nil {
+			if lines := strings.SplitN(string(out), "\n", 2); len(lines) > 0 {
+				s.ffprobeCaps.Version = strings.TrimSpace(lines[0])
+			}
+		}
+	}
+}
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

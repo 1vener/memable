@@ -91,7 +91,7 @@ func TestExecuteScanRepairsMissingThumbnailAndSupportsForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &Service{Sessions: sr, Media: mr, ThumbBase: thumbDir}
-	progress := repo.ProgressFunc(func(string, int, int, int, int, int) {})
+	progress := repo.ProgressFunc(func(string, int, int, int, int, int, float64, *int64) {})
 
 	result, err := svc.ExecuteScan(context.Background(), *lib, "sync-1", false, false, 1, progress)
 	if err != nil || result.Imported != 1 {
@@ -135,7 +135,7 @@ func TestExecuteScanCleansMissingMediaAndThumbnail(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &Service{Sessions: sr, Media: mr, ThumbBase: thumbDir}
-	progress := repo.ProgressFunc(func(string, int, int, int, int, int) {})
+	progress := repo.ProgressFunc(func(string, int, int, int, int, int, float64, *int64) {})
 
 	if _, err := svc.ExecuteScan(context.Background(), *lib, "clean-1", false, false, 1, progress); err != nil {
 		t.Fatal(err)

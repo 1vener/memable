@@ -204,8 +204,46 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 	defer r.cancelFuncs.Delete(task.ID)
 
 	slog.Info("开始执行任务", "task_id", task.ID, "kind", task.Kind, "title", task.Title)
-	progress := repo.ProgressFunc(func(phase string, total, processed, succeeded, skipped, failed int) {
-		_ = r.Tasks.UpdateProgress(task.ID, phase, total, processed, succeeded, skipped, failed)
+
+	// EWMA 速度计算 + 节流写库（最多 500ms 一次）
+	var lastProcessed int
+	var lastSampleTime time.Time
+	var ewmaRate float64
+	var lastFlush time.Time
+
+	progress := repo.ProgressFunc(func(phase string, total, processed, succeeded, skipped, failed int, rate float64, eta *int64) {
+		now := time.Now()
+		if !lastSampleTime.IsZero() {
+			elapsed := now.Sub(lastSampleTime).Seconds()
+			if elapsed >= 0.5 {
+				instant := float64(processed-lastProcessed) / elapsed
+				if ewmaRate == 0 {
+					ewmaRate = instant
+				} else {
+					ewmaRate = 0.25*instant + 0.75*ewmaRate
+				}
+				lastProcessed = processed
+				lastSampleTime = now
+			}
+		} else {
+			lastProcessed = processed
+			lastSampleTime = now
+		}
+		// 节流：最少 500ms 写一次库
+		if !lastFlush.IsZero() && now.Sub(lastFlush) < 500*time.Millisecond {
+			return
+		}
+		lastFlush = now
+		var etaPtr *int64
+		if total > 0 && processed > 0 && ewmaRate > 0 {
+			e := int64(float64(total-processed) / ewmaRate)
+			etaPtr = &e
+		}
+		_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
+			Phase: phase, Total: total, Processed: processed,
+			Succeeded: succeeded, Skipped: skipped, Failed: failed,
+			ProcessingRate: ewmaRate, EtaSeconds: etaPtr,
+		})
 	})
 
 	var execErr error
@@ -289,7 +327,7 @@ func (r *Runner) execScan(ctx context.Context, task *repo.BackgroundTask, tempor
 	}
 
 	sessionID := uuid.NewString()
-	_ = r.Tasks.UpdateProgress(task.ID, "discovering", 0, 0, 0, 0, 0)
+	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{Phase: "discovering", Total: 0, Processed: 0, Succeeded: 0, Skipped: 0, Failed: 0})
 
 	result, err := r.ScanSvc.ExecuteScan(ctx, lib, sessionID, temporary, payload.Force, r.Config.PoolSize, progress)
 	if err != nil {
@@ -301,9 +339,11 @@ func (r *Runner) execScan(ctx context.Context, task *repo.BackgroundTask, tempor
 		"library_id": lib.ID,
 		"cleaned":    result.Cleaned,
 	})
-	_ = r.Tasks.UpdateProgress(task.ID, "done",
-		result.Found, result.Imported+result.Skipped+result.Failed,
-		result.Imported, result.Skipped, result.Failed)
+	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
+		Phase: "done", Total: result.Found,
+		Processed: result.Imported + result.Skipped + result.Failed,
+		Succeeded: result.Imported, Skipped: result.Skipped, Failed: result.Failed,
+	})
 	_ = r.Tasks.Complete(task.ID, string(resJSON))
 	return nil
 }
@@ -319,7 +359,7 @@ func (r *Runner) execLegacyRepair(ctx context.Context, task *repo.BackgroundTask
 	}
 
 	sessionID := uuid.NewString()
-	_ = r.Tasks.UpdateProgress(task.ID, "discovering", 0, 0, 0, 0, 0)
+	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{Phase: "discovering", Total: 0, Processed: 0, Succeeded: 0, Skipped: 0, Failed: 0})
 
 	result, err := r.ScanSvc.ExecuteScan(ctx, *lib, sessionID, false, true, r.Config.PoolSize, progress)
 	if err != nil {
@@ -330,9 +370,11 @@ func (r *Runner) execLegacyRepair(ctx context.Context, task *repo.BackgroundTask
 		"session_id": result.Session.ID,
 		"library_id": lib.ID,
 	})
-	_ = r.Tasks.UpdateProgress(task.ID, "done",
-		result.Found, result.Imported+result.Skipped+result.Failed,
-		result.Imported, result.Skipped, result.Failed)
+	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
+		Phase: "done", Total: result.Found,
+		Processed: result.Imported + result.Skipped + result.Failed,
+		Succeeded: result.Imported, Skipped: result.Skipped, Failed: result.Failed,
+	})
 	_ = r.Tasks.Complete(task.ID, string(resJSON))
 	return nil
 }
@@ -340,7 +382,7 @@ func (r *Runner) execLegacyRepair(ctx context.Context, task *repo.BackgroundTask
 // execReport 执行重复检测并将结构化结果保存到任务中。
 func (r *Runner) execReport(ctx context.Context, task *repo.BackgroundTask, kind string, progress repo.ProgressFunc) error {
 	det := duplicate.NewDetector(r.Media, nil)
-	progress("detecting", 0, 0, 0, 0, 0)
+	progress("detecting", 0, 0, 0, 0, 0, 0, (*int64)(nil))
 
 	var groups []duplicate.Group
 	var err error
@@ -361,7 +403,7 @@ func (r *Runner) execReport(ctx context.Context, task *repo.BackgroundTask, kind
 	if err != nil {
 		return fmt.Errorf("序列化重复检测结果: %w", err)
 	}
-	progress("done", len(groups), len(groups), len(groups), 0, 0)
+	progress("done", len(groups), len(groups), len(groups), 0, 0, 0, (*int64)(nil))
 	_ = r.Tasks.Complete(task.ID, string(result))
 	return nil
 }
@@ -425,7 +467,7 @@ func (r *Runner) execPromote(ctx context.Context, task *repo.BackgroundTask, pro
 			slog.Error("更新媒体库归属失败", "media_id", m.ID, "err", err)
 		}
 		if (i+1)%50 == 0 || i+1 == total {
-			progress("promoting", total, i+1, moved, 0, 0)
+			progress("promoting", total, i+1, moved, 0, 0, 0, (*int64)(nil))
 		}
 	}
 
@@ -484,21 +526,21 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 	}
 
 	// 阶段1：删除数据库媒体记录，收集缩略图路径
-	progress("deleting_db", 0, 0, 0, 0, 0)
+	progress("deleting_db", 0, 0, 0, 0, 0, 0, (*int64)(nil))
 	thumbPaths, err := r.Media.DeleteByDirectory(payload.LibraryID, payload.DirPath)
 	if err != nil {
 		return fmt.Errorf("删除数据库记录: %w", err)
 	}
 
 	// 阶段2：删除本地目录
-	progress("deleting_files", 0, 0, 0, 0, 0)
+	progress("deleting_files", 0, 0, 0, 0, 0, 0, (*int64)(nil))
 	absDir := filepath.Join(lib.Path, payload.DirPath)
 	if err := os.RemoveAll(absDir); err != nil && !os.IsNotExist(err) {
 		slog.Warn("删除本地目录失败（数据库已清理）", "path", absDir, "err", err)
 	}
 
 	// 阶段3：清理无引用缩略图
-	progress("cleaning_thumbs", 0, len(thumbPaths), 0, 0, 0)
+	progress("cleaning_thumbs", 0, len(thumbPaths), 0, 0, 0, 0, (*int64)(nil))
 	deleted := 0
 	for i, thumbRel := range thumbPaths {
 		n, err := r.Media.CountThumbnailReferences(thumbRel)
@@ -514,7 +556,7 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 		_ = os.Remove(filepath.Dir(thumbAbs))
 		deleted++
 		if (i+1)%50 == 0 || i+1 == len(thumbPaths) {
-			progress("cleaning_thumbs", len(thumbPaths), i+1, deleted, 0, 0)
+			progress("cleaning_thumbs", len(thumbPaths), i+1, deleted, 0, 0, 0, (*int64)(nil))
 		}
 	}
 

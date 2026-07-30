@@ -1,5 +1,6 @@
 // tool_screen.dart：工具页面（文件统计）
 // 代码注释使用中文
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -129,37 +130,43 @@ class _ToolScreenState extends State<ToolScreen> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildInputSection(cs),
-            const SizedBox(height: 16),
-            if (_error != null) _buildErrorCard(cs),
-            if (_currentStats != null) ...[
-              _buildSummaryCard(cs),
-              const SizedBox(height: 16),
-              _buildPieCharts(cs),
-              const SizedBox(height: 16),
-              _buildExtDetailTable(cs),
-              const SizedBox(height: 16),
-              _buildFileTreeSection(cs),
-            ],
-            if (_currentStats == null && _error == null && !_loading)
-              _buildEmptyState(cs),
-            if (_historyList != null && _historyList!.isNotEmpty) ...[
-              const SizedBox(height: 24),
-              _buildHistorySection(cs),
-            ],
-          ],
-        ),
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w = constraints.maxWidth;
+        final pad = w >= 1000 ? 24.0 : (w >= 600 ? 16.0 : 12.0);
+        return Padding(
+          padding: EdgeInsets.all(pad),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildInputSection(cs, w),
+                const SizedBox(height: 16),
+                if (_error != null) _buildErrorCard(cs),
+                if (_currentStats != null) ...[
+                  _buildSummaryCard(cs),
+                  const SizedBox(height: 16),
+                  _buildPieChartWrapper(cs, w),
+                  const SizedBox(height: 16),
+                  _buildExtDetailTable(cs),
+                  const SizedBox(height: 16),
+                  _buildFileTreeSection(cs),
+                ],
+                if (_currentStats == null && _error == null && !_loading)
+                  _buildEmptyState(cs),
+                if (_historyList != null && _historyList!.isNotEmpty) ...[
+                  const SizedBox(height: 24),
+                  _buildHistorySection(cs),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildInputSection(ColorScheme cs) {
+  Widget _buildInputSection(ColorScheme cs, double w) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -174,40 +181,66 @@ class _ToolScreenState extends State<ToolScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _dirPathCtrl,
-                    style: const TextStyle(fontSize: 13),
-                    decoration: const InputDecoration(
-                      hintText: r'输入目录路径，例如 C:\Users\Photos',
-                      prefixIcon: Icon(Icons.folder_outlined, size: 20),
-                    ),
+            if (w >= 700)
+              Row(
+                children: [
+                  Expanded(child: _buildDirTextField()),
+                  const SizedBox(width: 10),
+                  _buildBrowseButton(),
+                  const SizedBox(width: 8),
+                  _buildStartButton(),
+                ],
+              )
+            else
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildDirTextField(),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      _buildBrowseButton(),
+                      const SizedBox(width: 8),
+                      Expanded(child: _buildStartButton()),
+                    ],
                   ),
-                ),
-                const SizedBox(width: 10),
-                Tooltip(
-                  message: '选择目录',
-                  child: OutlinedButton.icon(
-                    onPressed: _loading ? null : _browseDir,
-                    icon: const Icon(Icons.folder_open, size: 18),
-                    label: const Text('浏览'),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  onPressed: _loading ? null : _startStats,
-                  icon: _loading
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Icon(Icons.analytics, size: 18),
-                  label: Text(_loading ? '统计中...' : '开始统计'),
-                ),
-              ],
-            ),
+                ],
+              ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildDirTextField() {
+    return TextField(
+      controller: _dirPathCtrl,
+      style: const TextStyle(fontSize: 13),
+      decoration: const InputDecoration(
+        hintText: r'输入目录路径，例如 C:\Users\Photos',
+        prefixIcon: Icon(Icons.folder_outlined, size: 20),
+      ),
+    );
+  }
+
+  Widget _buildBrowseButton() {
+    return Tooltip(
+      message: '选择目录',
+      child: OutlinedButton.icon(
+        onPressed: _loading ? null : _browseDir,
+        icon: const Icon(Icons.folder_open, size: 18),
+        label: const Text('浏览'),
+      ),
+    );
+  }
+
+  Widget _buildStartButton() {
+    return FilledButton.icon(
+      onPressed: _loading ? null : _startStats,
+      icon: _loading
+          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          : const Icon(Icons.analytics, size: 18),
+      label: Text(_loading ? '统计中...' : '开始统计'),
     );
   }
 
@@ -232,12 +265,13 @@ class _ToolScreenState extends State<ToolScreen> {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(24),
-        child: Row(
+        child: Wrap(
+          spacing: 32,
+          runSpacing: 12,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             _StatBadge(icon: Icons.insert_drive_file_outlined, label: '总文件数', value: '${s.totalCount}', cs: cs),
-            const SizedBox(width: 32),
             _StatBadge(icon: Icons.storage_outlined, label: '总大小', value: s.totalBytesFormatted, cs: cs),
-            const Spacer(),
             if (s.createdAt != null)
               Text('统计时间: ${s.createdAt}', style: TextStyle(fontSize: 12, color: cs.outline)),
           ],
@@ -248,21 +282,30 @@ class _ToolScreenState extends State<ToolScreen> {
 
   // ========== 饼图 ==========
 
-  Widget _buildPieCharts(ColorScheme cs) {
+  Widget _buildPieChartWrapper(ColorScheme cs, double w) {
     final stats = _currentStats!.extStats;
     if (stats.isEmpty) return const SizedBox.shrink();
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    if (w >= 1000) {
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: _buildSinglePie(cs, stats, '文件数量占比', w, useBytes: false)),
+          const SizedBox(width: 12),
+          Expanded(child: _buildSinglePie(cs, stats, '存储空间占比', w, useBytes: true)),
+        ],
+      );
+    }
+    return Column(
       children: [
-        Expanded(child: _buildSinglePie(cs, stats, '文件数量占比', useBytes: false)),
-        const SizedBox(width: 12),
-        Expanded(child: _buildSinglePie(cs, stats, '存储空间占比', useBytes: true)),
+        _buildSinglePie(cs, stats, '文件数量占比', w, useBytes: false),
+        const SizedBox(height: 12),
+        _buildSinglePie(cs, stats, '存储空间占比', w, useBytes: true),
       ],
     );
   }
 
-  Widget _buildSinglePie(ColorScheme cs, List<ExtStat> stats, String title, {required bool useBytes}) {
+  Widget _buildSinglePie(ColorScheme cs, List<ExtStat> stats, String title, double w, {required bool useBytes}) {
     final top = stats.take(8).toList();
     final hasMore = stats.length > 8;
     final touchedIdx = useBytes ? _touchedBytesIdx : _touchedCountIdx;
@@ -270,6 +313,9 @@ class _ToolScreenState extends State<ToolScreen> {
       ...top,
       if (hasMore) ExtStat(ext: '其他', bytes: 0, count: 0, pctCount: 0, pctBytes: 0),
     ];
+    final pieSize = (w >= 420) ? 180.0 : 140.0;
+    final cardW = w >= 1000 ? w / 2 - 30 : w - 24;
+    final inlineLegend = cardW >= 420;
 
     return Card(
       child: Padding(
@@ -279,60 +325,60 @@ class _ToolScreenState extends State<ToolScreen> {
           children: [
             Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface)),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                // 饼图
-                SizedBox(
-                  width: 180,
-                  height: 180,
-                  child: PieChart(
-                    PieChartData(
-                      sections: _buildPieSections(top, hasMore, stats, useBytes: useBytes, touchedIdx: touchedIdx),
-                      centerSpaceRadius: 40,
-                      sectionsSpace: 2,
-                      pieTouchData: PieTouchData(
-                        touchCallback: (event, response) {
-                          if (!event.isInterestedForInteractions ||
-                              response == null ||
-                              response.touchedSection == null) {
-                            setState(() {
-                              if (useBytes) { _touchedBytesIdx = -1; } else { _touchedCountIdx = -1; }
-                            });
-                            return;
-                          }
-                          final idx = response.touchedSection!.touchedSectionIndex;
-                          setState(() {
-                            if (useBytes) { _touchedBytesIdx = idx; } else { _touchedCountIdx = idx; }
-                          });
-                        },
-                      ),
-                    ),
+            if (inlineLegend)
+              Row(
+                children: [
+                  SizedBox(width: pieSize, height: pieSize, child: _buildPieChart(top, hasMore, stats, useBytes, touchedIdx)),
+                  const SizedBox(width: 16),
+                  Expanded(child: _buildPieLegend(displayItems, hasMore, stats.length, touchedIdx, useBytes)),
+                ],
+              )
+            else
+              Column(
+                children: [
+                  Center(
+                    child: SizedBox(width: pieSize, height: pieSize, child: _buildPieChart(top, hasMore, stats, useBytes, touchedIdx)),
                   ),
-                ),
-                const SizedBox(width: 16),
-                // 图例
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      for (int i = 0; i < displayItems.length; i++) ...[
-                        if (i > 0) const SizedBox(height: 4),
-                        _buildLegendItem(
-                          displayItems[i],
-                          _extColor(i, hasMore, stats.length),
-                          i == touchedIdx,
-                          useBytes,
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-            ),
+                  const SizedBox(height: 12),
+                  _buildPieLegend(displayItems, hasMore, stats.length, touchedIdx, useBytes),
+                ],
+              ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildPieChart(List<ExtStat> top, bool hasMore, List<ExtStat> all, bool useBytes, int touchedIdx) {
+    return PieChart(
+      PieChartData(
+        sections: _buildPieSections(top, hasMore, all, useBytes: useBytes, touchedIdx: touchedIdx),
+        centerSpaceRadius: 40,
+        sectionsSpace: 2,
+        pieTouchData: PieTouchData(
+          touchCallback: (event, response) {
+            if (!event.isInterestedForInteractions || response == null || response.touchedSection == null) {
+              setState(() { if (useBytes) { _touchedBytesIdx = -1; } else { _touchedCountIdx = -1; }});
+              return;
+            }
+            final idx = response.touchedSection!.touchedSectionIndex;
+            setState(() { if (useBytes) { _touchedBytesIdx = idx; } else { _touchedCountIdx = idx; }});
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPieLegend(List<ExtStat> displayItems, bool hasMore, int totalLen, int touchedIdx, bool useBytes) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (int i = 0; i < displayItems.length; i++) ...[
+          if (i > 0) const SizedBox(height: 4),
+          _buildLegendItem(displayItems[i], _extColor(i, hasMore, totalLen), i == touchedIdx, useBytes),
+        ],
+      ],
     );
   }
 
@@ -459,14 +505,14 @@ class _ToolScreenState extends State<ToolScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // 标题 + 排序控件 + 复制按钮
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Text('扩展名统计详情', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface)),
-                const SizedBox(width: 16),
                 _buildSortButton(cs, '按数量', _ExtSortField.count),
-                const SizedBox(width: 8),
                 _buildSortButton(cs, '按大小', _ExtSortField.bytes),
-                const Spacer(),
                 OutlinedButton.icon(
                   onPressed: () => _copyExtStatsToClipboard(cs, sorted),
                   icon: const Icon(Icons.copy, size: 16),
@@ -476,40 +522,54 @@ class _ToolScreenState extends State<ToolScreen> {
               ],
             ),
             const SizedBox(height: 12),
-            // 列标题
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
-                children: [
-                  const SizedBox(width: 16), // 对齐颜色点
-                  SizedBox(width: 100, child: Text('扩展名', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
-                  SizedBox(width: 80, child: Text('文件数', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
-                  SizedBox(width: 100, child: Text('大小', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
-                  Expanded(child: Text('数量占比', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
-                  SizedBox(width: 80, child: Text('空间占比', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            // 数据行
-            ...sorted.map((s) {
-              final i = stats.indexOf(s);
-              final color = _extColor(i, hasMore, stats.length);
-              return Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
+            // 表格体：水平滚动避免压缩列
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 620),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-                    const SizedBox(width: 8),
-                    SizedBox(width: 100, child: Text(s.ext, style: TextStyle(fontSize: 13, color: cs.onSurface))),
-                    SizedBox(width: 80, child: Text('${s.count}', style: TextStyle(fontSize: 13, color: cs.onSurface))),
-                    SizedBox(width: 100, child: Text(_formatBytes(s.bytes), style: TextStyle(fontSize: 13, color: cs.onSurface))),
-                    Expanded(child: _buildMiniBar(s.pctCount, cs)),
-                    SizedBox(width: 80, child: Text('${s.pctBytes.toStringAsFixed(1)}%', style: TextStyle(fontSize: 13, color: cs.onSurface))),
+                    // 列标题
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        children: [
+                          const SizedBox(width: 16),
+                          SizedBox(width: 100, child: Text('扩展名', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
+                          SizedBox(width: 80, child: Text('文件数', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
+                          SizedBox(width: 100, child: Text('大小', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
+                          SizedBox(width: 200, child: Text('数量占比', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
+                          SizedBox(width: 100, child: Text('空间占比', style: TextStyle(fontSize: 12, color: cs.outline, fontWeight: FontWeight.w500))),
+                        ],
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    ...sorted.map((s) {
+                      final i = stats.indexOf(s);
+                      final color = _extColor(i, hasMore, stats.length);
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+                            const SizedBox(width: 8),
+                            Tooltip(
+                              message: s.ext,
+                              child: SizedBox(width: 100, child: Text(s.ext, style: TextStyle(fontSize: 13, color: cs.onSurface), overflow: TextOverflow.ellipsis, maxLines: 1)),
+                            ),
+                            SizedBox(width: 80, child: Text('${s.count}', style: TextStyle(fontSize: 13, color: cs.onSurface))),
+                            SizedBox(width: 100, child: Text(_formatBytes(s.bytes), style: TextStyle(fontSize: 13, color: cs.onSurface))),
+                            SizedBox(width: 200, child: _buildMiniBar(s.pctCount, cs)),
+                            SizedBox(width: 100, child: Text('${s.pctBytes.toStringAsFixed(1)}%', style: TextStyle(fontSize: 13, color: cs.onSurface))),
+                          ],
+                        ),
+                      );
+                    }),
                   ],
                 ),
-              );
-            }),
+              ),
+            ),
           ],
         ),
       ),
@@ -617,7 +677,7 @@ class _ToolScreenState extends State<ToolScreen> {
         child: InkWell(
           borderRadius: BorderRadius.circular(8),
           child: Padding(
-            padding: EdgeInsets.only(left: 12.0 + depth * 16, right: 12, top: 10, bottom: 10),
+            padding: EdgeInsets.only(left: 12.0 + math.min(depth * 16.0, 96.0), right: 12, top: 10, bottom: 10),
             child: Row(
               children: [
                 // 用留空保持与目录行对齐
@@ -703,10 +763,13 @@ class _ToolScreenState extends State<ToolScreen> {
                     const SizedBox(width: 8),
                     // 名称
                     Expanded(
-                      child: Text(
-                        node.name,
-                        style: TextStyle(fontSize: 13, color: cs.onSurface),
-                        overflow: TextOverflow.ellipsis,
+                      child: Tooltip(
+                        message: node.name,
+                        child: Text(
+                          node.name,
+                          style: TextStyle(fontSize: 13, color: cs.onSurface),
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ),
                   ],
