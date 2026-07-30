@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"memable/internal/media"
@@ -524,6 +526,107 @@ func (s *Server) handlePromoteSession(w http.ResponseWriter, r *http.Request) {
 		"moved":   moved,
 		"library": lib.Name,
 	})
+}
+
+// ===== 媒体操作（打开文件/目录）=====
+
+type openMediaReq struct {
+	Action string `json:"action"` // "file" 或 "directory"
+}
+
+func (s *Server) handleOpenMedia(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的媒体 ID")
+		return
+	}
+
+	var req openMediaReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	if req.Action != "file" && req.Action != "directory" {
+		writeError(w, 400, "action 必须是 file 或 directory")
+		return
+	}
+
+	// 1. 查询媒体记录
+	m, err := s.media.GetByID(id)
+	if err != nil {
+		writeError(w, 500, "查询媒体失败: "+err.Error())
+		return
+	}
+	if m == nil {
+		writeError(w, 404, "媒体不存在")
+		return
+	}
+
+	// 2. 查询所属收藏库
+	lib, err := s.libraries.GetByID(m.LibraryID)
+	if err != nil {
+		writeError(w, 500, "查询收藏库失败: "+err.Error())
+		return
+	}
+	if lib == nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+
+	// 3. 构造并校验完整路径
+	fullPath := filepath.Join(lib.Path, filepath.FromSlash(m.RelativePath))
+	libAbs, err := filepath.Abs(lib.Path)
+	if err != nil {
+		writeError(w, 500, "解析库路径失败")
+		return
+	}
+	fileAbs, err := filepath.Abs(fullPath)
+	if err != nil {
+		writeError(w, 500, "解析文件路径失败")
+		return
+	}
+	// 安全校验：文件必须在收藏库根目录内
+	rel, err := filepath.Rel(libAbs, fileAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		writeError(w, 403, "文件路径越界")
+		return
+	}
+	if _, err := os.Stat(fileAbs); err != nil {
+		writeError(w, 404, "文件已不存在")
+		return
+	}
+
+	// 4. 跨平台执行打开命令
+	if err := openFile(req.Action, fileAbs); err != nil {
+		writeError(w, 500, "打开失败: "+err.Error())
+		return
+	}
+
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+// openFile 跨平台打开文件或文件所在目录。
+func openFile(action, absPath string) error {
+	switch runtime.GOOS {
+	case "windows":
+		if action == "directory" {
+			// explorer /select,<path> 打开目录并选中文件
+			return exec.Command("explorer", "/select,", absPath).Start()
+		}
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", absPath).Start()
+	case "darwin":
+		if action == "directory" {
+			return exec.Command("open", "-R", absPath).Start()
+		}
+		return exec.Command("open", absPath).Start()
+	case "linux":
+		if action == "directory" {
+			return exec.Command("xdg-open", filepath.Dir(absPath)).Start()
+		}
+		return exec.Command("xdg-open", absPath).Start()
+	default:
+		return fmt.Errorf("不支持的平台: %s", runtime.GOOS)
+	}
 }
 
 // ===== 搜索（阶段 7）=====

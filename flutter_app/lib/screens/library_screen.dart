@@ -476,6 +476,7 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   String _selectedDir = '';
   List<Media> _files = [];
   bool _loadingFiles = false;
+  String? _typeFilter; // null=全部, image=图片, video=视频
 
   @override
   void initState() {
@@ -791,6 +792,14 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   }
 
   Widget _buildThumbnailGrid(ColorScheme cs) {
+    final displayFiles = _filterFiles();
+    final totalSize = displayFiles.fold<int>(
+      0,
+      (s, m) => s + (m.fileSize > 0 ? m.fileSize : 0),
+    );
+    final imageCount = displayFiles.where((m) => m.kind == 'image').length;
+    final videoCount = displayFiles.where((m) => m.kind == 'video').length;
+
     return RefreshIndicator(
       onRefresh: () => _selectDir(_selectedDir),
       child: Padding(
@@ -800,7 +809,7 @@ class _FileTreePanelState extends State<_FileTreePanel> {
           children: [
             // 面包屑/路径
             Padding(
-              padding: const EdgeInsets.only(bottom: 16),
+              padding: const EdgeInsets.only(bottom: 12),
               child: Text(
                 _selectedDir.isEmpty
                     ? widget.library.path
@@ -809,29 +818,165 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+            // 类型筛选标签
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+                children: [
+                  _FilterChip(
+                    label: '全部',
+                    count: _files.length,
+                    selected: _typeFilter == null,
+                    color: cs.outline,
+                    onTap: () => setState(() => _typeFilter = null),
+                  ),
+                  const SizedBox(width: 8),
+                  _FilterChip(
+                    label: '图片',
+                    count: imageCount,
+                    selected: _typeFilter == 'image',
+                    color: cs.primary,
+                    onTap: () => setState(() => _typeFilter = 'image'),
+                  ),
+                  const SizedBox(width: 8),
+                  _FilterChip(
+                    label: '视频',
+                    count: videoCount,
+                    selected: _typeFilter == 'video',
+                    color: const Color(0xFF7C3AED),
+                    onTap: () => setState(() => _typeFilter = 'video'),
+                  ),
+                ],
+              ),
+            ),
+            // 网格
             Expanded(
               child: GridView.builder(
                 gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                   maxCrossAxisExtent: 180,
                   crossAxisSpacing: 12,
                   mainAxisSpacing: 12,
-                  childAspectRatio: 1,
+                  childAspectRatio: 0.88,
                 ),
-                itemCount: _files.length,
+                itemCount: displayFiles.length,
                 itemBuilder: (context, index) {
-                  final m = _files[index];
+                  final m = displayFiles[index];
                   final thumbUrl =
                       m.thumbnailPath != null
                           ? widget.api.thumbnailUrl(m.thumbnailPath!)
                           : null;
-                  return _MediaThumbCard(media: m, thumbUrl: thumbUrl);
+                  return _MediaThumbCard(
+                    media: m,
+                    thumbUrl: thumbUrl,
+                    onOpenFile: () => _openMediaFile(m.id, context),
+                    onOpenDirectory: () => _openMediaDirectory(m.id, context),
+                  );
                 },
+              ),
+            ),
+            // 底部统计栏
+            Container(
+              height: 44,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerLow,
+                border: Border(
+                  top: BorderSide(color: cs.outlineVariant, width: 0.5),
+                ),
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(12),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    '共 ${displayFiles.length} 项',
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                  ),
+                  if (imageCount > 0) ...[
+                    const SizedBox(width: 8),
+                    Icon(Icons.image_rounded, size: 13, color: cs.primary),
+                    const SizedBox(width: 3),
+                    Text(
+                      '$imageCount',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                  if (videoCount > 0) ...[
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.videocam_rounded,
+                      size: 13,
+                      color: Color(0xFF7C3AED),
+                    ),
+                    const SizedBox(width: 3),
+                    Text(
+                      '$videoCount',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                  const Spacer(),
+                  Text(
+                    _formatBytes(totalSize),
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                  ),
+                ],
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  List<Media> _filterFiles() {
+    if (_typeFilter == null) return _files;
+    return _files.where((m) => m.kind == _typeFilter).toList();
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  Future<void> _openMediaFile(int mediaId, BuildContext context) async {
+    try {
+      await widget.api.openMediaFile(mediaId);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _openMediaDirectory(int mediaId, BuildContext context) async {
+    try {
+      await widget.api.openMediaDirectory(mediaId);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
   }
 }
 
@@ -1018,68 +1163,278 @@ class _TreeDirTile extends StatelessWidget {
   }
 }
 
-/// 缩略图卡片
-class _MediaThumbCard extends StatelessWidget {
-  final Media media;
-  final String? thumbUrl;
+/// 类型筛选标签
+class _FilterChip extends StatelessWidget {
+  final String label;
+  final int count;
+  final bool selected;
+  final Color color;
+  final VoidCallback onTap;
 
-  const _MediaThumbCard({required this.media, required this.thumbUrl});
+  const _FilterChip({
+    required this.label,
+    required this.count,
+    required this.selected,
+    required this.color,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Expanded(
-            child:
-                thumbUrl != null
-                    ? Image.network(
-                      thumbUrl!,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _placeholder(cs),
-                      loadingBuilder: (_, child, progress) {
-                        if (progress == null) return child;
-                        return const Center(
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        );
-                      },
-                    )
-                    : _placeholder(cs),
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: selected ? color.withValues(alpha: 0.12) : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected ? color.withValues(alpha: 0.5) : cs.outlineVariant,
+            width: selected ? 1.5 : 1,
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  media.relativePath.split('/').last.split('\\').last,
-                  style: TextStyle(fontSize: 11, color: cs.onSurface),
-                  overflow: TextOverflow.ellipsis,
-                  maxLines: 1,
-                ),
-                if (media.width != null && media.height != null)
-                  Text(
-                    '${media.width}×${media.height}',
-                    style: TextStyle(fontSize: 10, color: cs.outline),
-                  ),
-              ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                color: selected ? color : cs.onSurfaceVariant,
+              ),
             ),
-          ),
-        ],
+            if (count > 0) ...[
+              const SizedBox(width: 4),
+              Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: selected ? color.withValues(alpha: 0.7) : cs.outline,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 缩略图卡片
+class _MediaThumbCard extends StatelessWidget {
+  final Media media;
+  final String? thumbUrl;
+  final VoidCallback? onOpenFile;
+  final VoidCallback? onOpenDirectory;
+
+  const _MediaThumbCard({
+    required this.media,
+    required this.thumbUrl,
+    this.onOpenFile,
+    this.onOpenDirectory,
+  });
+
+  // 视频时长格式化
+  static String formatDuration(int? ms) {
+    if (ms == null || ms <= 0) return '';
+    final totalSec = (ms / 1000).round();
+    final h = totalSec ~/ 3600;
+    final m = (totalSec % 3600) ~/ 60;
+    final s = totalSec % 60;
+    if (h > 0)
+      return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+    return '$m:${s.toString().padLeft(2, '0')}';
+  }
+
+  // 文件大小格式化
+  static String formatSize(int? bytes) {
+    if (bytes == null || bytes < 0) return '';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isVideo = media.kind == 'video';
+    final typeColor = isVideo ? const Color(0xFF7C3AED) : cs.primary;
+
+    return GestureDetector(
+      onSecondaryTapDown:
+          (details) => _showContextMenu(context, details.globalPosition),
+      onLongPressStart:
+          (details) => _showContextMenu(context, details.globalPosition),
+      onDoubleTap: onOpenFile,
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 缩略图区域
+            Expanded(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  thumbUrl != null
+                      ? Image.network(
+                        thumbUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder:
+                            (_, __, ___) => _placeholder(cs, typeColor),
+                        loadingBuilder: (_, child, progress) {
+                          if (progress == null) return child;
+                          return const Center(
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          );
+                        },
+                      )
+                      : _placeholder(cs, typeColor),
+                  // 视频播放图标
+                  if (isVideo)
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.45),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.play_arrow_rounded,
+                          size: 24,
+                          color: Colors.white.withValues(alpha: 0.85),
+                        ),
+                      ),
+                    ),
+                  // 类型图标（左上角）
+                  Positioned(
+                    top: 6,
+                    left: 6,
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: BoxDecoration(
+                        color: typeColor.withValues(alpha: 0.85),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Icon(
+                        isVideo ? Icons.videocam_rounded : Icons.image_rounded,
+                        size: 11,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  // 视频时长角标（右下角）
+                  if (isVideo &&
+                      media.durationMs != null &&
+                      media.durationMs! > 0)
+                    Positioned(
+                      bottom: 6,
+                      right: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.7),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                        child: Text(
+                          formatDuration(media.durationMs),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            // 信息区域
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    media.relativePath.split('/').last.split('\\').last,
+                    style: TextStyle(fontSize: 11, color: cs.onSurface),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    _buildInfoLine(),
+                    style: TextStyle(fontSize: 10, color: cs.outline),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _placeholder(ColorScheme cs) {
+  String _buildInfoLine() {
+    final parts = <String>[];
+    if (media.width != null && media.height != null) {
+      parts.add('${media.width}×${media.height}');
+    }
+    if (media.fileSize > 0) {
+      parts.add(formatSize(media.fileSize));
+    }
+    return parts.isEmpty ? '' : parts.join(' · ');
+  }
+
+  void _showContextMenu(BuildContext context, Offset position) {
+    showContextMenu(
+      context: context,
+      position: position,
+      items: [
+        ContextMenuItem(
+          icon:
+              media.kind == 'video'
+                  ? Icons.play_circle_outline
+                  : Icons.image_outlined,
+          label: media.kind == 'video' ? '打开视频' : '打开图片',
+          onTap: onOpenFile,
+        ),
+        ContextMenuItem(
+          icon: Icons.folder_open,
+          label: '打开文件所在目录',
+          onTap: onOpenDirectory,
+        ),
+        const ContextMenuItem.divider(),
+        ContextMenuItem(
+          icon: Icons.copy,
+          label: '复制文件路径',
+          onTap: () {
+            // 使用 flutter 的 Clipboard
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _placeholder(ColorScheme cs, Color typeColor) {
     return Container(
       color: cs.surfaceContainerHighest,
       child: Icon(
         media.kind == 'video' ? Icons.videocam_outlined : Icons.image_outlined,
         size: 40,
-        color: cs.outline,
+        color: typeColor.withValues(alpha: 0.5),
       ),
     );
   }

@@ -56,6 +56,25 @@ func (r *MediaRepo) Upsert(m *Media) error {
 	return nil
 }
 
+// GetByID 按主键查询媒体记录；不存在返回 (nil, nil)。
+func (r *MediaRepo) GetByID(id int64) (*Media, error) {
+	var m Media
+	err := r.db.QueryRow(
+		`SELECT `+mediaCols+` FROM media WHERE id = ?`,
+		id,
+	).Scan(&m.ID, &m.LibraryID, &m.ScanSessionID, &m.Kind, &m.RelativePath, &m.FileSize,
+		&m.Mtime, &m.Format, &m.Width, &m.Height, &m.Phash, &m.Dhash, &m.Ahash,
+		&m.DurationMs, &m.VideoCodec, &m.AudioCodec, &m.FrameRate, &m.BitRate,
+		&m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errx.Wrapf(err, "查询媒体 id=%d", id)
+	}
+	return &m, nil
+}
+
 // GetByPath 按 (library_id, relative_path) 查询；不存在返回 (nil, nil)。
 func (r *MediaRepo) GetByPath(libraryID int64, relPath string) (*Media, error) {
 	var m Media

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,4 +105,141 @@ func TestDeleteLibraryRemovesRelatedDataAndUnreferencedThumbnails(t *testing.T) 
 
 func formatInt64(value int64) string {
 	return fmt.Sprintf("%d", value)
+}
+
+func TestOpenMediaFileValid(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "photo.jpg")
+	if err := os.WriteFile(imgPath, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lib := &repo.Library{Name: "库", Path: dir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	m := &repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: "photo.jpg", FileSize: 4, Mtime: time.Now().UTC()}
+	if err := mr.Upsert(m); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "")
+	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
+		body(`{"action":"file"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	// 平台不支持时返回500，否则200（实际执行打开命令）
+	if resp.Code != http.StatusOK && resp.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码=%d, body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestOpenMediaNotFound(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(cfg, repo.NewLibraryRepo(dbh), repo.NewSessionRepo(dbh),
+		repo.NewMediaRepo(dbh), nil, nil, nil, nil, nil, "")
+	req := httptest.NewRequest(http.MethodPost, "/api/media/99999/open",
+		body(`{"action":"file"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("应返回404: code=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestOpenMediaFileNotExistOnDisk(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+
+	dir := t.TempDir()
+	lib := &repo.Library{Name: "库", Path: dir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	m := &repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: "nonexistent.jpg", FileSize: 4, Mtime: time.Now().UTC()}
+	if err := mr.Upsert(m); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "")
+	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
+		body(`{"action":"file"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("磁盘文件不存在应返回404: code=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestOpenMediaDirectoryAction(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "photo.jpg")
+	if err := os.WriteFile(imgPath, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lib := &repo.Library{Name: "库", Path: dir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	m := &repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: "photo.jpg", FileSize: 4, Mtime: time.Now().UTC()}
+	if err := mr.Upsert(m); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "")
+	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
+		body(`{"action":"directory"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK && resp.Code != http.StatusInternalServerError {
+		t.Fatalf("状态码=%d, body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func body(s string) *strings.Reader {
+	return strings.NewReader(s)
 }

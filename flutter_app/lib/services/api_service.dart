@@ -138,6 +138,34 @@ class ApiService {
     return jsonDecode(res.body);
   }
 
+  // ===== 媒体操作 =====
+
+  /// 在服务端机器上打开媒体文件
+  Future<void> openMediaFile(int mediaId) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/media/$mediaId/open'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'action': 'file'}),
+    );
+    if (res.statusCode != 200) {
+      final err = jsonDecode(res.body)['error'] ?? '打开文件失败';
+      throw Exception(err);
+    }
+  }
+
+  /// 在服务端机器上打开媒体所在目录（并选中文件）
+  Future<void> openMediaDirectory(int mediaId) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/media/$mediaId/open'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'action': 'directory'}),
+    );
+    if (res.statusCode != 200) {
+      final err = jsonDecode(res.body)['error'] ?? '打开目录失败';
+      throw Exception(err);
+    }
+  }
+
   // ===== 任务管理 =====
 
   Future<List<BackgroundTask>> getTasks() async {

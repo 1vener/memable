@@ -91,6 +91,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// 缩略图静态服务
 	mux.HandleFunc("GET /api/thumbnails/", s.handleThumbnail)
 
+	// 媒体操作
+	mux.HandleFunc("POST /api/media/{id}/open", s.handleOpenMedia)
+
 	// 健康检查
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 
