@@ -178,19 +178,96 @@ class FileTreeNode {
   }
 }
 
-/// 重复检测报告
+/// 应用内重复检测报告。
 class DuplicateReport {
+  final String kind;
   final int groupCount;
-  final String path;
+  final int fileCount;
+  final List<DuplicateGroup> groups;
 
-  DuplicateReport({required this.groupCount, required this.path});
+  DuplicateReport({
+    required this.kind,
+    required this.groupCount,
+    required this.fileCount,
+    required this.groups,
+  });
 
   factory DuplicateReport.fromJson(Map<String, dynamic> json) {
+    final groups =
+        (json['groups'] as List<dynamic>? ?? [])
+            .map((e) => DuplicateGroup.fromJson(e as Map<String, dynamic>))
+            .toList();
     return DuplicateReport(
-      groupCount: json['groups'] as int? ?? 0,
-      path: json['report_path'] as String? ?? '',
+      kind: json['kind'] as String? ?? '',
+      groupCount: (json['group_count'] as num?)?.toInt() ?? groups.length,
+      fileCount: (json['file_count'] as num?)?.toInt() ?? 0,
+      groups: groups,
     );
   }
+}
+
+class DuplicateGroup {
+  final int index;
+  final String reason;
+  final List<DuplicateItem> items;
+
+  DuplicateGroup({
+    required this.index,
+    required this.reason,
+    required this.items,
+  });
+
+  factory DuplicateGroup.fromJson(Map<String, dynamic> json) => DuplicateGroup(
+    index: (json['index'] as num?)?.toInt() ?? 0,
+    reason: json['reason'] as String? ?? '',
+    items:
+        (json['items'] as List<dynamic>? ?? [])
+            .map((e) => DuplicateItem.fromJson(e as Map<String, dynamic>))
+            .toList(),
+  );
+}
+
+class DuplicateItem {
+  final int id;
+  final int libraryId;
+  final String kind;
+  final String relativePath;
+  final String fullPath;
+  final String? thumbnailPath;
+  final int fileSize;
+  final int? width;
+  final int? height;
+  final int? durationMs;
+  final List<String> duplicatePaths;
+
+  DuplicateItem({
+    required this.id,
+    required this.libraryId,
+    required this.kind,
+    required this.relativePath,
+    required this.fullPath,
+    this.thumbnailPath,
+    required this.fileSize,
+    this.width,
+    this.height,
+    this.durationMs,
+    required this.duplicatePaths,
+  });
+
+  factory DuplicateItem.fromJson(Map<String, dynamic> json) => DuplicateItem(
+    id: (json['id'] as num?)?.toInt() ?? 0,
+    libraryId: (json['library_id'] as num?)?.toInt() ?? 0,
+    kind: json['kind'] as String? ?? '',
+    relativePath: json['relative_path'] as String? ?? '',
+    fullPath: json['full_path'] as String? ?? '',
+    thumbnailPath: json['thumbnail_path'] as String?,
+    fileSize: (json['file_size'] as num?)?.toInt() ?? 0,
+    width: (json['width'] as num?)?.toInt(),
+    height: (json['height'] as num?)?.toInt(),
+    durationMs: (json['duration_ms'] as num?)?.toInt(),
+    duplicatePaths:
+        (json['duplicate_paths'] as List<dynamic>? ?? []).cast<String>(),
+  );
 }
 
 /// 后台任务模型
@@ -277,9 +354,9 @@ class BackgroundTask {
       case 'temporary_scan':
         return '临时扫描';
       case 'report_image':
-        return '图片报告';
+        return '图片重复统计';
       case 'report_video':
-        return '视频报告';
+        return '视频重复统计';
       case 'promote':
         return '入库';
       case 'directory_delete':

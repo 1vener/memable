@@ -251,7 +251,7 @@ class ApiService {
     final imgRes = await http.post(
       Uri.parse('$baseUrl/api/reports/image'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'output_path': 'report_image.html'}),
+      body: '{}',
     );
     if (imgRes.statusCode == 200 || imgRes.statusCode == 202) {
       final data = jsonDecode(imgRes.body);
@@ -262,7 +262,7 @@ class ApiService {
     final vidRes = await http.post(
       Uri.parse('$baseUrl/api/reports/video'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'output_path': 'report_video.html'}),
+      body: '{}',
     );
     if (vidRes.statusCode == 200 || vidRes.statusCode == 202) {
       final data = jsonDecode(vidRes.body);
@@ -273,26 +273,6 @@ class ApiService {
       throw Exception('报告任务提交失败');
     }
     return results;
-  }
-
-  Future<Map<String, dynamic>> generateImageReport({String? outputPath}) async {
-    final res = await http.post(
-      Uri.parse('$baseUrl/api/reports/image'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'output_path': outputPath ?? 'report_image.html'}),
-    );
-    if (res.statusCode != 200) throw Exception('生成图片报告失败: ${res.body}');
-    return jsonDecode(res.body);
-  }
-
-  Future<Map<String, dynamic>> generateVideoReport({String? outputPath}) async {
-    final res = await http.post(
-      Uri.parse('$baseUrl/api/reports/video'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'output_path': outputPath ?? 'report_video.html'}),
-    );
-    if (res.statusCode != 200) throw Exception('生成视频报告失败: ${res.body}');
-    return jsonDecode(res.body);
   }
 
   // ===== 文件树 =====

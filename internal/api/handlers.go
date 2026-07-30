@@ -718,19 +718,9 @@ func (s *Server) handleSearchImageUpload(w http.ResponseWriter, r *http.Request)
 
 // ===== 重复报告（阶段 6）=====
 
-type reportReq struct {
-	OutputPath string `json:"output_path"`
-}
-
 func (s *Server) handleImageReport(w http.ResponseWriter, r *http.Request) {
-	var req reportReq
-	if err := parseJSON(r, &req); err != nil || req.OutputPath == "" {
-		req.OutputPath = "report_image.html"
-	}
-
-	dedupeKey := fmt.Sprintf("report_image:%s", req.OutputPath)
-	task, err := s.runner.Enqueue(repo.TaskKindReportImage, "图片重复报告", &dedupeKey, nil,
-		task.ReportPayload{OutputPath: req.OutputPath})
+	dedupeKey := "report_image"
+	task, err := s.runner.Enqueue(repo.TaskKindReportImage, "图片重复统计", &dedupeKey, nil, nil)
 	if err != nil {
 		writeError(w, 409, "相同任务已在等待或执行")
 		return
@@ -745,14 +735,8 @@ func (s *Server) handleImageReport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVideoReport(w http.ResponseWriter, r *http.Request) {
-	var req reportReq
-	if err := parseJSON(r, &req); err != nil || req.OutputPath == "" {
-		req.OutputPath = "report_video.html"
-	}
-
-	dedupeKey := fmt.Sprintf("report_video:%s", req.OutputPath)
-	t, err := s.runner.Enqueue(repo.TaskKindReportVideo, "视频重复报告", &dedupeKey, nil,
-		task.ReportPayload{OutputPath: req.OutputPath})
+	dedupeKey := "report_video"
+	t, err := s.runner.Enqueue(repo.TaskKindReportVideo, "视频重复统计", &dedupeKey, nil, nil)
 	if err != nil {
 		writeError(w, 409, "相同任务已在等待或执行")
 		return

@@ -29,6 +29,7 @@ type Runner struct {
 	cancelFuncs sync.Map // taskID -> context.CancelFunc
 	running     bool
 	mu          sync.Mutex
+	wakeCh      chan struct{}
 	stopCh      chan struct{}
 }
 
@@ -56,6 +57,7 @@ func NewRunner(tasks *repo.TaskRepo, sessions *repo.SessionRepo, media *repo.Med
 		Libraries: libraries,
 		ScanSvc:   scanSvc,
 		Config:    cfg,
+		wakeCh:    make(chan struct{}, 1),
 		stopCh:    make(chan struct{}),
 	}
 }
@@ -149,9 +151,9 @@ func (r *Runner) Enqueue(kind repo.TaskKind, title string, dedupeKey *string, li
 		return nil, err
 	}
 
-	// 尝试立即唤醒调度器（非阻塞）
+	// 尝试立即唤醒调度器（非阻塞）。唤醒和停止必须使用不同通道。
 	select {
-	case r.stopCh <- struct{}{}:
+	case r.wakeCh <- struct{}{}:
 	default:
 	}
 	return task, nil
@@ -184,6 +186,8 @@ func (r *Runner) loop(ctx context.Context) {
 				return
 			case <-r.stopCh:
 				return
+			case <-r.wakeCh:
+				continue
 			case <-ticker.C:
 				continue
 			}
@@ -236,7 +240,11 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 		_ = r.Tasks.Fail(task.ID, execErr.Error())
 		slog.Error("任务执行失败", "task_id", task.ID, "err", execErr)
 	} else {
-		_ = r.Tasks.Complete(task.ID, "{}")
+		// 各执行器可能已写入结构化结果，未完成时才写入空结果。
+		stored, err := r.Tasks.GetByID(task.ID)
+		if err != nil || stored.Status != repo.TaskStatusCompleted {
+			_ = r.Tasks.Complete(task.ID, "{}")
+		}
 		slog.Info("任务执行完成", "task_id", task.ID)
 	}
 }
@@ -329,27 +337,8 @@ func (r *Runner) execLegacyRepair(ctx context.Context, task *repo.BackgroundTask
 	return nil
 }
 
-// ReportPayload 报告任务参数。
-type ReportPayload struct {
-	OutputPath string `json:"output_path"`
-}
-
-// execReport 执行报告生成任务。
+// execReport 执行重复检测并将结构化结果保存到任务中。
 func (r *Runner) execReport(ctx context.Context, task *repo.BackgroundTask, kind string, progress repo.ProgressFunc) error {
-	var payload ReportPayload
-	if task.PayloadJSON != nil {
-		if err := json.Unmarshal([]byte(*task.PayloadJSON), &payload); err != nil {
-			return fmt.Errorf("解析报告参数: %w", err)
-		}
-	}
-	if payload.OutputPath == "" {
-		if kind == "image" {
-			payload.OutputPath = "report_image.html"
-		} else {
-			payload.OutputPath = "report_video.html"
-		}
-	}
-
 	det := duplicate.NewDetector(r.Media, nil)
 	progress("detecting", 0, 0, 0, 0, 0)
 
@@ -364,16 +353,15 @@ func (r *Runner) execReport(ctx context.Context, task *repo.BackgroundTask, kind
 		return err
 	}
 
-	progress("writing_report", 0, 0, 0, 0, 0)
-	libs, _ := r.Libraries.List()
-	if err := duplicate.GenerateHTMLReport(groups, libs, kind, r.Config.ThumbBase, payload.OutputPath); err != nil {
-		return err
+	libs, err := r.Libraries.List()
+	if err != nil {
+		return fmt.Errorf("查询收藏库: %w", err)
 	}
-
-	result, _ := json.Marshal(map[string]any{
-		"report_path": payload.OutputPath,
-		"groups":      len(groups),
-	})
+	result, err := json.Marshal(duplicate.BuildReport(groups, libs, kind))
+	if err != nil {
+		return fmt.Errorf("序列化重复检测结果: %w", err)
+	}
+	progress("done", len(groups), len(groups), len(groups), 0, 0)
 	_ = r.Tasks.Complete(task.ID, string(result))
 	return nil
 }
