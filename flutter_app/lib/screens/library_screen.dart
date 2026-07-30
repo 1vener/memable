@@ -559,33 +559,79 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     }
   }
 
-  void _showDeleteDialog(String dirPath, String dirName) {
-    showDialog(
+  Future<void> _showDeleteDialog(String dirPath, String dirName, bool hasChildren) async {
+    // 第一次确认
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder:
-          (ctx) => AlertDialog(
-            title: const Text('删除目录'),
-            content: Text(
-              '确定要永久删除目录「$dirName」及其所有内容吗？\n\n此操作不可恢复，将同时删除本地文件和数据库记录。',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFFEF4444),
-                ),
-                onPressed: () async {
-                  Navigator.pop(ctx);
-                  await _deleteDir(dirPath, dirName);
-                },
-                child: const Text('永久删除'),
-              ),
-            ],
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除目录'),
+        content: Text(
+          '确定要永久删除目录「$dirName」及其所有内容吗？\n\n此操作不可恢复，将同时删除本地文件和数据库记录。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
           ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFEF4444),
+            ),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('永久删除'),
+          ),
+        ],
+      ),
     );
+    if (confirmed != true) return;
+
+    // 检查是否包含子文件夹
+    bool hasSubDirs = false;
+    if (hasChildren) {
+      if (_expandedChildren.containsKey(dirPath)) {
+        hasSubDirs = _expandedChildren[dirPath]!.any((n) => n.isDir);
+      } else {
+        try {
+          final children = await widget.api.getFileTree(
+            widget.library.id,
+            path: dirPath,
+          );
+          hasSubDirs = children.any((n) => n.isDir);
+        } catch (_) {
+          hasSubDirs = true; // 保守处理：无法确认时视为有子文件夹
+        }
+      }
+    }
+
+    // 第二次确认（仅当包含子文件夹时）
+    if (hasSubDirs) {
+      if (!mounted) return;
+      final confirmed2 = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('确认删除子文件夹'),
+          content: Text(
+            '目录「$dirName」包含子文件夹，删除将同时删除所有子文件夹及其内容。\n\n确定要继续吗？',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFFEF4444),
+              ),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('确认删除'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed2 != true) return;
+    }
+
+    await _deleteDir(dirPath, dirName);
   }
 
   Future<void> _deleteDir(String dirPath, String dirName) async {
@@ -766,16 +812,16 @@ class _FileTreePanelState extends State<_FileTreePanel> {
           hasChildren: node.hasChildren,
           onTap: () => _selectDir(node.path),
           onToggle: node.hasChildren ? () => _toggleDir(node.path) : null,
-          onContextMenu: (details) {
+          onContextMenu: (globalPosition) {
             showContextMenu(
               context: context,
-              position: details.globalPosition,
+              position: globalPosition,
               items: [
                 ContextMenuItem(
                   icon: Icons.delete_outline,
                   label: '删除目录',
                   isDestructive: true,
-                  onTap: () => _showDeleteDialog(node.path, node.name),
+                  onTap: () => _showDeleteDialog(node.path, node.name, node.hasChildren),
                 ),
               ],
             );
@@ -1061,7 +1107,7 @@ class _TreeDirTile extends StatelessWidget {
   final bool hasChildren;
   final VoidCallback onTap;
   final VoidCallback? onToggle;
-  final GestureLongPressStartCallback? onContextMenu;
+  final void Function(Offset)? onContextMenu;
 
   const _TreeDirTile({
     required this.name,
@@ -1085,7 +1131,12 @@ class _TreeDirTile extends StatelessWidget {
         color: Colors.transparent,
         borderRadius: BorderRadius.circular(8),
         child: GestureDetector(
-          onLongPressStart: onContextMenu,
+          onLongPressStart: onContextMenu != null
+              ? (details) => onContextMenu!(details.globalPosition)
+              : null,
+          onSecondaryTapDown: onContextMenu != null
+              ? (details) => onContextMenu!(details.globalPosition)
+              : null,
           child: InkWell(
             borderRadius: BorderRadius.circular(8),
             onTap: onTap,
