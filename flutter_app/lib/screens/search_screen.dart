@@ -356,7 +356,10 @@ class _ResultGridCard extends StatelessWidget {
                       children: [
                         result.thumbnailUrl != null
                             ? Image.network(
-                                api.thumbnailUrl(result.thumbnailUrl!),
+                                api.thumbnailUrl(
+                                  result.media.kind,
+                                  result.thumbnailUrl!,
+                                ),
                                 fit: BoxFit.cover,
                                 errorBuilder: (_, __, ___) => _PlaceholderIcon(cs: cs),
                               )
@@ -436,7 +439,7 @@ class _ResultListTile extends StatelessWidget {
             ? ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: Image.network(
-                  api.thumbnailUrl(result.thumbnailUrl!),
+                  api.thumbnailUrl(result.media.kind, result.thumbnailUrl!),
                   width: 48,
                   height: 48,
                   fit: BoxFit.cover,

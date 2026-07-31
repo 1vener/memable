@@ -90,7 +90,7 @@ func TestExecuteScanRepairsMissingThumbnailAndSupportsForce(t *testing.T) {
 	if err := lr.Create(lib); err != nil {
 		t.Fatal(err)
 	}
-	svc := &Service{Sessions: sr, Media: mr, ThumbBase: thumbDir}
+	svc := &Service{Sessions: sr, Media: mr, ImageThumbBase: thumbDir}
 	progress := repo.ProgressFunc(func(string, int, int, int, int, int, float64, *int64) {})
 
 	result, err := svc.ExecuteScan(context.Background(), *lib, "sync-1", false, false, 1, progress)
@@ -134,7 +134,7 @@ func TestExecuteScanCleansMissingMediaAndThumbnail(t *testing.T) {
 	if err := lr.Create(lib); err != nil {
 		t.Fatal(err)
 	}
-	svc := &Service{Sessions: sr, Media: mr, ThumbBase: thumbDir}
+	svc := &Service{Sessions: sr, Media: mr, ImageThumbBase: thumbDir}
 	progress := repo.ProgressFunc(func(string, int, int, int, int, int, float64, *int64) {})
 
 	if _, err := svc.ExecuteScan(context.Background(), *lib, "clean-1", false, false, 1, progress); err != nil {

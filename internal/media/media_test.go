@@ -75,6 +75,26 @@ func TestProbeVideo(t *testing.T) {
 	}
 }
 
+// TestDecodeGoFallsBackToFFmpegForMislabeledFile 验证扩展名为 .jpg 但内容为
+// 其他格式（此处用 PNG 字节模拟）时，原生解码失败后回退 FFmpeg 仍能成功。
+func TestDecodeGoFallsBackToFFmpegForMislabeledFile(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg 未安装，跳过回退解码测试")
+	}
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "mislabeled.jpg")
+	writeTestPNG(t, imgPath, 8, 8) // 内容实际是 PNG
+
+	decoded, err := DecodeImage(context.Background(), imgPath, DecoderGo)
+	if err != nil {
+		t.Fatalf("扩展名与内容不符的图片应回退 FFmpeg 解码成功: %v", err)
+	}
+	b := decoded.Image.Bounds()
+	if b.Dx() != 8 || b.Dy() != 8 {
+		t.Fatalf("解码尺寸异常: %+v", b)
+	}
+}
+
 func TestImagePerceptualHashesStable(t *testing.T) {
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "hash.png")

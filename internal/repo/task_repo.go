@@ -256,6 +256,7 @@ func (r *TaskRepo) query(q string, args ...any) ([]BackgroundTask, error) {
 		if err := rows.Scan(&t.ID, &t.Kind, &t.Status, &t.Title, &t.DedupeKey, &t.LibraryID,
 			&t.ScanSessionID, &t.PayloadJSON, &t.Phase, &t.TotalItems, &t.ProcessedItems,
 			&t.SucceededItems, &t.SkippedItems, &t.FailedItems, &t.ResultJSON, &t.ErrorMessage,
+			&t.ProcessingRate, &t.EtaSeconds,
 			&t.QueuedAt, &t.StartedAt, &t.UpdatedAt, &t.FinishedAt); err != nil {
 			return nil, errx.Wrapf(err, "扫描任务行")
 		}

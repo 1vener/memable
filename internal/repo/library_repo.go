@@ -87,24 +87,25 @@ func (r *LibraryRepo) Delete(id int64) error {
 
 // DeleteWithRelatedData 在同一事务中删除收藏库、关联媒体和扫描会话，
 // 并返回删除前由该库引用的唯一缩略图路径，供上层清理物理文件。
-func (r *LibraryRepo) DeleteWithRelatedData(id int64) ([]string, error) {
-	var thumbnailPaths []string
+func (r *LibraryRepo) DeleteWithRelatedData(id int64) ([]ThumbRef, error) {
+	var thumbnailRefs []ThumbRef
 	err := WithTx(r.db, 3, func(tx *sql.Tx) error {
-		thumbnailPaths = thumbnailPaths[:0]
+		thumbnailRefs = thumbnailRefs[:0]
 		rows, err := tx.Query(
-			`SELECT DISTINCT thumbnail_path FROM media
+			`SELECT DISTINCT kind, thumbnail_path FROM media
 			 WHERE library_id = ? AND thumbnail_path IS NOT NULL AND thumbnail_path <> ''`, id,
 		)
 		if err != nil {
 			return errx.Wrapf(err, "查询收藏库 id=%d 的缩略图", id)
 		}
 		for rows.Next() {
+			var kind string
 			var path string
-			if err := rows.Scan(&path); err != nil {
+			if err := rows.Scan(&kind, &path); err != nil {
 				rows.Close()
 				return errx.Wrapf(err, "扫描收藏库 id=%d 的缩略图", id)
 			}
-			thumbnailPaths = append(thumbnailPaths, path)
+			thumbnailRefs = append(thumbnailRefs, ThumbRef{Kind: kind, Rel: path})
 		}
 		if err := rows.Close(); err != nil {
 			return errx.Wrapf(err, "关闭收藏库 id=%d 的缩略图查询", id)
@@ -135,5 +136,5 @@ func (r *LibraryRepo) DeleteWithRelatedData(id int64) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return thumbnailPaths, nil
+	return thumbnailRefs, nil
 }

@@ -48,6 +48,7 @@ class Media {
   final int? width;
   final int? height;
   final int? durationMs;
+  final DateTime? mtime;
 
   Media({
     required this.id,
@@ -61,6 +62,7 @@ class Media {
     this.width,
     this.height,
     this.durationMs,
+    this.mtime,
   });
 
   factory Media.fromJson(Map<String, dynamic> json) {
@@ -76,6 +78,9 @@ class Media {
       width: (json['width'] as num?)?.toInt(),
       height: (json['height'] as num?)?.toInt(),
       durationMs: (json['duration_ms'] as num?)?.toInt(),
+      mtime: json['mtime'] != null
+          ? DateTime.tryParse(json['mtime'] as String)
+          : null,
     );
   }
 }
@@ -238,6 +243,7 @@ class DuplicateItem {
   final int? width;
   final int? height;
   final int? durationMs;
+  final DateTime? mtime;
   final List<String> duplicatePaths;
 
   DuplicateItem({
@@ -251,6 +257,7 @@ class DuplicateItem {
     this.width,
     this.height,
     this.durationMs,
+    this.mtime,
     required this.duplicatePaths,
   });
 
@@ -265,6 +272,9 @@ class DuplicateItem {
     width: (json['width'] as num?)?.toInt(),
     height: (json['height'] as num?)?.toInt(),
     durationMs: (json['duration_ms'] as num?)?.toInt(),
+    mtime: json['mtime'] != null
+        ? DateTime.tryParse(json['mtime'] as String)
+        : null,
     duplicatePaths:
         (json['duplicate_paths'] as List<dynamic>? ?? []).cast<String>(),
   );
@@ -550,4 +560,220 @@ class FileTreeStatNode {
       children: children,
     );
   }
+}
+
+/// 重复报告摘要（三张表持久化后的最新报告）。
+class ReportSummary {
+  final int? id;
+  final String scope; // all / same_dir
+  final String mediaType; // image / video / all
+  final bool stale;
+  final int totalGroups;
+  final int totalFiles;
+  final int freedBytes;
+  final int imageThreshold;
+  final int videoPhashDistance;
+  final int videoDurationDiffMs;
+  final bool oshashFilter;
+  final bool includeSha1;
+  final String? createdAt;
+
+  ReportSummary({
+    this.id,
+    required this.scope,
+    required this.mediaType,
+    this.stale = false,
+    this.totalGroups = 0,
+    this.totalFiles = 0,
+    this.freedBytes = 0,
+    this.imageThreshold = 90,
+    this.videoPhashDistance = 12,
+    this.videoDurationDiffMs = 3000,
+    this.oshashFilter = true,
+    this.includeSha1 = true,
+    this.createdAt,
+  });
+
+  factory ReportSummary.fromJson(Map<String, dynamic> json) => ReportSummary(
+    id: (json['id'] as num?)?.toInt(),
+    scope: (json['scope'] as String?) ?? 'all',
+    mediaType: (json['media_type'] as String?) ?? 'all',
+    stale: json['stale'] == 1 || json['stale'] == true,
+    totalGroups: (json['total_groups'] as num?)?.toInt() ?? 0,
+    totalFiles: (json['total_files'] as num?)?.toInt() ?? 0,
+    imageThreshold: (json['image_threshold'] as num?)?.toInt() ?? 90,
+    videoPhashDistance: (json['video_phash_distance'] as num?)?.toInt() ?? 12,
+    videoDurationDiffMs: (json['video_duration_diff_ms'] as num?)?.toInt() ?? 3000,
+    oshashFilter: json['oshash_filter'] == 1 || json['oshash_filter'] == true,
+    includeSha1: json['include_sha1'] == 1 || json['include_sha1'] == true,
+    createdAt: json['created_at'] as String?,
+  );
+
+  bool get isSameDir => scope == 'same_dir';
+}
+
+/// 重复报告分组分页数据。
+class DuplicateGroupPage {
+  final int total;
+  final int page;
+  final int pageSize;
+  final int totalPages;
+  final List<DuplicateGroupItem> items;
+
+  DuplicateGroupPage({
+    required this.total,
+    required this.page,
+    required this.pageSize,
+    required this.totalPages,
+    required this.items,
+  });
+
+  factory DuplicateGroupPage.fromJson(Map<String, dynamic> json) {
+    final items = (json['items'] as List<dynamic>? ?? [])
+        .map((e) => DuplicateGroupItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return DuplicateGroupPage(
+      total: (json['total'] as num?)?.toInt() ?? items.length,
+      page: (json['page'] as num?)?.toInt() ?? 1,
+      pageSize: (json['page_size'] as num?)?.toInt() ?? 20,
+      totalPages: (json['total_pages'] as num?)?.toInt() ?? 1,
+      items: items,
+    );
+  }
+}
+
+/// 重复分组项（组信息 + 成员）。
+class DuplicateGroupItem {
+  final int id;
+  final String groupType;
+  final String? directory;
+  final int memberCount;
+  final int freedBytes;
+  final List<DuplicateItem> items;
+
+  DuplicateGroupItem({
+    required this.id,
+    required this.groupType,
+    this.directory,
+    required this.memberCount,
+    this.freedBytes = 0,
+    required this.items,
+  });
+
+  factory DuplicateGroupItem.fromJson(Map<String, dynamic> json) {
+    final items = (json['items'] as List<dynamic>? ?? [])
+        .map((e) => DuplicateItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return DuplicateGroupItem(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      groupType: (json['group_type'] as String?) ?? '',
+      directory: json['directory'] as String?,
+      memberCount: (json['member_count'] as num?)?.toInt() ?? items.length,
+      freedBytes: (json['freed_bytes'] as num?)?.toInt() ?? 0,
+      items: items,
+    );
+  }
+
+  String get reasonLabel {
+    switch (groupType) {
+      case 'sha1':
+        return 'SHA1 完全相同';
+      case 'image_similar':
+        return 'pHash 视觉相似';
+      case 'video_similar':
+        return 'sprite pHash 视觉相似';
+      default:
+        return groupType;
+    }
+  }
+}
+
+/// 重复报告目录树节点。
+class DuplicateTreeNode {
+  final String name;
+  final String path;
+  final int fileCount;
+  final List<DuplicateTreeNode> children;
+
+  DuplicateTreeNode({
+    required this.name,
+    required this.path,
+    this.fileCount = 0,
+    this.children = const [],
+  });
+
+  factory DuplicateTreeNode.fromJson(Map<String, dynamic> json) {
+    final children = (json['children'] as List<dynamic>? ?? [])
+        .map((e) => DuplicateTreeNode.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return DuplicateTreeNode(
+      name: (json['name'] as String?) ?? '',
+      path: (json['path'] as String?) ?? '',
+      fileCount: (json['file_count'] as num?)?.toInt() ?? 0,
+      children: children,
+    );
+  }
+}
+
+/// 报告生成选项。
+class ReportOptions {
+  String scope;
+  String mediaType;
+  int imageThreshold;
+  int videoPhashDistance;
+  int videoDurationDiffMs;
+  bool oshashFilter;
+  bool includeSha1;
+
+  ReportOptions({
+    this.scope = 'all',
+    this.mediaType = 'all',
+    this.imageThreshold = 90,
+    this.videoPhashDistance = 12,
+    this.videoDurationDiffMs = 3000,
+    this.oshashFilter = true,
+    this.includeSha1 = true,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'scope': scope,
+    'media_type': mediaType,
+    'image_threshold': imageThreshold,
+    'video_phash_distance': videoPhashDistance,
+    'video_duration_diff_ms': videoDurationDiffMs,
+    'oshash_filter': oshashFilter,
+    'include_sha1': includeSha1,
+  };
+}
+
+/// 清除重复文件结果。
+class ClearResult {
+  final int deletedFiles;
+  final int freedBytes;
+  final int remainingGroups;
+
+  ClearResult({
+    this.deletedFiles = 0,
+    this.freedBytes = 0,
+    this.remainingGroups = 0,
+  });
+
+  factory ClearResult.fromJson(Map<String, dynamic> json) => ClearResult(
+    deletedFiles: (json['deleted_files'] as num?)?.toInt() ?? 0,
+    freedBytes: (json['freed_bytes'] as num?)?.toInt() ?? 0,
+    remainingGroups: (json['remaining_groups'] as num?)?.toInt() ?? 0,
+  );
+}
+
+/// 删除媒体结果。
+class DeleteResult {
+  final int deletedFiles;
+  final int freedBytes;
+
+  DeleteResult({this.deletedFiles = 0, this.freedBytes = 0});
+
+  factory DeleteResult.fromJson(Map<String, dynamic> json) => DeleteResult(
+    deletedFiles: (json['deleted_files'] as num?)?.toInt() ?? 0,
+    freedBytes: (json['freed_bytes'] as num?)?.toInt() ?? 0,
+  );
 }

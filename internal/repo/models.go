@@ -63,6 +63,12 @@ type Media struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// ThumbRef 缩略图引用（删除媒体时收集，用于按类型解析根目录后清理物理文件）。
+type ThumbRef struct {
+	Kind string // image / video
+	Rel  string // 相对该类型缩略图根目录的路径
+}
+
 // TaskKind 任务类型。
 type TaskKind string
 
@@ -72,6 +78,7 @@ const (
 	TaskKindTemporaryScan   TaskKind = "temporary_scan"
 	TaskKindReportImage     TaskKind = "report_image"
 	TaskKindReportVideo     TaskKind = "report_video"
+	TaskKindReportDuplicate TaskKind = "report_duplicate"
 	TaskKindPromote         TaskKind = "promote"
 	TaskKindDirectoryDelete TaskKind = "directory_delete"
 )

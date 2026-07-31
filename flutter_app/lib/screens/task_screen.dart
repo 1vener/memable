@@ -1,6 +1,7 @@
 // task_screen.dart：任务进度页面（队列 + 进度 + 历史）
 // 代码注释使用中文
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
@@ -273,6 +274,14 @@ class _TaskScreenState extends State<TaskScreen> {
                       ],
                     ),
           ),
+          // 底部常驻：运行中任务进度条 + 任务名称
+          if (_runningTasks.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            _BottomRunningBar(
+              task: _runningTasks.first,
+              runningCount: _runningTasks.length,
+            ),
+          ],
         ],
       ),
     );
@@ -421,6 +430,46 @@ class _TaskCard extends StatelessWidget {
               ],
             ),
 
+            // 任务统计（所有状态都显示，尽可能多展示数据）
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                _ProgressChip(
+                  label: '总数',
+                  value: task.totalItems,
+                  color: cs.onSurfaceVariant,
+                ),
+                _ProgressChip(
+                  label: '已处理',
+                  value: task.processedItems,
+                  color: cs.primary,
+                ),
+                _ProgressChip(
+                  label: '成功',
+                  value: task.succeededItems,
+                  color: const Color(0xFF22C55E),
+                ),
+                _ProgressChip(
+                  label: '跳过',
+                  value: task.skippedItems,
+                  color: const Color(0xFFF59E0B),
+                ),
+                _ProgressChip(
+                  label: '失败',
+                  value: task.failedItems,
+                  color: cs.error,
+                ),
+                if (task.phase.isNotEmpty)
+                  _InfoChip(label: '阶段', value: task.phase, color: cs.outline),
+                if (task.formattedRate.isNotEmpty)
+                  _InfoChip(label: '速度', value: task.formattedRate, color: cs.primary),
+                if (task.formattedEta.isNotEmpty)
+                  _InfoChip(label: 'ETA', value: task.formattedEta, color: cs.outline),
+              ],
+            ),
+
             // 进度条（运行中任务）
             if (task.isRunning && task.totalItems > 0) ...[
               const SizedBox(height: 12),
@@ -444,61 +493,6 @@ class _TaskCard extends StatelessWidget {
                       fontWeight: FontWeight.w500,
                       color: cs.onSurface,
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 6,
-                children: [
-                  _ProgressChip(
-                    label: '已处理',
-                    value: task.processedItems,
-                    color: cs.primary,
-                  ),
-                  _ProgressChip(
-                    label: '成功',
-                    value: task.succeededItems,
-                    color: const Color(0xFF22C55E),
-                  ),
-                  _ProgressChip(
-                    label: '跳过',
-                    value: task.skippedItems,
-                    color: const Color(0xFFF59E0B),
-                  ),
-                  _ProgressChip(
-                    label: '失败',
-                    value: task.failedItems,
-                    color: cs.error,
-                  ),
-                  if (task.formattedRate.isNotEmpty)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: cs.primary.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        task.formattedRate,
-                        style: TextStyle(fontSize: 11, color: cs.primary, fontWeight: FontWeight.w500),
-                      ),
-                    ),
-                  if (task.formattedEta.isNotEmpty)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: cs.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        task.formattedEta,
-                        style: TextStyle(fontSize: 11, color: cs.outline),
-                      ),
-                    ),
-                  Text(
-                    '共 ${task.totalItems} 项',
-                    style: TextStyle(fontSize: 12, color: cs.outline),
                   ),
                 ],
               ),
@@ -566,6 +560,42 @@ class _TaskCard extends StatelessWidget {
                 ),
               ),
             ],
+
+            // 任务元信息（ID、创建/开始/完成时间）
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 16,
+              runSpacing: 6,
+              children: [
+                _MetaItem(
+                  icon: Icons.tag,
+                  text:
+                      'ID ${task.id.length > 8 ? task.id.substring(0, 8) : task.id}',
+                ),
+                _MetaItem(
+                  icon: Icons.schedule,
+                  text: '创建 ${_fmtTime(task.queuedAt)}',
+                ),
+                if (task.startedAt != null)
+                  _MetaItem(
+                    icon: Icons.play_arrow,
+                    text: '开始 ${_fmtTime(task.startedAt!)}',
+                  ),
+                if (task.finishedAt != null)
+                  _MetaItem(
+                    icon: Icons.check_circle_outline,
+                    text: '完成 ${_fmtTime(task.finishedAt!)}',
+                  ),
+              ],
+            ),
+
+            // 完成结果摘要
+            if (task.isCompleted &&
+                task.resultJson != null &&
+                task.resultJson!.trim().isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _ResultSummary(raw: task.resultJson!),
+            ],
           ],
         ),
       ),
@@ -597,4 +627,226 @@ class _ProgressChip extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 文本信息芯片（阶段/速度/ETA 等）。
+class _InfoChip extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+
+  const _InfoChip({
+    required this.label,
+    required this.value,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$label ',
+            style: TextStyle(fontSize: 10, color: cs.outline),
+          ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 200),
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 任务元信息条目（ID/时间等）。
+class _MetaItem extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _MetaItem({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 13, color: cs.outline),
+        const SizedBox(width: 4),
+        Text(
+          text,
+          style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+/// 完成结果摘要（解析 result_json 的顶层字段）。
+class _ResultSummary extends StatelessWidget {
+  final String raw;
+
+  const _ResultSummary({required this.raw});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final text = _formatResult(raw);
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        '结果：$text',
+        style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+}
+
+/// 底部常驻：运行中任务进度条 + 任务名称。
+class _BottomRunningBar extends StatelessWidget {
+  final BackgroundTask task;
+  final int runningCount;
+
+  const _BottomRunningBar({
+    required this.task,
+    required this.runningCount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final hasTotal = task.totalItems > 0;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.primary.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: cs.primary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  task.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: cs.onSurface,
+                  ),
+                ),
+              ),
+              if (runningCount > 1)
+                Text(
+                  '+${runningCount - 1} 个任务',
+                  style: TextStyle(fontSize: 11, color: cs.outline),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: hasTotal ? task.progress : null,
+                    minHeight: 6,
+                    backgroundColor: cs.surfaceContainerHighest,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                hasTotal
+                    ? '${(task.progress * 100).toStringAsFixed(1)}%'
+                    : task.phase,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: cs.primary,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 格式化 SQLite 时间：yyyy-MM-dd HH:mm:ss → MM-dd HH:mm。
+String _fmtTime(String raw) {
+  final s = raw.replaceFirst('T', ' ').trim();
+  if (s.length >= 16) return s.substring(5, 16);
+  return s;
+}
+
+/// 从任务 result_json 提取可读摘要。
+String _formatResult(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty || trimmed == '{}') return '';
+  try {
+    final data = jsonDecode(trimmed);
+    if (data is Map) {
+      final parts = <String>[];
+      for (final e in data.entries) {
+        final v = e.value;
+        if (v is List || v is Map) {
+          parts.add('${e.key}: ${v is List ? v.length : (v as Map).length} 项');
+        } else if (v is String || v is num || v is bool) {
+          parts.add('${e.key}: $v');
+        }
+      }
+      if (parts.isEmpty) return _truncate(trimmed);
+      return _truncate(parts.join('，'));
+    }
+    if (data is List) return '共 ${data.length} 项';
+    return _truncate(trimmed);
+  } catch (_) {
+    return _truncate(trimmed);
+  }
+}
+
+String _truncate(String s) {
+  return s.length > 220 ? '${s.substring(0, 220)}…' : s;
 }

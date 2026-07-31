@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"memable/internal/media"
+	"memable/internal/recycle"
 	"memable/internal/repo"
 	"memable/internal/task"
 )
@@ -114,15 +115,15 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 数据库清理在同一事务中完成：删除会话、收藏库及级联关联媒体。
-	thumbnailPaths, err := s.libraries.DeleteWithRelatedData(id)
+	thumbnailRefs, err := s.libraries.DeleteWithRelatedData(id)
 	if err != nil {
 		writeError(w, 500, "删除收藏库失败: "+err.Error())
 		return
 	}
 
 	// 数据提交后，仅清理未被其他收藏库引用的缩略图文件。
-	for _, thumbRel := range thumbnailPaths {
-		n, err := s.media.CountThumbnailReferences(thumbRel)
+	for _, ref := range thumbnailRefs {
+		n, err := s.media.CountThumbnailReferences(ref.Rel)
 		if err != nil {
 			writeError(w, 500, "收藏库数据已删除，但检查缩略图引用失败: "+err.Error())
 			return
@@ -130,13 +131,21 @@ func (s *Server) handleDeleteLibrary(w http.ResponseWriter, r *http.Request) {
 		if n > 0 {
 			continue // 其他库仍在使用
 		}
-		thumbAbs := s.thumbAbsPath(thumbRel)
+		thumbAbs := s.thumbAbsPath(ref.Kind, ref.Rel)
 		if err := os.Remove(thumbAbs); err != nil && !os.IsNotExist(err) {
 			writeError(w, 500, "收藏库数据已删除，但删除缩略图失败: "+err.Error())
 			return
 		}
 		// 哈希分片目录为空时一并清理，失败不影响删除结果。
 		_ = os.Remove(filepath.Dir(thumbAbs))
+	}
+
+	// 收藏库删除后维护重复报告（media 级联删除成员 → 清理 <2 的组 → 刷新统计）
+	if s.dup != nil {
+		if err := s.dup.PruneAfterMediaChange(); err != nil {
+			writeError(w, 500, "收藏库数据已删除，但刷新重复报告失败: "+err.Error())
+			return
+		}
 	}
 
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
@@ -324,24 +333,55 @@ func (s *Server) handleDeleteDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dedupeKey := fmt.Sprintf("dir_del:%d:%s", id, req.Path)
-	libraryID := id
-	task, err := s.runner.Enqueue(
-		repo.TaskKindDirectoryDelete,
-		"删除目录: "+filepath.Base(req.Path),
-		&dedupeKey, &libraryID,
-		map[string]any{"library_id": id, "dir_path": req.Path},
-	)
+	// 同步删除（不提交后台任务），客户端可直接拿到结果并刷新树节点。
+	// 阶段1：删除数据库媒体记录，收集缩略图引用
+	deletedMedia, thumbRefs, err := s.media.DeleteByDirectory(id, req.Path)
 	if err != nil {
-		writeError(w, 509, "提交删除任务失败: "+err.Error())
+		writeError(w, 500, "删除数据库记录失败: "+err.Error())
 		return
 	}
 
-	pos, _ := s.tasks.QueuePosition(task.ID)
-	writeJSON(w, 202, map[string]any{
-		"task_id":        task.ID,
-		"queue_position": pos,
-		"status":         task.Status,
+	// 阶段2：删除本地目录（按 delete.permanent 配置：永久删除或移入回收站）
+	var dirErr error
+	if s.cfg.Delete.Permanent {
+		dirErr = os.RemoveAll(absDir)
+	} else {
+		dirErr = recycle.ToBinDir(absDir)
+	}
+	localDeleted := dirErr == nil || os.IsNotExist(dirErr)
+	if dirErr != nil && !os.IsNotExist(dirErr) {
+		slog.Warn("删除本地目录失败（数据库已清理）", "path", absDir, "err", dirErr)
+	}
+
+	// 阶段3：清理无引用缩略图
+	deletedThumbs := 0
+	for _, ref := range thumbRefs {
+		n, err := s.media.CountThumbnailReferences(ref.Rel)
+		if err != nil || n > 0 {
+			continue
+		}
+		thumbAbs := s.thumbAbsPath(ref.Kind, ref.Rel)
+		if err := os.Remove(thumbAbs); err != nil && !os.IsNotExist(err) {
+			slog.Warn("删除缩略图失败", "path", thumbAbs, "err", err)
+			continue
+		}
+		_ = os.Remove(filepath.Dir(thumbAbs))
+		deletedThumbs++
+	}
+
+	// 阶段4：维护重复报告（级联清理不足 2 个成员的组并更新统计）
+	if s.dup != nil {
+		if err := s.dup.PruneAfterMediaChange(); err != nil {
+			slog.Warn("目录删除后刷新重复报告失败", "err", err)
+		}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"status":         "deleted",
+		"deleted_media":  deletedMedia,
+		"deleted_thumbs": deletedThumbs,
+		"local_deleted":  localDeleted,
+		"dir_path":       req.Path,
 	})
 }
 
@@ -755,8 +795,14 @@ func (s *Server) handleVideoReport(w http.ResponseWriter, r *http.Request) {
 // ===== 缩略图静态服务 =====
 
 func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
-	relPath := r.URL.Path[len("/api/thumbnails/"):]
-	absPath := filepath.Join(s.thumbBase, relPath)
+	kind := r.PathValue("kind")
+	if kind != "image" && kind != "video" {
+		http.NotFound(w, r)
+		return
+	}
+	prefix := "/api/thumbnails/" + kind + "/"
+	relPath := strings.TrimPrefix(r.URL.Path, prefix)
+	absPath := s.thumbAbsPath(kind, relPath)
 	w.Header().Set("Content-Type", "image/png")
 	http.ServeFile(w, r, absPath)
 }

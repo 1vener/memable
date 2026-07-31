@@ -21,12 +21,13 @@ import (
 
 // Service 扫描服务，负责遍历目录、增量判定、采集 metadata 并入库。
 type Service struct {
-	Sessions    *repo.SessionRepo
-	Media       *repo.MediaRepo
-	Config      *config.Config
-	ThumbBase   string // 缩略图根目录（绝对路径）
-	Libraries   *repo.LibraryRepo
-	cancelFuncs sync.Map // sessionID -> context.CancelFunc
+	Sessions       *repo.SessionRepo
+	Media          *repo.MediaRepo
+	Config         *config.Config
+	ImageThumbBase string // 图片缩略图根目录
+	VideoThumbBase string // 视频封面根目录
+	Libraries      *repo.LibraryRepo
+	cancelFuncs    sync.Map // sessionID -> context.CancelFunc
 }
 
 // Progress 扫描进度，供外部查询。
@@ -300,11 +301,6 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		maxEdge = s.Config.Thumbnail.MaxEdge
 	}
 
-	thumbBase := s.ThumbBase
-	if thumbBase == "" {
-		thumbBase = "thumbnail"
-	}
-
 	switch e.Kind {
 	case media.KindImage:
 		// 统一解码，仅一次 IO + 解码
@@ -329,8 +325,8 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 
 		// 内容寻址缩略图（复用同一次解码）
 		storageKey := media.ThumbnailKey("image", sha1, maxEdge)
-		thumbRel := media.ThumbnailStoragePath("image", storageKey)
-		thumbAbs := filepath.Join(thumbBase, thumbRel)
+		thumbRel := media.ThumbnailStoragePath(storageKey)
+		thumbAbs := filepath.Join(s.thumbBaseFor(media.KindImage), thumbRel)
 		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
 			return media.GenerateThumbnailFromImage(decoded.Image, tmp, maxEdge)
 		}); err != nil {
@@ -360,8 +356,8 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 
 		// 内容寻址视频封面缩略图
 		storageKey := media.ThumbnailKey("video", sha1, maxEdge)
-		thumbRel := media.ThumbnailStoragePath("video", storageKey)
-		thumbAbs := filepath.Join(thumbBase, thumbRel)
+		thumbRel := media.ThumbnailStoragePath(storageKey)
+		thumbAbs := filepath.Join(s.thumbBaseFor(media.KindVideo), thumbRel)
 		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
 			_, err := media.ExtractVideoCover(ctx, e.AbsPath, tmp, maxEdge, meta.DurationMs)
 			return err
@@ -552,7 +548,7 @@ func (s *Service) needsSync(libraryID int64, entry media.FileEntry, force bool) 
 	if entry.Kind == media.KindVideo && (stored.DurationMs == nil || stored.Oshash == nil) {
 		return true, nil
 	}
-	_, err = os.Stat(filepath.Join(s.thumbnailBase(), filepath.FromSlash(*stored.ThumbnailPath)))
+	_, err = os.Stat(filepath.Join(s.thumbBaseFor(entry.Kind), filepath.FromSlash(*stored.ThumbnailPath)))
 	if err == nil {
 		return false, nil
 	}
@@ -574,21 +570,21 @@ func (s *Service) cleanMissing(libraryID int64, localPaths map[string]struct{}) 
 			ids = append(ids, item.ID)
 		}
 	}
-	thumbPaths, err := s.Media.DeleteByIDs(ids)
+	thumbRefs, err := s.Media.DeleteByIDs(ids)
 	if err != nil {
 		return 0, err
 	}
-	for _, thumbRel := range thumbPaths {
-		refs, err := s.Media.CountThumbnailReferences(thumbRel)
+	for _, ref := range thumbRefs {
+		refs, err := s.Media.CountThumbnailReferences(ref.Rel)
 		if err != nil {
 			return 0, err
 		}
 		if refs > 0 {
 			continue
 		}
-		thumbAbs, ok := safeThumbnailPath(s.thumbnailBase(), thumbRel)
+		thumbAbs, ok := safeThumbnailPath(s.thumbBaseFor(media.Kind(ref.Kind)), ref.Rel)
 		if !ok {
-			slog.Warn("忽略不安全的缩略图路径", "path", thumbRel)
+			slog.Warn("忽略不安全的缩略图路径", "path", ref.Rel)
 			continue
 		}
 		if err := os.Remove(thumbAbs); err != nil && !os.IsNotExist(err) {
@@ -600,9 +596,23 @@ func (s *Service) cleanMissing(libraryID int64, localPaths map[string]struct{}) 
 	return len(ids), nil
 }
 
-func (s *Service) thumbnailBase() string {
-	if s.ThumbBase != "" {
-		return s.ThumbBase
+// thumbBaseFor 返回指定媒体类型的缩略图根目录：
+// 优先使用显式字段，其次配置（配置未设时落到系统推荐目录）。
+func (s *Service) thumbBaseFor(kind media.Kind) string {
+	if kind == media.KindVideo {
+		if s.VideoThumbBase != "" {
+			return s.VideoThumbBase
+		}
+		if s.Config != nil {
+			return s.Config.VideoThumbDir()
+		}
+	} else {
+		if s.ImageThumbBase != "" {
+			return s.ImageThumbBase
+		}
+		if s.Config != nil {
+			return s.Config.ImageThumbDir()
+		}
 	}
 	return "thumbnail"
 }

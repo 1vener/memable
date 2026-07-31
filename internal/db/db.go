@@ -16,8 +16,14 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed migrations/002_duplicate_report.sql
+var migrationV2SQL string
+
+//go:embed migrations/003_report_task_kind.sql
+var migrationV3SQL string
+
 // schemaVersion 当前数据库结构版本。
-const schemaVersion = 1
+const schemaVersion = 3
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
 func Open(cfg *config.Config) (*sql.DB, error) {
@@ -34,8 +40,7 @@ func Open(cfg *config.Config) (*sql.DB, error) {
 	return db, nil
 }
 
-// Migrate 仅负责首次建库，不执行版本升级或历史兼容迁移。
-// SQLite 在 Open 时会创建空文件，因此以 schema_version 表是否存在判断数据库是否已初始化。
+// Migrate 首次建库 + 增量版本迁移。
 func Migrate(db *sql.DB) error {
 	var initialized int
 	if err := db.QueryRow(`SELECT EXISTS (
@@ -43,14 +48,37 @@ func Migrate(db *sql.DB) error {
 	)`).Scan(&initialized); err != nil {
 		return fmt.Errorf("检查数据库是否已初始化: %w", err)
 	}
-	if initialized != 0 {
-		return nil
+	if initialized == 0 {
+		if _, err := db.Exec(schemaSQL); err != nil {
+			return fmt.Errorf("执行数据库初始化脚本: %w", err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version(version) VALUES (?)`, 1); err != nil {
+			return fmt.Errorf("写入 schema_version: %w", err)
+		}
 	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		return fmt.Errorf("执行数据库初始化脚本: %w", err)
+
+	// 增量迁移步骤
+	steps := []struct {
+		version int
+		sql     string
+	}{
+		{version: 2, sql: migrationV2SQL},
+		{version: 3, sql: migrationV3SQL},
 	}
-	if _, err := db.Exec(`INSERT INTO schema_version(version) VALUES (?)`, schemaVersion); err != nil {
-		return fmt.Errorf("写入 schema_version: %w", err)
+	cur, err := SchemaVersion(db)
+	if err != nil {
+		return fmt.Errorf("读取数据库版本: %w", err)
+	}
+	for _, st := range steps {
+		if cur >= st.version {
+			continue
+		}
+		if _, err := db.Exec(st.sql); err != nil {
+			return fmt.Errorf("执行迁移 v%d: %w", st.version, err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version(version) VALUES (?)`, st.version); err != nil {
+			return fmt.Errorf("写入 schema_version v%d: %w", st.version, err)
+		}
 	}
 	return nil
 }

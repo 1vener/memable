@@ -17,6 +17,23 @@ import (
 	"memable/internal/repo"
 )
 
+func TestPercentFromDistance(t *testing.T) {
+	cases := []struct {
+		dist int
+		want int
+	}{
+		{10, 84}, // 旧版配置默认距离 10 → 84%
+		{6, 91},
+		{0, 90},
+		{64, 0},
+	}
+	for _, c := range cases {
+		if got := percentFromDistance(c.dist); got != c.want {
+			t.Errorf("percentFromDistance(%d) = %d, want %d", c.dist, got, c.want)
+		}
+	}
+}
+
 func TestDeleteLibraryRemovesRelatedDataAndUnreferencedThumbnails(t *testing.T) {
 	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
 	dbh, err := db.Open(cfg)
@@ -47,8 +64,8 @@ func TestDeleteLibraryRemovesRelatedDataAndUnreferencedThumbnails(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	uniqueThumb := "image/aa/unique.png"
-	sharedThumb := "image/bb/shared.png"
+	uniqueThumb := "aa/unique.png"
+	sharedThumb := "bb/shared.png"
 	now := time.Now().UTC()
 	items := []repo.Media{
 		{LibraryID: deletedLibrary.ID, ScanSessionID: &sessionID, Kind: "image", RelativePath: "a.jpg", FileSize: 1, Mtime: now, ThumbnailPath: &uniqueThumb},
@@ -73,7 +90,7 @@ func TestDeleteLibraryRemovesRelatedDataAndUnreferencedThumbnails(t *testing.T) 
 		}
 	}
 
-	server := NewServer(cfg, libraries, sessions, mediaRepo, nil, nil, nil, nil, nil, thumbBase)
+	server := NewServer(cfg, libraries, sessions, mediaRepo, nil, nil, nil, nil, nil, thumbBase, thumbBase, nil)
 	request := httptest.NewRequest(http.MethodDelete, "/api/libraries/"+formatInt64(deletedLibrary.ID), nil)
 	response := httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)
@@ -134,7 +151,7 @@ func TestOpenMediaFileValid(t *testing.T) {
 	if err := mr.Upsert(m); err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "")
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
 		body(`{"action":"file"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -157,7 +174,7 @@ func TestOpenMediaNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(cfg, repo.NewLibraryRepo(dbh), repo.NewSessionRepo(dbh),
-		repo.NewMediaRepo(dbh), nil, nil, nil, nil, nil, "")
+		repo.NewMediaRepo(dbh), nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/99999/open",
 		body(`{"action":"file"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -191,7 +208,7 @@ func TestOpenMediaFileNotExistOnDisk(t *testing.T) {
 	if err := mr.Upsert(m); err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "")
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
 		body(`{"action":"file"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -229,7 +246,7 @@ func TestOpenMediaDirectoryAction(t *testing.T) {
 	if err := mr.Upsert(m); err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "")
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
 		body(`{"action":"directory"}`))
 	req.Header.Set("Content-Type", "application/json")

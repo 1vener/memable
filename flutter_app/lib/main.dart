@@ -2,16 +2,21 @@
 // 代码注释使用中文
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/home_screen.dart';
 import 'services/api_service.dart';
 
-/// 全局主题模式管理器
+/// 全局主题管理器（模式 + 自定义主题色，本地持久化）
 class ThemeNotifier extends ChangeNotifier {
-  ThemeMode _mode = ThemeMode.system;
+  ThemeMode _mode = ThemeMode.light; // 默认浅色主题
+  Color _seedColor = const Color(0xFF2563EB); // 默认强调色
+
   ThemeMode get mode => _mode;
+  Color get seedColor => _seedColor;
 
   void setMode(ThemeMode mode) {
     _mode = mode;
+    _persist();
     notifyListeners();
   }
 
@@ -21,7 +26,49 @@ class ThemeNotifier extends ChangeNotifier {
       ThemeMode.dark => ThemeMode.system,
       ThemeMode.system => ThemeMode.light,
     };
+    _persist();
     notifyListeners();
+  }
+
+  /// 设置自定义主题色（浅色/深色模式统一生效）
+  void setSeedColor(Color color) {
+    _seedColor = color;
+    _persist();
+    notifyListeners();
+  }
+
+  /// 从本地存储恢复主题设置
+  Future<void> load() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final modeStr = prefs.getString('ui.theme_mode');
+      final colorInt = prefs.getInt('ui.accent_color');
+      _mode = switch (modeStr) {
+        'light' => ThemeMode.light,
+        'dark' => ThemeMode.dark,
+        'system' => ThemeMode.system,
+        _ => ThemeMode.light,
+      };
+      if (colorInt != null) {
+        _seedColor = Color(colorInt);
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> _persist() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'ui.theme_mode',
+        switch (_mode) {
+          ThemeMode.light => 'light',
+          ThemeMode.dark => 'dark',
+          ThemeMode.system => 'system',
+        },
+      );
+      await prefs.setInt('ui.accent_color', _seedColor.toARGB32());
+    } catch (_) {}
   }
 }
 
@@ -30,6 +77,7 @@ final themeNotifier = ThemeNotifier();
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  themeNotifier.load();
   // 窗口最小尺寸
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -49,8 +97,8 @@ class MemableApp extends StatelessWidget {
           title: 'memable',
           debugShowCheckedModeBanner: false,
           themeMode: themeNotifier.mode,
-          theme: _lightTheme(),
-          darkTheme: _darkTheme(),
+          theme: _lightTheme(themeNotifier.seedColor),
+          darkTheme: _darkTheme(themeNotifier.seedColor),
           home: HomeScreen(api: ApiService()),
         );
       },
@@ -58,9 +106,8 @@ class MemableApp extends StatelessWidget {
   }
 }
 
-/// 亮色主题 — 简洁现代风格
-ThemeData _lightTheme() {
-  const seed = Color(0xFF2563EB);
+/// 亮色主题 — Material 3 定制（中性色打底 + 可自定义强调色）
+ThemeData _lightTheme(Color seed) {
   final cs = ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.light);
   return ThemeData(
     colorScheme: cs,
@@ -112,8 +159,7 @@ ThemeData _lightTheme() {
 }
 
 /// 暗色主题
-ThemeData _darkTheme() {
-  const seed = Color(0xFF2563EB);
+ThemeData _darkTheme(Color seed) {
   final cs = ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.dark);
   return ThemeData(
     colorScheme: cs,

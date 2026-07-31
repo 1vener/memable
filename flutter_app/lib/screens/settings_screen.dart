@@ -14,6 +14,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _apiUrlCtrl;
+  late TextEditingController _hexCtrl;
   bool _testLoading = false;
   String? _testResult;
 
@@ -21,12 +22,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _apiUrlCtrl = TextEditingController(text: widget.api.baseUrl);
+    _hexCtrl = TextEditingController();
+    _syncHex();
   }
 
   @override
   void dispose() {
     _apiUrlCtrl.dispose();
+    _hexCtrl.dispose();
     super.dispose();
+  }
+
+  /// 预设主题色板
+  static const _presetColors = [
+    Color(0xFF2563EB), // 蓝
+    Color(0xFF4F46E5), // 靛蓝
+    Color(0xFF7C3AED), // 紫
+    Color(0xFF0D9488), // 青
+    Color(0xFF16A34A), // 绿
+    Color(0xFFD97706), // 琥珀
+    Color(0xFFEA580C), // 橙
+    Color(0xFFDC2626), // 红
+    Color(0xFFDB2777), // 粉
+    Color(0xFF475569), // 石板灰
+  ];
+
+  void _syncHex() {
+    final hex = themeNotifier.seedColor
+        .toARGB32()
+        .toRadixString(16)
+        .substring(2)
+        .toUpperCase()
+        .padLeft(6, '0');
+    _hexCtrl.text = '#$hex';
+  }
+
+  Color? _parseHex(String text) {
+    final s = text.trim().replaceFirst('#', '');
+    if (s.length != 6 && s.length != 8) return null;
+    final v = int.tryParse(s, radix: 16);
+    if (v == null) return null;
+    return Color(0xFF000000 | v);
+  }
+
+  void _applyHexColor() {
+    final color = _parseHex(_hexCtrl.text);
+    if (color == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('颜色格式无效，请输入 #RRGGBB')),
+        );
+      }
+      return;
+    }
+    themeNotifier.setSeedColor(color);
+    if (mounted) _syncHex();
   }
 
   Future<void> _testConnection() async {
@@ -88,6 +138,99 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       mode: ThemeMode.system,
                       groupValue: themeNotifier.mode,
                       onChanged: (v) => themeNotifier.setMode(v),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+
+            // ========== 主题颜色 ==========
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '主题颜色',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: cs.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '预设色板',
+                      style: TextStyle(fontSize: 12, color: cs.outline),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final c in _presetColors)
+                          Tooltip(
+                            message: '#${c.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(20),
+                              onTap: () {
+                                themeNotifier.setSeedColor(c);
+                                _syncHex();
+                              },
+                              child: Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: c,
+                                  shape: BoxShape.circle,
+                                  border: themeNotifier.seedColor.toARGB32() ==
+                                          c.toARGB32()
+                                      ? Border.all(
+                                          color: cs.onSurface,
+                                          width: 2,
+                                        )
+                                      : null,
+                                ),
+                                child: themeNotifier.seedColor.toARGB32() ==
+                                        c.toARGB32()
+                                    ? const Icon(
+                                        Icons.check,
+                                        size: 18,
+                                        color: Colors.white,
+                                      )
+                                    : null,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      '自定义取色（HEX / RGB）',
+                      style: TextStyle(fontSize: 12, color: cs.outline),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _hexCtrl,
+                            style: const TextStyle(fontSize: 13),
+                            decoration: const InputDecoration(
+                              hintText: '#2563EB',
+                              prefixIcon: Icon(Icons.colorize, size: 18),
+                            ),
+                            onSubmitted: (_) => _applyHexColor(),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        FilledButton(
+                          onPressed: _applyHexColor,
+                          child: const Text('应用'),
+                        ),
+                      ],
                     ),
                   ],
                 ),

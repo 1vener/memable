@@ -27,7 +27,18 @@ type DecodedImage struct {
 func DecodeImage(ctx context.Context, path string, decoder DecoderKind) (*DecodedImage, error) {
 	switch decoder {
 	case DecoderGo:
-		return decodeGoImage(path)
+		decoded, err := decodeGoImage(path)
+		if err == nil {
+			return decoded, nil
+		}
+		// 扩展名声明为 Go 原生格式，但内容无法识别（如实际为 WebP/JPEG2000/HEIC
+		// 却使用 .jpg 扩展名，或文件头损坏）。回退 FFmpeg 转码再解码；
+		// FFmpeg 也失败时保留原始错误（该文件记为失败，不中断扫描）。
+		img, format, ferr := decodeImageWithFFmpeg(ctx, path)
+		if ferr != nil {
+			return nil, err
+		}
+		return &DecodedImage{Image: img, Format: format}, nil
 	case DecoderFFmpeg:
 		img, format, err := decodeImageWithFFmpeg(ctx, path)
 		if err != nil {

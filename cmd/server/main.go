@@ -13,6 +13,7 @@ import (
 	"memable/internal/api"
 	"memable/internal/config"
 	"memable/internal/db"
+	"memable/internal/duplicate"
 	"memable/internal/logx"
 	"memable/internal/repo"
 	"memable/internal/scan"
@@ -55,31 +56,34 @@ func main() {
 	mediaRepo := repo.NewMediaRepo(dbh)
 	taskRepo := repo.NewTaskRepo(dbh)
 	fileStatsRepo := repo.NewFileStatsRepo(dbh)
+	dupRepo := repo.NewDuplicateRepo(dbh)
 
-	// 初始化服务层：使用统一的缩略图根目录（内容寻址路径含 image/video 前缀）
-	thumbBase := "thumbnail"
-	if cfg.Thumbnail.ImageDir != "" {
-		thumbBase = cfg.Thumbnail.ImageDir
-	}
+	// 初始化服务层：缩略图根目录按类型解析（配置优先，否则系统推荐目录）
+	imageThumbBase := cfg.ImageThumbDir()
+	videoThumbBase := cfg.VideoThumbDir()
 
 	scanSvc := &scan.Service{
-		Sessions:  sessionRepo,
-		Media:     mediaRepo,
-		Config:    cfg,
-		ThumbBase: thumbBase,
-		Libraries: libRepo,
+		Sessions:       sessionRepo,
+		Media:          mediaRepo,
+		Config:         cfg,
+		ImageThumbBase: imageThumbBase,
+		VideoThumbBase: videoThumbBase,
+		Libraries:      libRepo,
 	}
 	searchSvc := search.NewService(mediaRepo, libRepo)
+	dupSvc := duplicate.NewService(dupRepo, mediaRepo, libRepo, cfg, imageThumbBase, videoThumbBase)
 
 	// 初始化任务调度器
 	runner := task.NewRunner(taskRepo, sessionRepo, mediaRepo, libRepo, scanSvc, task.RunnerConfig{
-		PoolSize:  cfg.Worker.PoolSize,
-		ThumbBase: thumbBase,
-	})
+		PoolSize:        cfg.Worker.PoolSize,
+		ImageThumbBase:  imageThumbBase,
+		VideoThumbBase:  videoThumbBase,
+		PermanentDelete: cfg.Delete.Permanent,
+	}, dupSvc)
 	runner.Start(context.Background())
 
 	// 启动 HTTP API 服务器
-	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, taskRepo, fileStatsRepo, scanSvc, searchSvc, runner, thumbBase)
+	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, taskRepo, fileStatsRepo, scanSvc, searchSvc, runner, imageThumbBase, videoThumbBase, dupSvc)
 
 	// 优雅关闭
 	go func() {

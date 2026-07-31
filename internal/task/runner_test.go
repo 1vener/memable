@@ -23,7 +23,7 @@ func TestEnqueueWakesRunnerWithoutStoppingIt(t *testing.T) {
 
 	tasks := repo.NewTaskRepo(dbh)
 	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh),
-		repo.NewLibraryRepo(dbh), nil, RunnerConfig{})
+		repo.NewLibraryRepo(dbh), nil, RunnerConfig{}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.Start(ctx)

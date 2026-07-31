@@ -20,11 +20,13 @@ func ThumbnailKey(kind, sha1 string, maxEdge int) (storageKey string) {
 	return hex.EncodeToString(h[:])
 }
 
-// ThumbnailStoragePath 返回缩略图相对 thumbBase 的存储路径。
-// 格式：{kind}/{storageKey[:2]}/{storageKey}.png
-func ThumbnailStoragePath(kind, storageKey string) string {
+// ThumbnailStoragePath 返回缩略图相对"该类型缩略图根目录"的存储路径。
+// 格式：{storageKey[:2]}/{storageKey}.png
+// 说明：路径不含类型前缀，类型由根目录区分（image/video 各自根目录）；
+// 数据库只存该相对路径，根目录移动/更换配置后无需改库。
+func ThumbnailStoragePath(storageKey string) string {
 	dir := storageKey[:2]
-	return filepath.ToSlash(filepath.Join(kind, dir, storageKey+".png"))
+	return filepath.ToSlash(filepath.Join(dir, storageKey+".png"))
 }
 
 // GenerateImageThumbnail 生成图片缩略图并保存到 outPath（薄封装，内部走统一解码）。

@@ -566,7 +566,8 @@ class _FileTreePanelState extends State<_FileTreePanel> {
       builder: (ctx) => AlertDialog(
         title: const Text('删除目录'),
         content: Text(
-          '确定要永久删除目录「$dirName」及其所有内容吗？\n\n此操作不可恢复，将同时删除本地文件和数据库记录。',
+          '确定要删除目录「$dirName」及其所有内容吗？\n\n'
+          '将同时删除本地文件和数据库记录（本地文件按配置移入回收站或永久删除）。',
         ),
         actions: [
           TextButton(
@@ -578,7 +579,7 @@ class _FileTreePanelState extends State<_FileTreePanel> {
               backgroundColor: const Color(0xFFEF4444),
             ),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('永久删除'),
+            child: const Text('删除'),
           ),
         ],
       ),
@@ -641,16 +642,22 @@ class _FileTreePanelState extends State<_FileTreePanel> {
         dirPath,
       );
       if (mounted) {
-        final pos = result['queue_position'] ?? 0;
+        final deleted = result['deleted_media'] ?? 0;
+        final localDeleted = result['local_deleted'] != false;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('删除「$dirName」任务已提交 (排队第$pos位)'),
-            backgroundColor: const Color(0xFFF59E0B),
+            content: Text(
+              localDeleted
+                  ? '已删除「$dirName」及其内容（$deleted 个文件）'
+                  : '数据库已清理，但本地目录删除失败，请手动检查「$dirName」',
+            ),
+            backgroundColor: localDeleted
+                ? const Color(0xFF22C55E)
+                : const Color(0xFFF59E0B),
           ),
         );
-        // 刷新树和右侧文件列表
-        _expandedPaths.remove(dirPath);
-        _expandedChildren.remove(dirPath);
+        // 刷新树和右侧文件列表：清理被删目录及其父级缓存，避免残留节点
+        setState(() => _purgeDeletedDir(dirPath));
         await _loadRootChildren();
         if (_selectedDir == dirPath || _selectedDir.startsWith('$dirPath/')) {
           _selectedDir = '';
@@ -668,6 +675,34 @@ class _FileTreePanelState extends State<_FileTreePanel> {
         );
       }
     }
+  }
+
+  /// 删除目录后清理展开状态与父级缓存（保留其它节点的展开状态）。
+  void _purgeDeletedDir(String dirPath) {
+    final prefix = '$dirPath/';
+    _expandedPaths.removeWhere(
+      (p) => p == dirPath || p.startsWith(prefix),
+    );
+    _expandedChildren.removeWhere(
+      (key, _) => key == dirPath || key.startsWith(prefix),
+    );
+    _loadingPaths.removeWhere(
+      (p) => p == dirPath || p.startsWith(prefix),
+    );
+    // 若父目录处于展开状态，从父级缓存中移除被删节点
+    final parent = _parentOf(dirPath);
+    if (parent != null && _expandedChildren.containsKey(parent)) {
+      _expandedChildren[parent] = _expandedChildren[parent]!
+          .where((n) => n.path != dirPath && !n.path.startsWith(prefix))
+          .toList();
+    }
+  }
+
+  /// 返回路径的父目录（无父目录返回 null）。
+  String? _parentOf(String path) {
+    final norm = path.replaceAll('\\', '/');
+    final idx = norm.lastIndexOf('/');
+    return idx < 0 ? null : norm.substring(0, idx);
   }
 
   @override
@@ -909,7 +944,7 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                   final m = displayFiles[index];
                   final thumbUrl =
                       m.thumbnailPath != null
-                          ? widget.api.thumbnailUrl(m.thumbnailPath!)
+                          ? widget.api.thumbnailUrl(m.kind, m.thumbnailPath!)
                           : null;
                   return _MediaThumbCard(
                     media: m,

@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT
 -- ============================================================
 CREATE TABLE IF NOT EXISTS background_tasks (
     id                  TEXT    PRIMARY KEY,                             -- UUID
-    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','promote','directory_delete')),
+    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','report_duplicate','promote','directory_delete')),
     status              TEXT    NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued','running','completed','failed','cancelled')),
     title               TEXT    NOT NULL,                               -- 任务显示名称
@@ -124,3 +124,38 @@ CREATE TABLE IF NOT EXISTS file_stats (
     created_at      TIMESTAMP NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_file_stats_created ON file_stats(created_at DESC);
+
+-- ============================================================
+-- 6. 重复报告（三张独立表，随收藏库变更同步刷新）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS duplicate_reports (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    background_task_id      TEXT    REFERENCES background_tasks(id) ON DELETE SET NULL,
+    scope                   TEXT    NOT NULL DEFAULT 'all' CHECK (scope IN ('all','same_dir')),
+    media_type              TEXT    NOT NULL DEFAULT 'all' CHECK (media_type IN ('image','video','all')),
+    image_threshold         INTEGER NOT NULL DEFAULT 90,   -- 图片相似度阈值 0-100
+    video_phash_distance    INTEGER NOT NULL DEFAULT 12,   -- 视频 sprite pHash 最大 Hamming 距离
+    video_duration_diff_ms  INTEGER NOT NULL DEFAULT 3000, -- 视频允许时长差（毫秒）
+    oshash_filter           INTEGER NOT NULL DEFAULT 1,    -- 是否启用 oshash 粗筛
+    include_sha1            INTEGER NOT NULL DEFAULT 1,    -- 是否包含 SHA1 完全相同结果
+    stale                   INTEGER NOT NULL DEFAULT 0,    -- 1=数据已变化需重新生成
+    total_groups            INTEGER NOT NULL DEFAULT 0,    -- 统计快照
+    total_files             INTEGER NOT NULL DEFAULT 0,
+    created_at              TIMESTAMP NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS duplicate_groups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id   INTEGER NOT NULL REFERENCES duplicate_reports(id) ON DELETE CASCADE,
+    group_type  TEXT    NOT NULL CHECK (group_type IN ('sha1','image_similar','video_similar'))
+);
+CREATE INDEX IF NOT EXISTS idx_dup_groups_report ON duplicate_groups(report_id);
+
+CREATE TABLE IF NOT EXISTS duplicate_group_members (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id  INTEGER NOT NULL REFERENCES duplicate_groups(id) ON DELETE CASCADE,
+    media_id  INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    UNIQUE (group_id, media_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dup_members_group ON duplicate_group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_dup_members_media ON duplicate_group_members(media_id);

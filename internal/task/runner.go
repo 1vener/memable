@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"memable/internal/duplicate"
+	"memable/internal/recycle"
 	"memable/internal/repo"
 )
 
@@ -25,6 +26,7 @@ type Runner struct {
 	Media       *repo.MediaRepo
 	Libraries   *repo.LibraryRepo
 	ScanSvc     ScanExecutor
+	Dup         *duplicate.Service
 	Config      RunnerConfig
 	cancelFuncs sync.Map // taskID -> context.CancelFunc
 	running     bool
@@ -35,8 +37,10 @@ type Runner struct {
 
 // RunnerConfig 调度器配置。
 type RunnerConfig struct {
-	PoolSize  int
-	ThumbBase string
+	PoolSize        int
+	ImageThumbBase  string
+	VideoThumbBase  string
+	PermanentDelete bool // true=永久删除源文件；false=移入系统回收站
 }
 
 // ScanExecutor 扫描执行器接口。
@@ -46,7 +50,7 @@ type ScanExecutor interface {
 
 // NewRunner 创建任务调度器。
 func NewRunner(tasks *repo.TaskRepo, sessions *repo.SessionRepo, media *repo.MediaRepo,
-	libraries *repo.LibraryRepo, scanSvc ScanExecutor, cfg RunnerConfig) *Runner {
+	libraries *repo.LibraryRepo, scanSvc ScanExecutor, cfg RunnerConfig, dup *duplicate.Service) *Runner {
 	if cfg.PoolSize <= 0 {
 		cfg.PoolSize = 4
 	}
@@ -56,6 +60,7 @@ func NewRunner(tasks *repo.TaskRepo, sessions *repo.SessionRepo, media *repo.Med
 		Media:     media,
 		Libraries: libraries,
 		ScanSvc:   scanSvc,
+		Dup:       dup,
 		Config:    cfg,
 		wakeCh:    make(chan struct{}, 1),
 		stopCh:    make(chan struct{}),
@@ -259,6 +264,8 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 		execErr = r.execReport(taskCtx, task, "image", progress)
 	case repo.TaskKindReportVideo:
 		execErr = r.execReport(taskCtx, task, "video", progress)
+	case repo.TaskKindReportDuplicate:
+		execErr = r.execDuplicateReport(taskCtx, task, progress)
 	case repo.TaskKindPromote:
 		execErr = r.execPromote(taskCtx, task, progress)
 	case repo.TaskKindDirectoryDelete:
@@ -334,6 +341,14 @@ func (r *Runner) execScan(ctx context.Context, task *repo.BackgroundTask, tempor
 		return err
 	}
 
+	// 媒体变化后维护重复报告：新增/重新处理标记 stale，删除类变更清理分组并刷新统计
+	if r.Dup != nil {
+		if result.Imported > 0 || result.Cleaned > 0 || payload.Force {
+			_ = r.Dup.SetStale()
+		}
+		_ = r.Dup.PruneAfterMediaChange()
+	}
+
 	resJSON, _ := json.Marshal(map[string]any{
 		"session_id": result.Session.ID,
 		"library_id": lib.ID,
@@ -404,6 +419,39 @@ func (r *Runner) execReport(ctx context.Context, task *repo.BackgroundTask, kind
 		return fmt.Errorf("序列化重复检测结果: %w", err)
 	}
 	progress("done", len(groups), len(groups), len(groups), 0, 0, 0, (*int64)(nil))
+	_ = r.Tasks.Complete(task.ID, string(result))
+	return nil
+}
+
+// ReportPayload 重复报告任务参数。
+type ReportPayload struct {
+	Options duplicate.Options `json:"options"`
+}
+
+// execDuplicateReport 执行重复报告生成并持久化到三张表。
+func (r *Runner) execDuplicateReport(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
+	var payload ReportPayload
+	if task.PayloadJSON != nil {
+		if err := json.Unmarshal([]byte(*task.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("解析重复报告参数: %w", err)
+		}
+	}
+	if r.Dup == nil {
+		return fmt.Errorf("重复报告服务未初始化")
+	}
+	progress("detecting", 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	rep, err := r.Dup.Generate(payload.Options, task.ID)
+	if err != nil {
+		return err
+	}
+	result, _ := json.Marshal(map[string]any{
+		"report_id":    rep.ID,
+		"total_groups": rep.TotalGroups,
+		"total_files":  rep.TotalFiles,
+		"media_type":   rep.MediaType,
+		"scope":        rep.Scope,
+	})
+	progress("done", rep.TotalGroups, rep.TotalGroups, rep.TotalGroups, 0, 0, 0, (*int64)(nil))
 	_ = r.Tasks.Complete(task.ID, string(result))
 	return nil
 }
@@ -527,27 +575,33 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 
 	// 阶段1：删除数据库媒体记录，收集缩略图路径
 	progress("deleting_db", 0, 0, 0, 0, 0, 0, (*int64)(nil))
-	thumbPaths, err := r.Media.DeleteByDirectory(payload.LibraryID, payload.DirPath)
+	_, thumbRefs, err := r.Media.DeleteByDirectory(payload.LibraryID, payload.DirPath)
 	if err != nil {
 		return fmt.Errorf("删除数据库记录: %w", err)
 	}
 
-	// 阶段2：删除本地目录
+	// 阶段2：删除本地目录（按配置：永久删除或移入回收站）
 	progress("deleting_files", 0, 0, 0, 0, 0, 0, (*int64)(nil))
 	absDir := filepath.Join(lib.Path, payload.DirPath)
-	if err := os.RemoveAll(absDir); err != nil && !os.IsNotExist(err) {
-		slog.Warn("删除本地目录失败（数据库已清理）", "path", absDir, "err", err)
+	var dirErr error
+	if r.Config.PermanentDelete {
+		dirErr = os.RemoveAll(absDir)
+	} else {
+		dirErr = recycle.ToBinDir(absDir)
+	}
+	if dirErr != nil && !os.IsNotExist(dirErr) {
+		slog.Warn("删除本地目录失败（数据库已清理）", "path", absDir, "err", dirErr)
 	}
 
 	// 阶段3：清理无引用缩略图
-	progress("cleaning_thumbs", 0, len(thumbPaths), 0, 0, 0, 0, (*int64)(nil))
+	progress("cleaning_thumbs", 0, len(thumbRefs), 0, 0, 0, 0, (*int64)(nil))
 	deleted := 0
-	for i, thumbRel := range thumbPaths {
-		n, err := r.Media.CountThumbnailReferences(thumbRel)
+	for i, ref := range thumbRefs {
+		n, err := r.Media.CountThumbnailReferences(ref.Rel)
 		if err != nil || n > 0 {
 			continue
 		}
-		thumbAbs := filepath.Join(r.Config.ThumbBase, thumbRel)
+		thumbAbs := filepath.Join(r.thumbBaseFor(ref.Kind), filepath.FromSlash(ref.Rel))
 		if err := os.Remove(thumbAbs); err != nil && !os.IsNotExist(err) {
 			slog.Warn("删除缩略图失败", "path", thumbAbs, "err", err)
 			continue
@@ -555,9 +609,14 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 		// 清理空的哈希分片目录
 		_ = os.Remove(filepath.Dir(thumbAbs))
 		deleted++
-		if (i+1)%50 == 0 || i+1 == len(thumbPaths) {
-			progress("cleaning_thumbs", len(thumbPaths), i+1, deleted, 0, 0, 0, (*int64)(nil))
+		if (i+1)%50 == 0 || i+1 == len(thumbRefs) {
+			progress("cleaning_thumbs", len(thumbRefs), i+1, deleted, 0, 0, 0, (*int64)(nil))
 		}
+	}
+
+	// 媒体删除后维护重复报告（级联成员 → 清理不足 2 个的组 → 更新统计）
+	if r.Dup != nil {
+		_ = r.Dup.PruneAfterMediaChange()
 	}
 
 	result, _ := json.Marshal(map[string]any{
@@ -566,4 +625,27 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 	})
 	_ = r.Tasks.Complete(task.ID, string(result))
 	return nil
+}
+
+// thumbBaseFor 按媒体类型返回缩略图根目录（配置优先，否则系统推荐目录）。
+func (r *Runner) thumbBaseFor(kind string) string {
+	if kind == "video" {
+		if r.Config.VideoThumbBase != "" {
+			return r.Config.VideoThumbBase
+		}
+		return filepath.Join(mustUserCacheDir(), "memable", "thumbnails", "video")
+	}
+	if r.Config.ImageThumbBase != "" {
+		return r.Config.ImageThumbBase
+	}
+	return filepath.Join(mustUserCacheDir(), "memable", "thumbnails", "image")
+}
+
+// mustUserCacheDir 返回系统缓存目录（失败时回退临时目录）。
+func mustUserCacheDir() string {
+	dir, err := os.UserCacheDir()
+	if err != nil || dir == "" {
+		return os.TempDir()
+	}
+	return dir
 }

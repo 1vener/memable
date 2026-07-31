@@ -26,12 +26,15 @@ func TestOpenAndMigrateInMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 1 {
-		t.Fatalf("expected version 1, got %d", v)
+	if v != schemaVersion {
+		t.Fatalf("expected version %d, got %d", schemaVersion, v)
 	}
 
-	// 验证核心表已建立；video_frames 已在 v2 迁移中移除
-	for _, tbl := range []string{"libraries", "scan_sessions", "media", "file_stats"} {
+	// 验证核心表与重复报告三张表已建立
+	for _, tbl := range []string{
+		"libraries", "scan_sessions", "media", "file_stats",
+		"duplicate_reports", "duplicate_groups", "duplicate_group_members",
+	} {
 		var n int
 		q := "SELECT count(*) FROM " + tbl
 		if err := dbh.QueryRow(q).Scan(&n); err != nil {
@@ -54,7 +57,7 @@ func TestMigrateExistingDatabaseDoesNothing(t *testing.T) {
 	if _, err := dbh.Exec(`CREATE TABLE migrate_sentinel (id INTEGER PRIMARY KEY)`); err != nil {
 		t.Fatalf("创建哨兵表: %v", err)
 	}
-	if _, err := dbh.Exec(`UPDATE schema_version SET version=99`); err != nil {
+	if _, err := dbh.Exec(`UPDATE schema_version SET version=99 WHERE version=1`); err != nil {
 		t.Fatalf("修改版本记录: %v", err)
 	}
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"memable/internal/config"
+	"memable/internal/duplicate"
 	"memable/internal/repo"
 	"memable/internal/scan"
 	"memable/internal/search"
@@ -37,34 +38,38 @@ type ffprobeCaps struct {
 
 // Server HTTP API 服务器。
 type Server struct {
-	cfg         *config.Config
-	libraries   *repo.LibraryRepo
-	sessions    *repo.SessionRepo
-	media       *repo.MediaRepo
-	tasks       *repo.TaskRepo
-	fileStats   *repo.FileStatsRepo
-	scanSvc     *scan.Service
-	searchSvc   *search.Service
-	runner      *task.Runner
-	thumbBase   string
-	ffmpegCaps  *ffmpegCaps
-	ffprobeCaps *ffprobeCaps
-	http        *http.Server
+	cfg            *config.Config
+	libraries      *repo.LibraryRepo
+	sessions       *repo.SessionRepo
+	media          *repo.MediaRepo
+	tasks          *repo.TaskRepo
+	fileStats      *repo.FileStatsRepo
+	scanSvc        *scan.Service
+	searchSvc      *search.Service
+	runner         *task.Runner
+	dup            *duplicate.Service
+	imageThumbBase string
+	videoThumbBase string
+	ffmpegCaps     *ffmpegCaps
+	ffprobeCaps    *ffprobeCaps
+	http           *http.Server
 }
 
 // NewServer 创建 HTTP API 服务器。
-func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, tr *repo.TaskRepo, fsr *repo.FileStatsRepo, scanSvc *scan.Service, searchSvc *search.Service, runner *task.Runner, thumbBase string) *Server {
+func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, tr *repo.TaskRepo, fsr *repo.FileStatsRepo, scanSvc *scan.Service, searchSvc *search.Service, runner *task.Runner, imageThumbBase, videoThumbBase string, dup *duplicate.Service) *Server {
 	s := &Server{
-		cfg:       cfg,
-		libraries: lr,
-		sessions:  sr,
-		media:     mr,
-		tasks:     tr,
-		fileStats: fsr,
-		scanSvc:   scanSvc,
-		searchSvc: searchSvc,
-		runner:    runner,
-		thumbBase: thumbBase,
+		cfg:            cfg,
+		libraries:      lr,
+		sessions:       sr,
+		media:          mr,
+		tasks:          tr,
+		fileStats:      fsr,
+		scanSvc:        scanSvc,
+		searchSvc:      searchSvc,
+		runner:         runner,
+		dup:            dup,
+		imageThumbBase: imageThumbBase,
+		videoThumbBase: videoThumbBase,
 	}
 	s.probeFFmpegCaps()
 	mux := http.NewServeMux()
@@ -105,12 +110,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// 重复报告（阶段 6）
 	mux.HandleFunc("POST /api/reports/image", s.handleImageReport)
 	mux.HandleFunc("POST /api/reports/video", s.handleVideoReport)
+	mux.HandleFunc("POST /api/reports/duplicate", s.handleCreateDuplicateReport)
+	mux.HandleFunc("GET /api/reports/duplicate", s.handleGetDuplicateReport)
+	mux.HandleFunc("GET /api/reports/duplicate/groups", s.handleListDuplicateGroups)
+	mux.HandleFunc("GET /api/reports/duplicate/tree", s.handleDuplicateReportTree)
+	mux.HandleFunc("GET /api/reports/duplicate/defaults", s.handleGetDuplicateReportDefaults)
+	mux.HandleFunc("POST /api/reports/duplicate/clear", s.handleClearDuplicateReport)
 
-	// 缩略图静态服务
-	mux.HandleFunc("GET /api/thumbnails/", s.handleThumbnail)
+	// 缩略图静态服务：/api/thumbnails/{kind}/{rel}，kind ∈ image/video
+	mux.HandleFunc("GET /api/thumbnails/{kind}/", s.handleThumbnail)
 
 	// 媒体操作
 	mux.HandleFunc("POST /api/media/{id}/open", s.handleOpenMedia)
+	mux.HandleFunc("POST /api/media/delete", s.handleDeleteMedia)
 
 	// 健康检查
 	mux.HandleFunc("GET /api/health", s.handleHealth)
@@ -218,9 +230,16 @@ func fullPath(libPath, relPath string) string {
 	return filepath.Join(libPath, relPath)
 }
 
-// thumbAbsPath 返回缩略图的绝对路径。
-func (s *Server) thumbAbsPath(relPath string) string {
-	return filepath.Join(s.thumbBase, relPath)
+// thumbAbsPath 返回缩略图的绝对路径（按类型选择根目录）。
+func (s *Server) thumbAbsPath(kind, relPath string) string {
+	base := s.imageThumbBase
+	if kind == "video" {
+		base = s.videoThumbBase
+	}
+	if base == "" {
+		base = "thumbnail"
+	}
+	return filepath.Join(base, relPath)
 }
 
 // ensureDir 确保目录存在。

@@ -275,6 +275,129 @@ class ApiService {
     return results;
   }
 
+  /// 提交重复报告生成任务（三张表持久化，支持范围/类型/阈值选项）。
+  Future<Map<String, dynamic>> generateReport(ReportOptions options) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/reports/duplicate'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(options.toJson()),
+    );
+    if (res.statusCode != 200 && res.statusCode != 202) {
+      throw Exception('提交重复报告任务失败: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// 读取最新重复报告摘要（无报告时返回 null）。
+  Future<ReportSummary?> getReportSummary() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/reports/duplicate'));
+    if (res.statusCode != 200) throw Exception('读取重复报告失败: ${res.body}');
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    if (data['report'] == null) return null;
+    final summary = ReportSummary.fromJson(data['report'] as Map<String, dynamic>);
+    return ReportSummary(
+      id: summary.id,
+      scope: summary.scope,
+      mediaType: summary.mediaType,
+      stale: summary.stale,
+      totalGroups: summary.totalGroups,
+      totalFiles: summary.totalFiles,
+      freedBytes: (data['freed_bytes'] as num?)?.toInt() ?? 0,
+      imageThreshold: summary.imageThreshold,
+      videoPhashDistance: summary.videoPhashDistance,
+      videoDurationDiffMs: summary.videoDurationDiffMs,
+      oshashFilter: summary.oshashFilter,
+      includeSha1: summary.includeSha1,
+      createdAt: summary.createdAt,
+    );
+  }
+
+  /// 读取报告生成选项默认值（与后端配置一致）。
+  Future<Map<String, dynamic>> getReportDefaults() async {
+    final res = await http.get(
+      Uri.parse('$baseUrl/api/reports/duplicate/defaults'),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('读取报告默认值失败: ${res.body}');
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// 重复报告分组分页数据。
+  Future<DuplicateGroupPage> getReportGroups({
+    int page = 1,
+    int pageSize = 20,
+    String kind = 'all',
+    String? directory,
+  }) async {
+    final params = <String, String>{
+      'page': '$page',
+      'page_size': '$pageSize',
+      'kind': kind,
+      if (directory != null && directory.isNotEmpty) 'directory': directory,
+    };
+    final uri = Uri.parse('$baseUrl/api/reports/duplicate/groups').replace(
+      queryParameters: params,
+    );
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('读取重复分组失败: ${res.body}');
+    return DuplicateGroupPage.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// 重复报告目录树。
+  Future<List<DuplicateTreeNode>> getReportTree() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/reports/duplicate/tree'));
+    if (res.statusCode != 200) throw Exception('读取报告目录树失败: ${res.body}');
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list
+        .map((e) => DuplicateTreeNode.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// 一键清除重复文件（按目录/整页/单组 + 保留条件）。
+  Future<ClearResult> clearDuplicates({
+    required String scope,
+    required String keep,
+    String? directory,
+    List<int>? groupIds,
+    int? groupId,
+    bool? permanent,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/reports/duplicate/clear'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'scope': scope,
+        'keep': keep,
+        if (directory != null) 'directory': directory,
+        if (groupIds != null) 'group_ids': groupIds,
+        if (groupId != null) 'group_id': groupId,
+        if (permanent != null) 'permanent': permanent,
+      }),
+    );
+    if (res.statusCode != 200) throw Exception('清除重复文件失败: ${res.body}');
+    return ClearResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  /// 删除媒体（源文件默认移入回收站，可永久删除）。
+  Future<DeleteResult> deleteMedia(
+    List<int> mediaIds, {
+    bool? permanent,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/media/delete'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'media_ids': mediaIds,
+        if (permanent != null) 'permanent': permanent,
+      }),
+    );
+    if (res.statusCode != 200) throw Exception('删除媒体失败: ${res.body}');
+    return DeleteResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
   // ===== 文件树 =====
 
   /// 获取目录的直属子项（懒加载，展开时按需获取）
@@ -304,7 +427,7 @@ class ApiService {
     return list.map((e) => Media.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  /// 删除目录（提交后台任务）
+  /// 删除目录（同步执行，返回删除结果）
   Future<Map<String, dynamic>> deleteDirectory(
     int libraryId,
     String dirPath,
@@ -314,13 +437,15 @@ class ApiService {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'path': dirPath}),
     );
-    if (res.statusCode != 202) throw Exception('提交删除任务失败: ${res.body}');
+    if (res.statusCode != 200 && res.statusCode != 202) {
+      throw Exception('删除目录失败: ${res.body}');
+    }
     return jsonDecode(res.body);
   }
 
-  /// 缩略图 URL
-  String thumbnailUrl(String thumbnailPath) {
-    return '$baseUrl/api/thumbnails/$thumbnailPath';
+  /// 缩略图 URL（kind: image/video；缩略图根目录按类型区分）
+  String thumbnailUrl(String kind, String thumbnailPath) {
+    return '$baseUrl/api/thumbnails/$kind/$thumbnailPath';
   }
 
   // ===== 工具 - 文件统计 =====

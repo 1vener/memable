@@ -1,10 +1,12 @@
 // home_screen.dart：主框架，可收起侧边栏 + 顶部工具栏 + 内容区 + 底部状态栏
 // 代码注释使用中文
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/api_service.dart';
 import '../main.dart';
+import '../models/models.dart';
 import '../widgets/status_bar.dart';
 import '../widgets/context_menu.dart';
 import 'library_screen.dart';
@@ -90,6 +92,8 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _currentLibrary;
   String? _scanProgress;
   String _apiStatus = 'unknown';
+  List<BackgroundTask> _runningTasks = [];
+  Timer? _taskTimer;
   static const double _sidebarExpandedWidth = 220;
   static const double _sidebarCollapsedWidth = 64;
 
@@ -103,6 +107,33 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _checkApi();
     _loadSidebarPref();
+    _startTaskPolling();
+  }
+
+  @override
+  void dispose() {
+    _taskTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 每 2 秒轮询一次后台任务，供底部状态栏展示运行中任务进度。
+  void _startTaskPolling() {
+    _loadRunningTasks();
+    _taskTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (mounted) _loadRunningTasks();
+    });
+  }
+
+  Future<void> _loadRunningTasks() async {
+    try {
+      final tasks = await api.getTasks();
+      if (!mounted) return;
+      setState(() {
+        _runningTasks = tasks.where((t) => t.isRunning).toList();
+      });
+    } catch (_) {
+      // 任务查询失败不影响主界面
+    }
   }
 
   Future<void> _loadSidebarPref() async {
@@ -226,6 +257,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             apiStatus: _apiStatus,
                             currentLibrary: _currentLibrary,
                             scanProgress: _scanProgress,
+                            runningTasks: _runningTasks,
                           ),
                         ],
                       ),

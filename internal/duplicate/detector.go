@@ -5,6 +5,8 @@ package duplicate
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 
 	"memable/internal/config"
 	"memable/internal/media"
@@ -24,9 +26,141 @@ type Detector struct {
 	Config *config.Config
 }
 
+// Options 重复报告生成选项。
+type Options struct {
+	Scope               string `json:"scope"`                  // all / same_dir（仅同一目录，不含子目录）
+	MediaType           string `json:"media_type"`             // image / video / all
+	ImageThreshold      int    `json:"image_threshold"`        // 图片相似度阈值 0-100（换算为 pHash Hamming 距离）
+	VideoPhashDistance  int    `json:"video_phash_distance"`   // 视频 sprite pHash 最大 Hamming 距离
+	VideoDurationDiffMs int64  `json:"video_duration_diff_ms"` // 视频允许时长差（毫秒）
+	OshashFilter        bool   `json:"oshash_filter"`          // 是否启用 oshash 粗筛预分组
+	IncludeSHA1         bool   `json:"include_sha1"`           // 是否包含 SHA1 完全相同结果
+}
+
 // NewDetector 创建检测器。
 func NewDetector(mr *repo.MediaRepo, cfg *config.Config) *Detector {
 	return &Detector{Media: mr, Config: cfg}
+}
+
+// DetectWithOptions 按生成选项检测图片/视频重复。
+func (d *Detector) DetectWithOptions(opts Options) ([]Group, error) {
+	var all []repo.Media
+	var err error
+	switch opts.MediaType {
+	case "image", "video":
+		all, err = d.Media.ListByKind(opts.MediaType)
+	default:
+		all, err = d.Media.ListAllFormal()
+	}
+	if err != nil {
+		return nil, fmt.Errorf("查询媒体列表: %w", err)
+	}
+	slog.Info("重复检测开始", "media_type", opts.MediaType, "scope", opts.Scope, "count", len(all))
+
+	imageMaxDist := distanceFromPercent(opts.ImageThreshold)
+	var groups []Group
+	if opts.Scope == "same_dir" {
+		// 仅同一目录：按目录分桶后各自检测（不含子目录）
+		buckets := map[string][]repo.Media{}
+		for _, m := range all {
+			key := relDir(m.RelativePath)
+			buckets[key] = append(buckets[key], m)
+		}
+		for _, bucket := range buckets {
+			groups = append(groups, d.detectBucket(bucket, opts, imageMaxDist)...)
+		}
+		groups = filterSameDir(groups)
+	} else {
+		groups = append(groups, d.detectBucket(all, opts, imageMaxDist)...)
+	}
+	slog.Info("重复检测完成", "groups", len(groups))
+	return groups, nil
+}
+
+// detectBucket 对一组媒体执行图片/视频检测。
+func (d *Detector) detectBucket(bucket []repo.Media, opts Options, imageMaxDist int) []Group {
+	var groups []Group
+	if opts.MediaType == "image" || opts.MediaType == "all" {
+		groups = append(groups, d.detectImages(filterKind(bucket, "image"), opts, imageMaxDist)...)
+	}
+	if opts.MediaType == "video" || opts.MediaType == "all" {
+		groups = append(groups, d.detectVideos(filterKind(bucket, "video"), opts)...)
+	}
+	return groups
+}
+
+func filterKind(items []repo.Media, kind string) []repo.Media {
+	out := make([]repo.Media, 0, len(items))
+	for _, m := range items {
+		if m.Kind == kind {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// distanceFromPercent 相似度百分比（0-100）换算为 64bit pHash Hamming 距离上限。
+func distanceFromPercent(percent int) int {
+	if percent <= 0 {
+		return 64
+	}
+	if percent >= 100 {
+		return 0
+	}
+	return 64 * (100 - percent) / 100
+}
+
+// detectImages 图片：SHA1 精确 + pHash 相似。
+func (d *Detector) detectImages(images []repo.Media, opts Options, maxDist int) []Group {
+	var groups []Group
+	if opts.IncludeSHA1 {
+		for _, items := range groupBySha1(images) {
+			if len(items) >= 2 {
+				groups = append(groups, Group{Kind: "image", Reason: "sha1_exact", Media: items})
+			}
+		}
+	}
+	represented := map[int64]bool{}
+	for _, g := range groups {
+		for _, m := range g.Media {
+			represented[m.ID] = true
+		}
+	}
+	candidates := make([]repo.Media, 0, len(images))
+	for _, m := range images {
+		if !represented[m.ID] && m.Phash != nil {
+			candidates = append(candidates, m)
+		}
+	}
+	groups = append(groups, d.detectImagePHashSimilarDist(candidates, maxDist)...)
+	return groups
+}
+
+// detectVideos 视频：SHA1 精确 + oshash 粗筛 + sprite pHash/时长差。
+func (d *Detector) detectVideos(videos []repo.Media, opts Options) []Group {
+	var groups []Group
+	if opts.IncludeSHA1 {
+		for _, items := range groupBySha1(videos) {
+			if len(items) >= 2 {
+				groups = append(groups, Group{Kind: "video", Reason: "sha1_exact", Media: items})
+			}
+		}
+	}
+	represented := map[int64]bool{}
+	for _, g := range groups {
+		for _, m := range g.Media {
+			represented[m.ID] = true
+		}
+	}
+	candidates := make([]repo.Media, 0, len(videos))
+	for _, m := range videos {
+		if !represented[m.ID] && m.Phash != nil {
+			candidates = append(candidates, m)
+		}
+	}
+	groups = append(groups, d.detectVideoPHashSimilarDist(
+		candidates, opts.VideoPhashDistance, opts.VideoDurationDiffMs, opts.OshashFilter)...)
+	return groups
 }
 
 // DetectImageDuplicates 检测图片重复：SHA1 精确 + pHash/dHash/aHash 相似。
@@ -79,7 +213,11 @@ func (d *Detector) detectImagePHashSimilar(items []repo.Media) []Group {
 	if d.Config != nil && d.Config.Similarity.ImagePHashDistance > 0 {
 		maxDist = d.Config.Similarity.ImagePHashDistance
 	}
+	return d.detectImagePHashSimilarDist(items, maxDist)
+}
 
+// detectImagePHashSimilarDist 用 pHash Hamming 距离检测相似图片。
+func (d *Detector) detectImagePHashSimilarDist(items []repo.Media, maxDist int) []Group {
 	// 并查集
 	uf := newUnionFind(len(items))
 	for i := 0; i < len(items); i++ {
@@ -179,41 +317,21 @@ func (d *Detector) detectVideoPHashSimilar(items []repo.Media) []Group {
 	if d.Config != nil && d.Config.Similarity.VideoDurationDiffMs > 0 {
 		maxDurationDiff = d.Config.Similarity.VideoDurationDiffMs
 	}
+	return d.detectVideoPHashSimilarDist(items, maxDist, maxDurationDiff, true)
+}
 
+// detectVideoPHashSimilarDist sprite pHash + 时长差检测；oshashFilter 开启时按 oshash 预分组加速。
+func (d *Detector) detectVideoPHashSimilarDist(items []repo.Media, maxDist int, maxDurationDiff int64, oshashFilter bool) []Group {
 	uf := newUnionFind(len(items))
-	for i := 0; i < len(items); i++ {
-		if items[i].Phash == nil {
-			continue
-		}
-		for j := i + 1; j < len(items); j++ {
-			if items[j].Phash == nil {
-				continue
-			}
-			dist, err := media.HammingHex64(*items[i].Phash, *items[j].Phash)
-			if err != nil {
-				continue
-			}
-			if dist > maxDist {
-				continue
-			}
-			// 时长差辅助条件
-			durA := int64(0)
-			if items[i].DurationMs != nil {
-				durA = *items[i].DurationMs
-			}
-			durB := int64(0)
-			if items[j].DurationMs != nil {
-				durB = *items[j].DurationMs
-			}
-			diff := durA - durB
-			if diff < 0 {
-				diff = -diff
-			}
-			if diff <= maxDurationDiff {
-				uf.union(i, j)
-			}
-		}
+	// oshash 只能作为粗筛提示，不能按不同值硬分桶，否则视觉相似但
+	// oshash 不同的视频会被直接漏掉。当前实现统一进行 sprite pHash
+	// 比较，保证召回完整性；参数保留用于报告选项兼容和后续安全优化。
+	_ = oshashFilter
+	idxs := make([]int, len(items))
+	for i := range idxs {
+		idxs[i] = i
 	}
+	unionVideoPairs(items, idxs, uf, maxDist, maxDurationDiff)
 
 	compMap := make(map[int][]int)
 	for i := 0; i < len(items); i++ {
@@ -237,6 +355,73 @@ func (d *Detector) detectVideoPHashSimilar(items []repo.Media) []Group {
 		})
 	}
 	return groups
+}
+
+// unionVideoPairs 对一组索引做两两比较并合并满足条件的视频。
+func unionVideoPairs(items []repo.Media, idxs []int, uf *unionFind, maxDist int, maxDurationDiff int64) {
+	for i := 0; i < len(idxs); i++ {
+		a := idxs[i]
+		if items[a].Phash == nil {
+			continue
+		}
+		for j := i + 1; j < len(idxs); j++ {
+			b := idxs[j]
+			if items[b].Phash == nil {
+				continue
+			}
+			dist, err := media.HammingHex64(*items[a].Phash, *items[b].Phash)
+			if err != nil || dist > maxDist {
+				continue
+			}
+			durA := int64(0)
+			if items[a].DurationMs != nil {
+				durA = *items[a].DurationMs
+			}
+			durB := int64(0)
+			if items[b].DurationMs != nil {
+				durB = *items[b].DurationMs
+			}
+			diff := durA - durB
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff <= maxDurationDiff {
+				uf.union(a, b)
+			}
+		}
+	}
+}
+
+// filterSameDir 仅保留全部成员位于同一目录（不含子目录）的重复组。
+func filterSameDir(groups []Group) []Group {
+	out := make([]Group, 0, len(groups))
+	for _, g := range groups {
+		dir := ""
+		same := true
+		for _, m := range g.Media {
+			d := relDir(m.RelativePath)
+			if dir == "" {
+				dir = d
+			} else if d != dir {
+				same = false
+				break
+			}
+		}
+		if same && len(g.Media) >= 2 {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// relDir 返回相对路径的目录部分（正斜杠，根目录返回 "."）。
+func relDir(rel string) string {
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	dir := filepath.ToSlash(filepath.Dir(filepath.FromSlash(rel)))
+	if dir == "." {
+		return "."
+	}
+	return dir
 }
 
 // groupBySha1 按 SHA1 分组，返回包含 >=2 条记录的分组。
