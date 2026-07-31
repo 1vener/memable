@@ -247,33 +247,34 @@ func buildDirTree(dirs map[string]int) []*TreeItem {
 			}
 		}
 	}
-	// 挂接父子关系与直属文件数
+	// 直属文件数只来源于实际包含重复成员的目录。
 	for dir, cnt := range dirs {
 		if dir == "." || dir == "" {
 			continue
 		}
-		node := nodes[dir]
-		node.FileCount += cnt
-		parent := parentDir(dir)
-		if p, ok := nodes[parent]; ok {
-			p.Children = append(p.Children, node)
+		if node, ok := nodes[dir]; ok {
+			node.FileCount += cnt
 		}
 	}
-	// 根节点 = 父路径不在节点表内的节点（含只有子目录、无直属文件的中间层）
+
+	// 所有节点都要参与挂接；中间目录即使没有直属文件，也不能从树中断开。
 	roots := make([]*TreeItem, 0, len(nodes))
 	for path, node := range nodes {
 		parent := parentDir(path)
-		if parent == "" {
-			roots = append(roots, node)
-		} else if _, ok := nodes[parent]; !ok {
-			roots = append(roots, node)
+		if p, ok := nodes[parent]; ok {
+			p.Children = append(p.Children, node)
+			continue
 		}
+		roots = append(roots, node)
 	}
 	for _, n := range nodes {
 		sort.Slice(n.Children, func(i, j int) bool {
-			return n.Children[i].Name < n.Children[j].Name
+			return n.Children[i].Path < n.Children[j].Path
 		})
 	}
+	sort.Slice(roots, func(i, j int) bool {
+		return roots[i].Path < roots[j].Path
+	})
 	// 根目录直属文件（目录为 "." 或 ""）作为根节点返回
 	if cnt := dirs["."] + dirs[""]; cnt > 0 {
 		root := &TreeItem{Name: ".", Path: "", FileCount: cnt}

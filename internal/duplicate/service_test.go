@@ -217,6 +217,37 @@ func TestBuildDirTreeNested(t *testing.T) {
 	}
 }
 
+// TestBuildDirTreeKeepsEmptyIntermediateNodes 回归：只有最深层目录包含重复文件时，
+// 中间目录也必须完整挂接，否则前端只能看到没有子节点的顶层目录。
+func TestBuildDirTreeKeepsEmptyIntermediateNodes(t *testing.T) {
+	roots := buildDirTree(map[string]int{
+		"library/album/photos": 4,
+		"library/video/covers": 2,
+	})
+	if len(roots) != 1 || roots[0].Path != "library" {
+		t.Fatalf("应仅有 library 根节点，实际 %+v", roots)
+	}
+	library := roots[0]
+	if library.FileCount != 0 || len(library.Children) != 2 {
+		t.Fatalf("library 应包含两个中间目录且无直属文件，实际 %+v", library)
+	}
+	album := library.Children[0]
+	if album.Path != "library/album" || album.FileCount != 0 || len(album.Children) != 1 {
+		t.Fatalf("album 中间节点异常: %+v", album)
+	}
+	photos := album.Children[0]
+	if photos.Path != "library/album/photos" || photos.FileCount != 4 {
+		t.Fatalf("photos 叶子节点异常: %+v", photos)
+	}
+	video := library.Children[1]
+	if video.Path != "library/video" || video.FileCount != 0 || len(video.Children) != 1 {
+		t.Fatalf("video 中间节点异常: %+v", video)
+	}
+	if covers := video.Children[0]; covers.Path != "library/video/covers" || covers.FileCount != 2 {
+		t.Fatalf("covers 叶子节点异常: %+v", covers)
+	}
+}
+
 // TestReportJSONFieldNames 回归：报告/成员/清除请求的 JSON 字段名必须与客户端一致（snake_case）。
 func TestReportJSONFieldNames(t *testing.T) {
 	rep := &repo.DuplicateReport{
