@@ -294,7 +294,9 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('读取重复报告失败: ${res.body}');
     final data = jsonDecode(res.body) as Map<String, dynamic>;
     if (data['report'] == null) return null;
-    final summary = ReportSummary.fromJson(data['report'] as Map<String, dynamic>);
+    final summary = ReportSummary.fromJson(
+      data['report'] as Map<String, dynamic>,
+    );
     return ReportSummary(
       id: summary.id,
       scope: summary.scope,
@@ -334,11 +336,12 @@ class ApiService {
       'page': '$page',
       'page_size': '$pageSize',
       'kind': kind,
-      if (directory != null && directory.isNotEmpty) 'directory': directory,
+      // 根目录必须显式传“.”；省略参数会被后端解释为“不筛选目录”。
+      if (directory != null) 'directory': directory.isEmpty ? '.' : directory,
     };
-    final uri = Uri.parse('$baseUrl/api/reports/duplicate/groups').replace(
-      queryParameters: params,
-    );
+    final uri = Uri.parse(
+      '$baseUrl/api/reports/duplicate/groups',
+    ).replace(queryParameters: params);
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('读取重复分组失败: ${res.body}');
     return DuplicateGroupPage.fromJson(
@@ -348,7 +351,9 @@ class ApiService {
 
   /// 重复报告目录树。
   Future<List<DuplicateTreeNode>> getReportTree() async {
-    final res = await http.get(Uri.parse('$baseUrl/api/reports/duplicate/tree'));
+    final res = await http.get(
+      Uri.parse('$baseUrl/api/reports/duplicate/tree'),
+    );
     if (res.statusCode != 200) throw Exception('读取报告目录树失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
     return list

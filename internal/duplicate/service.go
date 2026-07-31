@@ -138,7 +138,9 @@ func (s *Service) Groups(page, pageSize int, kind, directory string) (*GroupPage
 	}
 	items := make([]GroupItem, 0, len(views))
 	for _, v := range views {
-		if len(v.Items) == 0 {
+		// 报告组只要剩下 0/1 个成员，就不再属于重复组。
+		// 这里再次防御性过滤，避免清理后的瞬间或历史脏数据把单张图片返回给 UI。
+		if len(v.Items) < 2 {
 			continue
 		}
 		if kind != "" && kind != "all" {
@@ -219,9 +221,16 @@ func (s *Service) Tree() ([]*TreeItem, error) {
 	}
 	dirs := map[string]int{}
 	for _, v := range views {
+		// 先按组内目录分桶。某个全局重复组在当前目录只有 1 个成员时，
+		// 它不构成“此目录内重复”，不能显示图片或“1 个文件”徽标。
+		membersByDir := map[string]int{}
 		for _, m := range v.Items {
-			d := relDir(m.RelativePath)
-			dirs[d]++
+			membersByDir[relDir(m.RelativePath)]++
+		}
+		for dir, count := range membersByDir {
+			if count >= 2 {
+				dirs[dir] += count
+			}
 		}
 	}
 	return buildDirTree(dirs), nil
@@ -325,6 +334,7 @@ func (s *Service) Clear(req ClearRequest) (*ClearResult, error) {
 	targets := make([]repo.GroupView, 0, len(views))
 	switch req.Scope {
 	case "directory":
+		targetDir := normalizeDirectory(req.Directory)
 		for _, v := range views {
 			if len(v.Items) == 0 {
 				continue
@@ -337,7 +347,7 @@ func (s *Service) Clear(req ClearRequest) (*ClearResult, error) {
 					break
 				}
 			}
-			if allSame && d == req.Directory {
+			if allSame && d == targetDir {
 				targets = append(targets, v)
 			}
 		}
@@ -459,6 +469,15 @@ func (s *Service) DeleteMedia(ids []int64, permanent bool) (*DeleteResult, error
 		return nil, err
 	}
 	return &DeleteResult{DeletedFiles: deleted, FreedBytes: freed}, nil
+}
+
+// normalizeDirectory 统一前端根目录空字符串与后端 relDir 的“.”表示。
+func normalizeDirectory(dir string) string {
+	if strings.TrimSpace(dir) == "" {
+		return "."
+	}
+	dir = strings.ReplaceAll(dir, "\\", "/")
+	return strings.Trim(dir, "/")
 }
 
 // thumbBaseFor 按媒体类型返回缩略图根目录（显式字段优先，其次配置/系统默认）。

@@ -173,6 +173,20 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 	if summary.Report.TotalGroups != 0 {
 		t.Fatalf("清除后应无重复组，实际 %d 组", summary.Report.TotalGroups)
 	}
+	remainingPage, err := svc.Groups(1, 20, "all", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remainingPage.Total != 0 || len(remainingPage.Items) != 0 {
+		t.Fatalf("清除后不应返回单成员重复组: %+v", remainingPage)
+	}
+	remainingTree, err := svc.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remainingTree) != 0 {
+		t.Fatalf("清除后目录树不应保留重复目录: %+v", remainingTree)
+	}
 	if _, err := os.Stat(filepath.Join(libDir, "b.png")); !os.IsNotExist(err) {
 		t.Fatalf("b.png 应已删除")
 	}

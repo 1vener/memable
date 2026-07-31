@@ -89,13 +89,24 @@ class _ReportScreenState extends State<ReportScreen> {
     if (!mounted) return;
     setState(() {
       if (summaryOk) _summary = summary;
-      if (treeOk) _tree = tree;
+      if (treeOk) {
+        _tree = tree;
+        // 清理后当前目录可能已从重复目录树消失，不能继续保留幽灵选中项。
+        if (_selectedDirectory != null &&
+            !_treeContainsPath(tree, _selectedDirectory!)) {
+          _selectedDirectory = tree.isEmpty ? null : tree.first.path;
+        }
+      }
       if (groupsOk) {
-        _allGroups = groups;
+        // 单成员组已不构成重复。即使后端遇到历史脏数据，也不能继续渲染
+        // “1 个文件”的重复卡片。
+        final validGroups =
+            groups.where((group) => group.items.length >= 2).toList();
+        _allGroups = validGroups;
         _groupByMediaId
           ..clear()
           ..addEntries(
-            groups.expand(
+            validGroups.expand(
               (group) => group.items.map((item) => MapEntry(item.id, group)),
             ),
           );
@@ -126,6 +137,15 @@ class _ReportScreenState extends State<ReportScreen> {
     } catch (_) {
       // 查询任务列表失败不阻塞报告数据加载
     }
+  }
+
+  bool _treeContainsPath(List<DuplicateTreeNode> nodes, String path) {
+    for (final node in nodes) {
+      if (node.path == path || _treeContainsPath(node.children, path)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _refreshPage() async {
@@ -485,10 +505,7 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  Widget _buildDirActionBar(
-    ColorScheme cs,
-    String? selectedDir,
-  ) {
+  Widget _buildDirActionBar(ColorScheme cs, String? selectedDir) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Row(
@@ -503,16 +520,15 @@ class _ReportScreenState extends State<ReportScreen> {
             OutlinedButton.icon(
               onPressed:
                   _clearingDir ? null : () => _clearDirectory(selectedDir),
-              icon: _clearingDir
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.delete_sweep_outlined, size: 16),
-              label: Text(
-                _clearingDir ? '清除中…' : '一键清除此目录重复数据',
-              ),
+              icon:
+                  _clearingDir
+                      ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                      : const Icon(Icons.delete_sweep_outlined, size: 16),
+              label: Text(_clearingDir ? '清除中…' : '一键清除此目录重复数据'),
             ),
         ],
       ),
@@ -768,7 +784,7 @@ class _ReportScreenState extends State<ReportScreen> {
     String emptyText = '没有重复文件',
     ValueChanged<DuplicateItem>? onTapMember,
     bool shrinkWrap = false,
-    VoidCallback? onDeleted,
+    void Function(List<int> deletedIds)? onDeleted,
   }) {
     if (items.isEmpty) {
       return Center(
@@ -797,7 +813,7 @@ class _ReportScreenState extends State<ReportScreen> {
           group: group,
           onTap: onTapMember == null ? null : () => onTapMember(item),
           onError: (m) => setState(() => _error = m),
-          onDeleted: onDeleted ?? _handleDeleted,
+          onDeleted: onDeleted ?? (ids) => _removeMediaFromLocalState(ids),
         );
       },
     );
@@ -805,6 +821,14 @@ class _ReportScreenState extends State<ReportScreen> {
 
   DuplicateGroupItem? _groupOf(DuplicateItem item) {
     return _groupByMediaId[item.id];
+  }
+
+  /// 目录树叠卡右键时使用的当前目录（用于“删除此目录外本组重复文件”）。
+  String? _selectedDirForCluster() {
+    final sel =
+        _selectedDirectory ?? (_tree.isNotEmpty ? _tree.first.path : null);
+    // 后端 relDir 把根目录表示为 "."，前端 _relDir 表示为 ""，这里统一成前端表示
+    return sel;
   }
 
   /// 目录树视图（同目录模式）：按重复组聚合为 card_swiper 叠卡，
@@ -818,17 +842,17 @@ class _ReportScreenState extends State<ReportScreen> {
     final clusters = <int, List<DuplicateItem>>{};
     for (final item in files) {
       final g = _groupOf(item);
-      if (g == null) {
+      if (g == null || g.items.length < 2) {
         continue; // 删除后已无重复的文件不再展示
       }
+      // 目录视图只显示当前目录内仍构成重复的组。跨目录组在当前目录只剩
+      // 一个成员时，不应显示成“1 个文件”的重复卡片。
       clusters.putIfAbsent(g.id, () => []).add(item);
     }
+    clusters.removeWhere((_, members) => members.length < 2);
     if (clusters.isEmpty) {
       return Center(
-        child: Text(
-          '此目录没有直属重复文件',
-          style: TextStyle(color: cs.outline),
-        ),
+        child: Text('此目录没有直属重复文件', style: TextStyle(color: cs.outline)),
       );
     }
     return SingleChildScrollView(
@@ -851,6 +875,7 @@ class _ReportScreenState extends State<ReportScreen> {
                     pos,
                     entry.value.first,
                     _groupOf(entry.value.first),
+                    directoryScope: _selectedDirForCluster(),
                   ),
             ),
         ],
@@ -859,12 +884,24 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   /// 叠卡/缩略图的右键菜单（按模式区分）。
+  /// directoryScope 非空时（目录树视图），“删除”项变为“删除此目录外本组重复文件”。
   void _showMemberMenu(
     Offset position,
     DuplicateItem item,
-    DuplicateGroupItem? group,
-  ) {
+    DuplicateGroupItem? group, {
+    String? directoryScope,
+  }) {
     final sameDir = _summary?.isSameDir ?? false;
+    // 目录树视图下，跨目录组才显示“删除此目录外本组重复文件”
+    final hasOtherDirMembers =
+        group != null &&
+        group.items.any(
+          (m) => _relDir(m.relativePath) != _relDir(item.relativePath),
+        );
+    final deleteLabel =
+        directoryScope != null && hasOtherDirMembers
+            ? '删除此目录外本组重复文件'
+            : '删除此文件外本组重复文件';
     if (sameDir) {
       showContextMenu(
         context: context,
@@ -892,9 +929,17 @@ class _ReportScreenState extends State<ReportScreen> {
           if (group != null && group.items.length > 1)
             ContextMenuItem(
               icon: Icons.delete_forever_outlined,
-              label: '删除此文件外本组重复文件',
+              label: deleteLabel,
               isDestructive: true,
-              onTap: () => _deleteOthers(group, item.id),
+              onTap:
+                  () => _deleteOthers(
+                    group,
+                    item.id,
+                    directoryScope:
+                        directoryScope != null && hasOtherDirMembers
+                            ? directoryScope
+                            : null,
+                  ),
             ),
         ],
       );
@@ -946,9 +991,17 @@ class _ReportScreenState extends State<ReportScreen> {
           const ContextMenuItem.divider(),
           ContextMenuItem(
             icon: Icons.delete_forever_outlined,
-            label: '删除此文件外本组重复文件',
+            label: deleteLabel,
             isDestructive: true,
-            onTap: () => _deleteOthers(group, item.id),
+            onTap:
+                () => _deleteOthers(
+                  group,
+                  item.id,
+                  directoryScope:
+                      directoryScope != null && hasOtherDirMembers
+                          ? directoryScope
+                          : null,
+                ),
           ),
         ],
       ],
@@ -994,18 +1047,43 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   /// 删除此文件外本组重复文件（含缩略图/media 记录/本地文件）。
-  Future<void> _deleteOthers(DuplicateGroupItem group, int exceptId) async {
-    final others =
-        group.items.where((m) => m.id != exceptId).map((m) => m.id).toList();
+  /// 目录树视图传 directoryScope 时只删除**该目录之外**的组成员，
+  /// 保留当前目录内的全部成员；不传则删除组内除当前文件外的所有成员。
+  Future<void> _deleteOthers(
+    DuplicateGroupItem group,
+    int exceptId, {
+    String? directoryScope,
+  }) async {
+    final List<int> others;
+    String title;
+    if (directoryScope != null) {
+      // 目录树视图：只删其它目录的成员，保留当前目录的全部成员
+      others =
+          group.items
+              .where(
+                (m) =>
+                    m.id != exceptId &&
+                    _relDir(m.relativePath) != directoryScope,
+              )
+              .map((m) => m.id)
+              .toList();
+      title = '删除此目录外本组重复文件';
+    } else {
+      others =
+          group.items.where((m) => m.id != exceptId).map((m) => m.id).toList();
+      title = '删除此文件外本组重复文件';
+    }
     if (others.isEmpty) return;
     final ok = await _confirmClear(
-      title: '删除此文件外本组重复文件',
+      title: title,
       keep: 'keep_current',
       count: others.length,
     );
     if (!ok || !mounted) return;
     try {
       final result = await widget.api.deleteMedia(others);
+      // 乐观更新：立即从本地状态移除已删成员，避免等 _refreshAll 期间 UI 仍显示旧卡片
+      _removeMediaFromLocalState(others);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1019,6 +1097,65 @@ class _ReportScreenState extends State<ReportScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = '删除失败: $e');
     }
+  }
+
+  /// 乐观移除已删除的 media id：同步更新 _allGroups / _groupByMediaId / _page，
+  /// 使下一次 build 立即反映删除结果，不必等待后端刷新。
+  void _removeMediaFromLocalState(List<int> deletedIds) {
+    if (deletedIds.isEmpty) return;
+    final idSet = deletedIds.toSet();
+    setState(() {
+      // 1. 从 _groupByMediaId 移除
+      _groupByMediaId.removeWhere((id, _) => idSet.contains(id));
+      // 2. 从 _allGroups 的 items 中移除，并丢弃成员 <2 的组
+      final updated = <DuplicateGroupItem>[];
+      for (final g in _allGroups) {
+        final remaining = g.items.where((m) => !idSet.contains(m.id)).toList();
+        if (remaining.length >= 2) {
+          updated.add(
+            DuplicateGroupItem(
+              id: g.id,
+              groupType: g.groupType,
+              directory: g.directory,
+              memberCount: remaining.length,
+              freedBytes: g.freedBytes,
+              items: remaining,
+            ),
+          );
+        }
+      }
+      _allGroups = updated;
+      // 3. 从当前分页 _page 中同样移除
+      if (_page != null) {
+        final pageItems = <DuplicateGroupItem>[];
+        for (final g in _page!.items) {
+          final remaining =
+              g.items.where((m) => !idSet.contains(m.id)).toList();
+          if (remaining.length >= 2) {
+            pageItems.add(
+              DuplicateGroupItem(
+                id: g.id,
+                groupType: g.groupType,
+                directory: g.directory,
+                memberCount: remaining.length,
+                freedBytes: g.freedBytes,
+                items: remaining,
+              ),
+            );
+          }
+        }
+        _page = DuplicateGroupPage(
+          total: pageItems.length,
+          page: _page!.page,
+          pageSize: _page!.pageSize,
+          totalPages:
+              pageItems.isEmpty
+                  ? 1
+                  : (pageItems.length / _page!.pageSize).ceil(),
+          items: pageItems,
+        );
+      }
+    });
   }
 
   /// 展示某组全部重复缩略图；展开状态下可右键删除此文件外本组/本目录重复文件。
@@ -1062,10 +1199,10 @@ class _ReportScreenState extends State<ReportScreen> {
                         Theme.of(ctx).colorScheme,
                         showOtherPaths: !isSameDir,
                         emptyText: '无缩略图',
-                        onDeleted: () {
+                        onDeleted: (ids) {
                           // 详情弹窗内删除后关闭弹窗并刷新页面，避免残留已无重复的图片
                           Navigator.of(ctx).pop();
-                          _handleDeleted();
+                          _removeMediaFromLocalState(ids);
                         },
                       ),
                     ),
@@ -1078,10 +1215,6 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   // ===== 删除 / 清除 =====
-
-  Future<void> _handleDeleted() async {
-    await _refreshAll();
-  }
 
   Future<void> _clearDirectory(String dir) async {
     setState(() => _clearingDir = true);
@@ -1103,18 +1236,31 @@ class _ReportScreenState extends State<ReportScreen> {
         count: dirItems.length,
       );
       if (!ok || !mounted) return;
-      final result = isSameDir
-          ? await widget.api.clearDuplicates(
-              scope: 'directory',
-              keep: keep,
-              directory: dir,
-            )
-          : await _clearDirMembers(dirItems, keep);
+      // 乐观更新：立即从本地状态移除已删成员，避免等 _refreshAll 期间 UI 仍显示旧卡片
+      int deletedFiles;
+      int freedBytes;
+      if (isSameDir) {
+        final result = await widget.api.clearDuplicates(
+          scope: 'directory',
+          keep: keep,
+          directory: dir,
+        );
+        deletedFiles = result.deletedFiles;
+        freedBytes = result.freedBytes;
+        // same_dir 模式后端按目录清理，本地无法精确知道删了哪些 id，直接全量刷新
+      } else {
+        // all 模式下 _clearDirMembers 删除的是本目录内每组除保留项外的成员
+        final deletedIds = _computeDirDeletedIds(dirItems, keep);
+        final result = await _clearDirMembers(dirItems, keep);
+        _removeMediaFromLocalState(deletedIds);
+        deletedFiles = result.deletedFiles;
+        freedBytes = result.freedBytes;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '已删除 ${result.deletedFiles} 个文件，释放 ${_formatBytes(result.freedBytes)}',
+              '已删除 $deletedFiles 个文件，释放 ${_formatBytes(freedBytes)}',
             ),
           ),
         );
@@ -1129,10 +1275,19 @@ class _ReportScreenState extends State<ReportScreen> {
 
   /// 全部数据模式：对本目录内每个重复组按保留条件保留 1 个，
   /// 删除本目录内其余成员（不影响其它目录的重复文件）。
-  Future<dynamic> _clearDirMembers(
+  Future<DeleteResult> _clearDirMembers(
     List<DuplicateItem> dirItems,
     String keep,
   ) async {
+    final toDelete = _computeDirDeletedIds(dirItems, keep);
+    if (toDelete.isEmpty) {
+      return DeleteResult();
+    }
+    return widget.api.deleteMedia(toDelete);
+  }
+
+  /// 计算本目录内每组按保留条件应删除的 media id 列表（与 _clearDirMembers 一致）。
+  List<int> _computeDirDeletedIds(List<DuplicateItem> dirItems, String keep) {
     final byGroup = <int, List<DuplicateItem>>{};
     for (final item in dirItems) {
       final g = _groupOf(item);
@@ -1147,10 +1302,7 @@ class _ReportScreenState extends State<ReportScreen> {
         if (i != keepIdx) toDelete.add(members[i].id);
       }
     }
-    if (toDelete.isEmpty) {
-      return {'deleted_files': 0, 'freed_bytes': 0};
-    }
-    return widget.api.deleteMedia(toDelete);
+    return toDelete;
   }
 
   /// 客户端保留条件选择（与后端一致）：最大/最小文件、最新/最旧修改时间、最长/最短文件名。
@@ -1200,6 +1352,15 @@ class _ReportScreenState extends State<ReportScreen> {
         keep: keep,
         groupIds: groupIds,
       );
+      // 乐观更新：立即从本地状态移除本页被删成员
+      final deletedIds = <int>[];
+      for (final g in (_page?.items ?? [])) {
+        final keepIdx = _pickKeepIndex(g.items, keep);
+        for (var i = 0; i < g.items.length; i++) {
+          if (i != keepIdx) deletedIds.add(g.items[i].id);
+        }
+      }
+      _removeMediaFromLocalState(deletedIds);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1277,7 +1438,8 @@ class _ReportScreenState extends State<ReportScreen> {
           3000,
       oshashFilter:
           defaults['oshash_filter'] as bool? ?? base?.oshashFilter ?? true,
-      includeSha1: defaults['include_sha1'] as bool? ?? base?.includeSha1 ?? true,
+      includeSha1:
+          defaults['include_sha1'] as bool? ?? base?.includeSha1 ?? true,
     );
     final phashCtrl = TextEditingController(
       text: '${options.videoPhashDistance}',
@@ -1542,10 +1704,7 @@ class _LazyThumb extends StatelessWidget {
   final String url;
   final int cacheWidth;
 
-  const _LazyThumb({
-    required this.url,
-    this.cacheWidth = 300,
-  });
+  const _LazyThumb({required this.url, this.cacheWidth = 300});
 
   @override
   Widget build(BuildContext context) {
@@ -1640,139 +1799,148 @@ class _StackedCluster extends StatelessWidget {
         ],
       ),
       child: GestureDetector(
-        onSecondaryTapDown: onSecondaryTap == null
-            ? null
-            : (d) => onSecondaryTap!(d.globalPosition),
-        onLongPressStart: onSecondaryTap == null
-            ? null
-            : (d) => onSecondaryTap!(d.globalPosition),
+        onSecondaryTapDown:
+            onSecondaryTap == null
+                ? null
+                : (d) => onSecondaryTap!(d.globalPosition),
+        onLongPressStart:
+            onSecondaryTap == null
+                ? null
+                : (d) => onSecondaryTap!(d.globalPosition),
         child: Material(
           color: cs.surface,
           child: InkWell(
             onTap: onTap,
             child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 图片叠卡区域（固定高度，内部层数不影响布局）
-            SizedBox(
-              height: imageAreaH,
-              child: Stack(
-                clipBehavior: Clip.hardEdge,
-                children: [
-                  for (var i = preview.length - 1; i >= 0; i--)
-                    Positioned(
-                      left: contentPadding + i * stackStep,
-                      top: contentPadding + i * stackStep,
-                      child: Opacity(
-                        opacity: i == 0 ? 1.0 : 0.94,
-                        child: Container(
-                          width: imageW,
-                          height: imageH,
-                          clipBehavior: Clip.antiAlias,
-                          decoration: BoxDecoration(
-                            color: cs.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(imageRadius),
-                            border: Border.all(color: cs.outlineVariant),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(
-                                  alpha: i == 0 ? 0.12 : 0.06,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 图片叠卡区域（固定高度，内部层数不影响布局）
+                SizedBox(
+                  height: imageAreaH,
+                  child: Stack(
+                    clipBehavior: Clip.hardEdge,
+                    children: [
+                      for (var i = preview.length - 1; i >= 0; i--)
+                        Positioned(
+                          left: contentPadding + i * stackStep,
+                          top: contentPadding + i * stackStep,
+                          child: Opacity(
+                            opacity: i == 0 ? 1.0 : 0.94,
+                            child: Container(
+                              width: imageW,
+                              height: imageH,
+                              clipBehavior: Clip.antiAlias,
+                              decoration: BoxDecoration(
+                                color: cs.surfaceContainerHighest,
+                                borderRadius: BorderRadius.circular(
+                                  imageRadius,
                                 ),
-                                blurRadius: i == 0 ? 6 : 3,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          child: _thumb(preview[i], cs),
-                        ),
-                      ),
-                    ),
-                  // 数量信息胶囊：白色文字 + 极淡深色底，保证在图片上有对比度，
-                  // 深浅主题下均清晰可读
-                  Positioned(
-                    right: 12,
-                    top: 12,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(
-                          alpha: cs.brightness == Brightness.dark ? 0.45 : 0.28,
-                        ),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: cs.primary.withValues(alpha: 0.35),
-                        ),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 9,
-                          vertical: 5,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(
-                              Icons.layers_outlined,
-                              size: 14,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(width: 5),
-                            Text(
-                              '${items.length} 个文件',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                color: Colors.white,
-                                shadows: [
-                                  Shadow(
-                                    color: Colors.black.withValues(alpha: 0.35),
-                                    blurRadius: 2,
+                                border: Border.all(color: cs.outlineVariant),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(
+                                      alpha: i == 0 ? 0.12 : 0.06,
+                                    ),
+                                    blurRadius: i == 0 ? 6 : 3,
+                                    offset: const Offset(0, 2),
                                   ),
                                 ],
                               ),
+                              child: _thumb(preview[i], cs),
                             ),
-                          ],
+                          ),
+                        ),
+                      // 数量信息胶囊：白色文字 + 极淡深色底，保证在图片上有对比度，
+                      // 深浅主题下均清晰可读
+                      Positioned(
+                        right: 12,
+                        top: 12,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(
+                              alpha:
+                                  cs.brightness == Brightness.dark
+                                      ? 0.45
+                                      : 0.28,
+                            ),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: cs.primary.withValues(alpha: 0.35),
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 9,
+                              vertical: 5,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.layers_outlined,
+                                  size: 14,
+                                  color: Colors.white,
+                                ),
+                                const SizedBox(width: 5),
+                                Text(
+                                  '${items.length} 个文件',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.white,
+                                    shadows: [
+                                      Shadow(
+                                        color: Colors.black.withValues(
+                                          alpha: 0.35,
+                                        ),
+                                        blurRadius: 2,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ),
+                    ],
+                  ),
+                ),
+                // 文件信息区（独立区域，避免内容漂浮）
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          _fileName(first.fullPath),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: cs.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _meta(first),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ],
-              ),
-            ),
-            // 文件信息区（独立区域，避免内容漂浮）
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      _fileName(first.fullPath),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: cs.onSurface,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      _meta(first),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 10,
-                        color: cs.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
                 ),
-              ),
+              ],
             ),
-          ],
-        ),
-        ),
+          ),
         ),
       ),
     );
@@ -1804,7 +1972,7 @@ class _DuplicateMemberCard extends StatelessWidget {
   final DuplicateGroupItem? group;
   final VoidCallback? onTap;
   final ValueChanged<String> onError;
-  final VoidCallback onDeleted;
+  final void Function(List<int> deletedIds) onDeleted;
 
   const _DuplicateMemberCard({
     required this.item,
@@ -2047,7 +2215,7 @@ class _DuplicateMemberCard extends StatelessWidget {
     if (others.isEmpty) return;
     try {
       final result = await api.deleteMedia(others);
-      onDeleted();
+      onDeleted(others);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
