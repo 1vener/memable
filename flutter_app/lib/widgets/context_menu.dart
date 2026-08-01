@@ -36,12 +36,14 @@ void showContextMenu({
   required List<ContextMenuItem> items,
 }) {
   final cs = Theme.of(context).colorScheme;
-
+  final screenWidth = MediaQuery.of(context).size.width;
+  final maxMenuWidth = screenWidth * 0.5; // 最大宽度为屏幕宽度的 70%
   showMenu<int>(
     context: context,
     position: RelativeRect.fromLTRB(
       position.dx, position.dy, position.dx + 1, position.dy + 1,
     ),
+    constraints:  BoxConstraints(maxWidth: maxMenuWidth),
     items: [
       for (int i = 0; i < items.length; i++)
         if (items[i].isDivider)

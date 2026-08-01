@@ -139,6 +139,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tools/file-stats", s.handleCreateFileStats)
 	mux.HandleFunc("GET /api/tools/file-stats", s.handleListFileStats)
 	mux.HandleFunc("GET /api/tools/file-stats/{id}", s.handleGetFileStats)
+	mux.HandleFunc("POST /api/tools/file-stats/{id}/diff", s.handleFileStatsDiff)
+	mux.HandleFunc("POST /api/tools/file-stats/{id}/diff/export", s.handleFileStatsDiffExport)
 	mux.HandleFunc("DELETE /api/tools/file-stats/{id}", s.handleDeleteFileStats)
 }
 

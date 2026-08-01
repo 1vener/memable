@@ -503,6 +503,39 @@ class FileStats {
   }
 }
 
+/// 目录差异对比结果（统计记录 vs 目录当前状态）。
+class FileStatsDiff {
+  final String dirPath;
+  final List<String> added; // 新增文件相对路径（正斜杠，字典序）
+  final List<String> removed; // 删除文件相对路径（正斜杠，字典序）
+  final int addedCount;
+  final int removedCount;
+
+  FileStatsDiff({
+    required this.dirPath,
+    required this.added,
+    required this.removed,
+    required this.addedCount,
+    required this.removedCount,
+  });
+
+  factory FileStatsDiff.fromJson(Map<String, dynamic> json) {
+    return FileStatsDiff(
+      dirPath: (json['dir_path'] as String?) ?? '',
+      added:
+          ((json['added'] as List<dynamic>?) ?? [])
+              .map((e) => e.toString())
+              .toList(),
+      removed:
+          ((json['removed'] as List<dynamic>?) ?? [])
+              .map((e) => e.toString())
+              .toList(),
+      addedCount: (json['added_count'] as num?)?.toInt() ?? 0,
+      removedCount: (json['removed_count'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
 /// 扩展名统计。
 class ExtStat {
   final String ext;

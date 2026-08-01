@@ -125,20 +125,18 @@ func formatInt64(value int64) string {
 	return fmt.Sprintf("%d", value)
 }
 
-// TestExplorerSelectCmdArgument 验证 Windows 打开文件路径时 /select, 与路径
-// 必须是同一个参数（否则资源管理器不会选中文件），路径含空格时也能保持单参数。
-func TestExplorerSelectCmdArgument(t *testing.T) {
+// TestSelectArgs 验证 explorer 选中参数必须是 /select,"<path>" 形式：
+// 引号只包路径（ShellExecuteW 直接透传），路径含空格时也不能退化成
+// 整体引号形式（"/select,path"），否则 explorer 不选中文件。
+func TestSelectArgs(t *testing.T) {
 	for _, path := range []string{
 		`C:\Pictures\photo.jpg`,
 		`C:\Pictures\my photo 01.jpg`,
 	} {
-		cmd := explorerSelectCmd(path)
-		if len(cmd.Args) != 2 {
-			t.Fatalf("应只有 2 个参数（explorer + 单参数 /select,path），实际 %v", cmd.Args)
-		}
-		want := "/select," + path
-		if cmd.Args[1] != want {
-			t.Fatalf("第二个参数应为 %q，实际 %q", want, cmd.Args[1])
+		got := selectArgs(path)
+		want := `/select,"` + path + `"`
+		if got != want {
+			t.Fatalf("selectArgs(%q) = %q, 应为 %q", path, got, want)
 		}
 	}
 }

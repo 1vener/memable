@@ -2,6 +2,7 @@
 // 代码注释使用中文
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import '../models/models.dart';
 
@@ -519,5 +520,23 @@ class ApiService {
       Uri.parse('$baseUrl/api/tools/file-stats/$id'),
     );
     if (res.statusCode != 200) throw Exception('删除统计记录失败: ${res.body}');
+  }
+
+  /// 对比统计记录与目录当前状态，返回新增/删除文件相对路径列表。
+  Future<FileStatsDiff> getFileStatsDiff(int id) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/tools/file-stats/$id/diff'),
+    );
+    if (res.statusCode != 200) throw Exception('对比目录差异失败: ${res.body}');
+    return FileStatsDiff.fromJson(jsonDecode(res.body));
+  }
+
+  /// 导出目录差异 xlsx（两个 sheet：新增/删除文件列表，绝对路径）。
+  Future<Uint8List> exportFileStatsDiff(int id) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/tools/file-stats/$id/diff/export'),
+    );
+    if (res.statusCode != 200) throw Exception('导出 Excel 失败: ${res.body}');
+    return res.bodyBytes;
   }
 }

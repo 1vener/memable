@@ -687,10 +687,9 @@ func openFile(action, absPath string) error {
 	switch runtime.GOOS {
 	case "windows":
 		if action == "directory" {
-			// explorer /select,<path> 打开文件所在目录并选中该文件。
-			// 注意：/select, 必须与路径作为同一个参数（explorer 官方语法，
-			// 路径含空格时由 os/exec 自动加引号），拆成两个参数会导致不选中。
-			return explorerSelectCmd(absPath).Start()
+			// 用 ShellExecuteW 打开目录并选中文件（参数 /select,"<path>"，
+			// 引号只包路径；os/exec 的整体引号形式 explorer 不识别，详见 reveal_windows.go）。
+			return revealInExplorer(absPath)
 		}
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", absPath).Start()
 	case "darwin":
@@ -718,10 +717,11 @@ func openFile(action, absPath string) error {
 	}
 }
 
-// explorerSelectCmd 构造 Windows 资源管理器"打开目录并选中文件"的命令。
-// /select, 必须与路径合并为单个参数，否则 explorer 不会选中文件。
-func explorerSelectCmd(absPath string) *exec.Cmd {
-	return exec.Command("explorer", "/select,"+absPath)
+// selectArgs 构造 explorer 的选中参数：/select,"<path>"。
+// 引号只包路径（explorer 唯一可靠形式，ShellExecuteW 直接透传不做转义）；
+// Windows 文件名不允许包含引号，防御性剔除。
+func selectArgs(absPath string) string {
+	return `/select,"` + strings.ReplaceAll(absPath, `"`, "") + `"`
 }
 
 // ===== 搜索（阶段 7）=====
@@ -1013,4 +1013,69 @@ func (s *Server) handleDeleteFileStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
+// handleFileStatsDiff 对比历史统计与目录当前状态，返回新增/删除文件列表。
+func (s *Server) handleFileStatsDiff(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的记录 ID")
+		return
+	}
+	fs, err := s.fileStats.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "统计记录不存在")
+		return
+	}
+	if info, err := os.Stat(fs.DirPath); err != nil || !info.IsDir() {
+		writeError(w, 400, "统计目录不存在或已不可访问")
+		return
+	}
+	diff, err := computeFileDiff(fs.FileTree, fs.DirPath)
+	if err != nil {
+		writeError(w, 500, "对比目录差异失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, diff)
+}
+
+// handleFileStatsDiffExport 导出目录差异为 xlsx（两个 sheet：新增/删除文件列表）。
+func (s *Server) handleFileStatsDiffExport(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的记录 ID")
+		return
+	}
+	fs, err := s.fileStats.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "统计记录不存在")
+		return
+	}
+	if info, err := os.Stat(fs.DirPath); err != nil || !info.IsDir() {
+		writeError(w, 400, "统计目录不存在或已不可访问")
+		return
+	}
+	diff, err := computeFileDiff(fs.FileTree, fs.DirPath)
+	if err != nil {
+		writeError(w, 500, "对比目录差异失败: "+err.Error())
+		return
+	}
+	// Excel 中写入完整绝对路径（正斜杠），便于直接定位文件
+	added := make([]string, 0, len(diff.Added))
+	for _, p := range diff.Added {
+		added = append(added, absolutePath(fs.DirPath, p))
+	}
+	removed := make([]string, 0, len(diff.Removed))
+	for _, p := range diff.Removed {
+		removed = append(removed, absolutePath(fs.DirPath, p))
+	}
+	data, err := exportDiffXLSX(added, removed)
+	if err != nil {
+		writeError(w, 500, "生成 Excel 失败: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", `attachment; filename="file_diff.xlsx"`)
+	w.WriteHeader(200)
+	_, _ = w.Write(data)
 }

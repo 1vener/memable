@@ -950,7 +950,8 @@ class _ReportScreenState extends State<ReportScreen> {
       );
       return;
     }
-    // 全部数据模式：列出其它目录中的重复路径（二级菜单）
+    // 全部数据模式：列出其它目录中的重复路径（二级菜单）。
+    // 菜单项按父路径去重：同一父目录只保留一个代表项，标签显示父路径。
     final otherPaths =
         group == null
             ? <DuplicateItem>[]
@@ -961,6 +962,13 @@ class _ReportScreenState extends State<ReportScreen> {
                       _relDir(m.relativePath) != _relDir(item.relativePath),
                 )
                 .toList();
+    final otherDirItems = <DuplicateItem>[];
+    for (final o in otherPaths) {
+      final dir = _relDir(o.relativePath);
+      if (!otherDirItems.any((e) => _relDir(e.relativePath) == dir)) {
+        otherDirItems.add(o);
+      }
+    }
     showContextMenu(
       context: context,
       position: position,
@@ -988,12 +996,12 @@ class _ReportScreenState extends State<ReportScreen> {
           label: '排除重复',
           onTap: () => _excludeMedia(item.id),
         ),
-        if (otherPaths.isNotEmpty) ...[
+        if (otherDirItems.isNotEmpty) ...[
           const ContextMenuItem.divider(),
-          for (final other in otherPaths)
+          for (final other in otherDirItems)
             ContextMenuItem(
               icon: Icons.subdirectory_arrow_right,
-              label: other.fullPath,
+              label: _dirLabel(other),
               onTap: () => _showPathMenu(position, other),
             ),
         ],
@@ -1712,6 +1720,12 @@ String _relDir(String rel) {
   return idx < 0 ? '' : norm.substring(0, idx);
 }
 
+/// 其它目录菜单项标签：显示父路径（根目录直属文件显示 "/"）。
+String _dirLabel(DuplicateItem other) {
+  final dir = _relDir(other.relativePath);
+  return dir.isEmpty ? '/' : dir;
+}
+
 String _fileName(String path) {
   final norm = path.replaceAll('\\', '/');
   return norm.substring(norm.lastIndexOf('/') + 1);
@@ -2113,6 +2127,7 @@ class _DuplicateMemberCard extends StatelessWidget {
     }
 
     // 全部数据模式
+    // 其它目录菜单项按父路径去重：同一父目录只保留一个代表项，标签显示父路径。
     final otherPaths =
         group == null
             ? <DuplicateItem>[]
@@ -2123,6 +2138,13 @@ class _DuplicateMemberCard extends StatelessWidget {
                       _relDir(m.relativePath) != _relDir(item.relativePath),
                 )
                 .toList();
+    final otherDirItems = <DuplicateItem>[];
+    for (final o in otherPaths) {
+      final dir = _relDir(o.relativePath);
+      if (!otherDirItems.any((e) => _relDir(e.relativePath) == dir)) {
+        otherDirItems.add(o);
+      }
+    }
     showContextMenu(
       context: context,
       position: position,
@@ -2146,12 +2168,12 @@ class _DuplicateMemberCard extends StatelessWidget {
           label: '排除重复',
           onTap: () => _exclude(context, item),
         ),
-        if (showOtherPaths && otherPaths.isNotEmpty) ...[
+        if (showOtherPaths && otherDirItems.isNotEmpty) ...[
           const ContextMenuItem.divider(),
-          for (final other in otherPaths)
+          for (final other in otherDirItems)
             ContextMenuItem(
               icon: Icons.subdirectory_arrow_right,
-              label: other.fullPath,
+              label: _dirLabel(other),
               onTap: () => _showPathSubmenu(context, position, other),
             ),
         ],

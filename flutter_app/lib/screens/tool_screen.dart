@@ -49,6 +49,12 @@ class _ToolScreenState extends State<ToolScreen> {
   final Set<String> _expandedDirs = {};
   String? _selectedTreePath;
 
+  // 目录差异（diff）状态
+  FileStatsDiff? _diff;
+  int? _diffStatsId; // diff 对应的统计记录 ID
+  bool _diffLoading = false;
+  final Set<String> _diffExpanded = {}; // diff 树展开状态，默认全部折叠
+
   // 扩展名详情排序状态
   _ExtSortField _extSortField = _ExtSortField.count;
   bool _extSortAsc = false;
@@ -83,7 +89,7 @@ class _ToolScreenState extends State<ToolScreen> {
     final dirPath = _dirPathCtrl.text.trim();
     if (dirPath.isEmpty) return;
 
-    setState(() { _loading = true; _error = null; _expandedDirs.clear(); _selectedTreePath = null; });
+    setState(() { _loading = true; _error = null; _expandedDirs.clear(); _selectedTreePath = null; _diff = null; _diffStatsId = null; });
     try {
       final stats = await widget.api.createFileStats(dirPath);
       if (mounted) {
@@ -98,9 +104,52 @@ class _ToolScreenState extends State<ToolScreen> {
   Future<void> _viewHistory(FileStats fs) async {
     try {
       final stats = await widget.api.getFileStats(fs.id);
-      if (mounted) setState(() { _currentStats = stats; _expandedDirs.clear(); _selectedTreePath = null; });
+      if (mounted) setState(() { _currentStats = stats; _expandedDirs.clear(); _selectedTreePath = null; _diff = null; _diffStatsId = null; });
     } catch (e) {
       if (mounted) setState(() => _error = '加载记录失败: $e');
+    }
+  }
+
+  /// 对比指定统计记录与目录当前状态，展示新增/删除文件目录树。
+  Future<void> _runDiff(FileStats fs) async {
+    setState(() { _diffLoading = true; _error = null; _diff = null; _diffStatsId = fs.id; _diffExpanded.clear(); });
+    try {
+      final diff = await widget.api.getFileStatsDiff(fs.id);
+      if (mounted) {
+        setState(() { _diff = diff; _diffLoading = false; });
+      }
+    } catch (e) {
+      if (mounted) setState(() { _diffLoading = false; _error = '对比目录差异失败: $e'; });
+    }
+  }
+
+  /// 导出 diff 结果为 xlsx（两个 sheet：新增/删除文件列表），保存到用户选择的位置。
+  Future<void> _exportDiff() async {
+    final diff = _diff;
+    final id = _diffStatsId;
+    if (diff == null || id == null) return;
+    setState(() => _diffLoading = true);
+    try {
+      final bytes = await widget.api.exportFileStatsDiff(id);
+      final savePath = await FilePicker.platform.saveFile(
+        dialogTitle: '导出目录差异',
+        fileName: '文件差异_$id.xlsx',
+        type: FileType.custom,
+        allowedExtensions: ['xlsx'],
+        bytes: bytes,
+      );
+      if (savePath != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已导出到 $savePath'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = '导出 Excel 失败: $e');
+    } finally {
+      if (mounted) setState(() => _diffLoading = false);
     }
   }
 
@@ -110,6 +159,9 @@ class _ToolScreenState extends State<ToolScreen> {
       _loadHistory();
       if (_currentStats?.id == id) {
         setState(() => _currentStats = null);
+      }
+      if (_diffStatsId == id) {
+        setState(() { _diff = null; _diffStatsId = null; });
       }
     } catch (e) {
       if (mounted) setState(() => _error = '删除失败: $e');
@@ -152,6 +204,10 @@ class _ToolScreenState extends State<ToolScreen> {
                   _buildExtDetailTable(cs),
                   const SizedBox(height: 16),
                   _buildFileTreeSection(cs),
+                ],
+                if (_diff != null) ...[
+                  const SizedBox(height: 16),
+                  _buildDiffSection(cs),
                 ],
                 if (_currentStats == null && _error == null && !_loading)
                   _buildEmptyState(cs),
@@ -670,6 +726,172 @@ class _ToolScreenState extends State<ToolScreen> {
     );
   }
 
+  // ========== 目录差异（diff） ==========
+
+  /// 新增/删除文件差异卡片：两个目录树（叶子为文件名，默认全部折叠）+ 导出 Excel。
+  Widget _buildDiffSection(ColorScheme cs) {
+    final diff = _diff!;
+    final addedTree = _buildPathTree(diff.added);
+    final removedTree = _buildPathTree(diff.removed);
+    const addedColor = Color(0xFF059669); // 绿：新增
+    const removedColor = Color(0xFFDC2626); // 红：删除
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.compare_arrows, size: 18, color: cs.primary),
+                const SizedBox(width: 8),
+                Text('目录差异', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: cs.onSurface)),
+                const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: _diffLoading ? null : _exportDiff,
+                  icon: _diffLoading
+                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.file_download_outlined, size: 16),
+                  label: const Text('导出Excel'),
+                  style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(diff.dirPath,
+                style: TextStyle(fontSize: 11, color: cs.outline), overflow: TextOverflow.ellipsis),
+            const Divider(height: 16),
+            Row(
+              children: [
+                const Icon(Icons.add_circle_outline, size: 16, color: addedColor),
+                const SizedBox(width: 6),
+                Text('新增文件（${diff.addedCount}）',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: cs.onSurface)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            if (addedTree.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text('无新增文件', style: TextStyle(fontSize: 12, color: cs.outline)),
+              )
+            else
+              _buildDiffTree(addedTree, cs, addedColor),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                const Icon(Icons.remove_circle_outline, size: 16, color: removedColor),
+                const SizedBox(width: 6),
+                Text('删除文件（${diff.removedCount}）',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: cs.onSurface)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            if (removedTree.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text('无删除文件', style: TextStyle(fontSize: 12, color: cs.outline)),
+              )
+            else
+              _buildDiffTree(removedTree, cs, removedColor),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 将扁平路径列表构建为目录树（目录→子目录→文件叶子，路径按字典序传入）。
+  List<_DiffTreeNode> _buildPathTree(List<String> paths) {
+    final roots = <_DiffTreeNode>[];
+    for (final p in paths) {
+      final parts = p.split('/');
+      var level = roots;
+      var prefix = '';
+      for (var i = 0; i < parts.length; i++) {
+        if (parts[i].isEmpty) continue;
+        prefix = prefix.isEmpty ? parts[i] : '$prefix/${parts[i]}';
+        final isFile = i == parts.length - 1;
+        _DiffTreeNode? node;
+        for (final n in level) {
+          if (n.path == prefix) {
+            node = n;
+            break;
+          }
+        }
+        if (node == null) {
+          node = _DiffTreeNode(name: parts[i], path: prefix, isDir: !isFile);
+          level.add(node);
+        }
+        level = node.children;
+      }
+    }
+    return roots;
+  }
+
+  Widget _buildDiffTree(List<_DiffTreeNode> roots, ColorScheme cs, Color accent) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [for (final n in roots) _buildDiffNode(n, cs, accent, 0)],
+    );
+  }
+
+  /// 单个 diff 树节点：目录可点击展开/折叠（默认折叠），文件叶子显示文件名。
+  Widget _buildDiffNode(_DiffTreeNode node, ColorScheme cs, Color accent, int depth) {
+    if (!node.isDir) {
+      return Padding(
+        padding: EdgeInsets.only(left: 12.0 + depth * 16, top: 6, bottom: 6),
+        child: Row(
+          children: [
+            Icon(Icons.insert_drive_file_outlined, size: 15, color: cs.outline),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(node.name,
+                  style: TextStyle(fontSize: 13, color: cs.onSurface), overflow: TextOverflow.ellipsis),
+            ),
+          ],
+        ),
+      );
+    }
+    final isExpanded = _diffExpanded.contains(node.path);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () {
+            setState(() {
+              if (isExpanded) {
+                _diffExpanded.remove(node.path);
+              } else {
+                _diffExpanded.add(node.path);
+              }
+            });
+          },
+          child: Padding(
+            padding: EdgeInsets.only(left: 12.0 + depth * 16, top: 8, bottom: 8),
+            child: Row(
+              children: [
+                Icon(isExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_right,
+                    size: 16, color: cs.outline),
+                Icon(isExpanded ? Icons.folder_open : Icons.folder, size: 18, color: accent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(node.name,
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: cs.onSurface),
+                      overflow: TextOverflow.ellipsis),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (isExpanded)
+          ...node.children.map((c) => _buildDiffNode(c, cs, accent, depth + 1)),
+      ],
+    );
+  }
+
   Widget _buildTreeDirTile(FileTreeStatNode node, ColorScheme cs, int depth) {
     if (!node.isDir) {
       // 文件：走紧凑行样式
@@ -847,10 +1069,20 @@ class _ToolScreenState extends State<ToolScreen> {
                       '${_formatBytes(fs.totalBytes)} · ${fs.totalCount} 个文件',
                       style: TextStyle(fontSize: 11, color: cs.outline),
                     ),
-                    trailing: IconButton(
-                      icon: Icon(Icons.delete_outline, size: 18, color: cs.error.withValues(alpha: 0.6)),
-                      onPressed: () => _deleteHistory(fs.id),
-                      tooltip: '删除记录',
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: Icon(Icons.compare_arrows, size: 18, color: cs.primary.withValues(alpha: 0.7)),
+                          onPressed: () => _runDiff(fs),
+                          tooltip: '对比新增/删除文件',
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.delete_outline, size: 18, color: cs.error.withValues(alpha: 0.6)),
+                          onPressed: () => _deleteHistory(fs.id),
+                          tooltip: '删除记录',
+                        ),
+                      ],
                     ),
                     onTap: () => _viewHistory(fs),
                   );
@@ -865,6 +1097,17 @@ class _ToolScreenState extends State<ToolScreen> {
 }
 
 // ========== 全局辅助 ==========
+
+/// diff 目录树节点（目录/文件叶子）。
+class _DiffTreeNode {
+  final String name; // 名称（目录名或文件名）
+  final String path; // 相对路径（正斜杠）
+  final bool isDir; // true=目录，false=文件叶子
+  final List<_DiffTreeNode> children;
+
+  _DiffTreeNode({required this.name, required this.path, required this.isDir})
+      : children = [];
+}
 
 /// 统计徽章组件
 class _StatBadge extends StatelessWidget {

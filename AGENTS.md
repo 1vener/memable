@@ -19,20 +19,21 @@
 - 数据库：DSN 一律用 `_pragma` 形式设置 `journal_mode(WAL)`、`foreign_keys(1)`、`busy_timeout`、`synchronous(NORMAL)`、`cache_size`、`mmap_size`；**modernc 驱动只认 `_pragma`，裸参数（如 `_journal_mode=WAL`）会被静默忽略**。媒体入库为单条 `Upsert`（`INSERT ... RETURNING id`，无批量写入）。
 - 扫描判定与进度：增量/完整性判定用内存快照（`mediaSnapshot`，扫描前一次加载全库记录），逐文件不再查库；`repo.ProgressFunc` 带 `totalBytes/processedBytes`，ETA 按字节吞吐计算且排除跳过文件，速度显示为字节/秒。
 - 重复报告：三张表 `duplicate_reports/groups/members`；生成任务 kind=`report_duplicate`，单事务替换旧报告；删除类变更即时级联并清理成员数 <2 的组；新增/重新处理置 `stale=1`。**任务双队列**：报告类任务（`report_image`/`report_video`/`report_duplicate`）在独立报告队列串行执行（`TaskRepo.DequeueNextReport`/`reportKindsCSV`，`QueuePosition` 按所属队列计数），与主队列（扫描等）互不阻塞、可并发运行。
-- 主要 API：`/api/reports/duplicate`（生成/摘要/分组分页(支持 `directory` 过滤)/目录树/默认值/clear）、`POST /api/reports/duplicate/exclude`（排除重复：从当前报告移除指定媒体，仅当前报告生效，重新生成后重新参与检测）、`/api/media/delete`、`POST /api/libraries/{id}/scan-sha1`（补齐 SHA1 任务）、`GET /api/settings`（缩略图/日志保存位置）。
+- 主要 API：`/api/reports/duplicate`（生成/摘要/分组分页(支持 `directory` 过滤)/目录树/默认值/clear）、`POST /api/reports/duplicate/exclude`（排除重复：从当前报告移除指定媒体，仅当前报告生效，重新生成后重新参与检测）、`/api/media/delete`、`POST /api/libraries/{id}/scan-sha1`（补齐 SHA1 任务）、`GET /api/settings`（缩略图/日志保存位置）、`/api/tools/file-stats[/{id}/diff[/export]]`（文件统计与目录差异，xlsx 由 `internal/api/xlsx.go` 用 Go 标准库 archive/zip 手写，无第三方依赖）。
 - 删除安全：源文件默认移入系统回收站（`internal/recycle`，Windows 用 PowerShell），`delete.permanent: true` 可永久删除；目录删除为同步接口；缩略图为生成物直接删除。
 
 ## 已实现的关键行为
 
 - 报告页目录树视图：card_swiper 叠卡（45° 平移 20px、数量胶囊、底部首个文件信息、`_LazyThumb` 懒加载）；**目录树默认全部展开**，点击可收起，刷新后收起状态保留。
 - 分组视图：平铺分页（默认 20 组/页，可切 10/20/50/100）；右键菜单（打开/复制/打开媒体、**排除重复**（`POST /api/reports/duplicate/exclude`，删除该文件全部组成员关系并清理 <2 的组、刷新统计，仅当前报告生效）、其它目录二级菜单、删除此文件外本组重复文件）；一键清除（目录/整页 + 六种保留条件）；删除后局部刷新，空组不再展示。
-- 打开文件路径：统一走 `POST /api/media/{id}/open`（action=directory），Windows 用 `explorer /select,<path>`（必须单参数、路径含空格由 os/exec 引号包裹，否则不选中）、macOS 用 `open -R`、Linux 依次尝试 nautilus/dolphin `--select` 后回退 xdg-open，打开后文件处于选中状态。
+- 打开文件路径：统一走 `POST /api/media/{id}/open`（action=directory），Windows 用 `ShellExecuteW`（`internal/api/reveal_windows.go`）以 `/select,"<path>"` 形式（引号只包路径）启动 explorer 并选中文件——**不能用 os/exec 传 `"/select,path"` 整体引号形式，explorer 不识别会导致不选中**；macOS 用 `open -R`、Linux 依次尝试 nautilus/dolphin `--select` 后回退 xdg-open，打开后文件处于选中状态。
 - 任务页展示完整统计/元信息/结果摘要（含 `total_bytes/processed_bytes`）、ETA（双口径：剩余字节/字节速率 与 剩余文件数折算/文件速率，取较大值 + 轻量平滑）与速度（MB/s）；主屏幕底部常驻运行中任务进度条（HomeScreen 每 2 秒轮询）。
 - 扫描处理每个文件时打印 `处理文件 dir=... file=...` 日志；`log.file` 配置可把日志追加写入文件（默认控制台标准输出）。
 - 设置页新增"存储位置"卡片：图片缩略图目录、视频封面目录、日志位置（数据来自 `GET /api/settings`，路径为服务端绝对路径）。
 - 时间字段后端一律存/返 UTC，客户端经 `utils/time_fmt.dart` 的 `formatLocalTime` 统一转本地显示。
 - 主题：M3 定制、默认浅色、自定义主题色（设置页预设 + HEX，SharedPreferences 持久化）。
 - 收藏库目录删除：同步执行返回 `deleted_media/local_deleted`；删除后清理父级展开缓存并刷新树。
+- 文件统计目录差异：历史记录行内 diff 按钮 → 重新遍历目录对比历史 `file_tree`，返回新增/删除文件相对路径（字典序）；前端构建目录树（叶子为文件名，默认折叠）；导出 Excel 两 sheet（新增/删除文件列表，列名"文件路径"，完整绝对路径）。
 
 ## 开发约定
 
