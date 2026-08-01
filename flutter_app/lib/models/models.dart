@@ -351,13 +351,17 @@ class BackgroundTask {
     );
   }
 
-  /// 格式化处理速度
+  /// 格式化处理速度（后端按字节/秒上报，跳过文件不计入）
   String get formattedRate {
     if (processingRate <= 0) return '';
-    if (processingRate < 10) {
-      return '${processingRate.toStringAsFixed(1)} 个/秒';
+    final bps = processingRate;
+    if (bps >= 1024 * 1024) {
+      return '${(bps / 1024 / 1024).toStringAsFixed(1)} MB/秒';
     }
-    return '${processingRate.round()} 个/秒';
+    if (bps >= 1024) {
+      return '${(bps / 1024).toStringAsFixed(1)} KB/秒';
+    }
+    return '${bps.toStringAsFixed(1)} B/秒';
   }
 
   /// 格式化预计剩余时间
@@ -401,6 +405,8 @@ class BackgroundTask {
         return '入库';
       case 'directory_delete':
         return '删除目录';
+      case 'scan_sha1':
+        return '补齐 SHA1';
       default:
         return kind;
     }

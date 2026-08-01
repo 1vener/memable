@@ -3,6 +3,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,7 @@ type UIConfig struct {
 type LogConfig struct {
 	Level  string `mapstructure:"level"`  // debug/info/warn/error
 	Format string `mapstructure:"format"` // text/json
+	File   string `mapstructure:"file"`   // 可选：日志文件路径；空=输出到标准输出
 }
 
 type DatabaseConfig struct {
@@ -104,7 +106,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("similarity.image_ahash_distance", 10)
 	v.SetDefault("similarity.video_phash_distance", 12)
 	v.SetDefault("similarity.video_duration_diff_ms", 3000)
-	v.SetDefault("worker.pool_size", 4)
+	v.SetDefault("worker.pool_size", 8)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
 	v.SetDefault("delete.permanent", false)
@@ -116,10 +118,13 @@ func Load(path string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "__"))
 	v.AutomaticEnv()
 
-	// 文件不存在时仍允许用默认值+env 启动（但显式要求路径时应当可见错误）
+	// 文件不存在时允许用默认值+env 启动；但解析错误（YAML 语法、编码等）必须暴露，
+	// 否则所有配置会静默回退到 SetDefault 默认值，导致 delete.permanent 等关键项与用户预期不符。
 	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			// 找不到默认文件允许忽略；显式路径不同则不进入此分支
+		} else {
+			return nil, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 		}
 	}
 

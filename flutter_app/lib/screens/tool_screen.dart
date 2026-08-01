@@ -7,6 +7,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/api_service.dart';
 import '../models/models.dart';
+import '../utils/time_fmt.dart';
 
 /// 饼图颜色表（固定 8 色 + 灰色表示"其他"）
 const _pieColors = [
@@ -273,7 +274,8 @@ class _ToolScreenState extends State<ToolScreen> {
             _StatBadge(icon: Icons.insert_drive_file_outlined, label: '总文件数', value: '${s.totalCount}', cs: cs),
             _StatBadge(icon: Icons.storage_outlined, label: '总大小', value: s.totalBytesFormatted, cs: cs),
             if (s.createdAt != null)
-              Text('统计时间: ${s.createdAt}', style: TextStyle(fontSize: 12, color: cs.outline)),
+              Text('统计时间: ${formatLocalTime(s.createdAt)}',
+                  style: TextStyle(fontSize: 12, color: cs.outline)),
           ],
         ),
       ),

@@ -21,8 +21,9 @@ const mediaCols = `id, library_id, scan_session_id, kind, relative_path, file_si
 	frame_rate, bit_rate, oshash, sha1, thumbnail_path, created_at`
 
 // Upsert 按 (library_id, relative_path) 插入或更新媒体记录。
+// 使用 RETURNING id 一步拿到目标行 ID，避免 INSERT 后再查一次全行。
 func (r *MediaRepo) Upsert(m *Media) error {
-	res, err := r.db.Exec(
+	err := r.db.QueryRow(
 		`INSERT INTO media (library_id, scan_session_id, kind, relative_path, file_size, mtime,
 			format, width, height, phash, dhash, ahash, duration_ms, video_codec, audio_codec,
 			frame_rate, bit_rate, oshash, sha1, thumbnail_path)
@@ -34,24 +35,14 @@ func (r *MediaRepo) Upsert(m *Media) error {
 			dhash=excluded.dhash, ahash=excluded.ahash, duration_ms=excluded.duration_ms,
 			video_codec=excluded.video_codec, audio_codec=excluded.audio_codec,
 			frame_rate=excluded.frame_rate, bit_rate=excluded.bit_rate,
-			oshash=excluded.oshash, sha1=excluded.sha1, thumbnail_path=excluded.thumbnail_path`,
+			oshash=excluded.oshash, sha1=excluded.sha1, thumbnail_path=excluded.thumbnail_path
+		 RETURNING id`,
 		m.LibraryID, m.ScanSessionID, m.Kind, m.RelativePath, m.FileSize, m.Mtime,
 		m.Format, m.Width, m.Height, m.Phash, m.Dhash, m.Ahash, m.DurationMs,
 		m.VideoCodec, m.AudioCodec, m.FrameRate, m.BitRate, m.Oshash, m.Sha1, m.ThumbnailPath,
-	)
+	).Scan(&m.ID)
 	if err != nil {
 		return errx.Wrapf(err, "写入媒体 %q", m.RelativePath)
-	}
-	if id, _ := res.LastInsertId(); id != 0 {
-		m.ID = id
-	}
-	// ON CONFLICT 更新时 LastInsertId 可能不是目标行，重新读取一次确保 ID 与数据库一致。
-	stored, err := r.GetByPath(m.LibraryID, m.RelativePath)
-	if err != nil {
-		return err
-	}
-	if stored != nil {
-		m.ID = stored.ID
 	}
 	return nil
 }
@@ -315,6 +306,35 @@ func (r *MediaRepo) CountThumbnailReferences(thumbPath string) (int, error) {
 func (r *MediaRepo) UpdateThumbnailPath(id int64, thumbPath *string) error {
 	_, err := r.db.Exec(`UPDATE media SET thumbnail_path = ? WHERE id = ?`, thumbPath, id)
 	return errx.Wrapf(err, "更新缩略图路径 id=%d", id)
+}
+
+// UpdateSha1 更新媒体记录的 SHA1（补齐 SHA1 任务使用）。
+func (r *MediaRepo) UpdateSha1(id int64, sha1 string) error {
+	if _, err := r.db.Exec(`UPDATE media SET sha1 = ? WHERE id = ?`, sha1, id); err != nil {
+		return errx.Wrapf(err, "更新媒体 sha1 id=%d", id)
+	}
+	return nil
+}
+
+// ListMissingSha1 返回收藏库中 sha1 缺失的媒体记录（id + 相对路径）。
+func (r *MediaRepo) ListMissingSha1(libraryID int64) ([]Media, error) {
+	rows, err := r.db.Query(
+		`SELECT id, relative_path FROM media WHERE library_id = ? AND sha1 IS NULL`,
+		libraryID,
+	)
+	if err != nil {
+		return nil, errx.Wrapf(err, "查询缺失 sha1 媒体 lib=%d", libraryID)
+	}
+	defer rows.Close()
+	var out []Media
+	for rows.Next() {
+		var m Media
+		if err := rows.Scan(&m.ID, &m.RelativePath); err != nil {
+			return nil, errx.Wrapf(err, "读取缺失 sha1 媒体 lib=%d", libraryID)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // UpdateLibrary 更新媒体的归属库（临时扫描入库时使用）。

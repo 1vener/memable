@@ -30,7 +30,10 @@ func main() {
 		slog.Error("加载配置失败", "err", err)
 		os.Exit(1)
 	}
-	logx.Init(cfg.Log.Level, cfg.Log.Format)
+	if err := logx.Init(cfg.Log.Level, cfg.Log.Format, cfg.Log.File); err != nil {
+		slog.Error("初始化日志失败", "err", err)
+		os.Exit(1)
+	}
 
 	dbh, err := db.Open(cfg)
 	if err != nil {

@@ -117,17 +117,31 @@ func resizeGray(img image.Image, w, h int) []uint8 {
 }
 
 func dct2D(vals []uint8, n int) []float64 {
-	out := make([]float64, n*n)
-	for v := 0; v < n; v++ {
+	// 二维 DCT 可分离为先按行、再按列两次一维 DCT，将复杂度从 O(n^4) 降为 O(n^3)。
+	cosTable := make([]float64, n*n)
+	for k := 0; k < n; k++ {
+		for i := 0; i < n; i++ {
+			cosTable[k*n+i] = math.Cos((float64(2*i+1) * float64(k) * math.Pi) / (2 * float64(n)))
+		}
+	}
+	tmp := make([]float64, n*n)
+	for y := 0; y < n; y++ {
 		for u := 0; u < n; u++ {
 			var sum float64
-			for y := 0; y < n; y++ {
-				for x := 0; x < n; x++ {
-					pixel := float64(vals[y*n+x])
-					sum += pixel * math.Cos((float64(2*x+1)*float64(u)*math.Pi)/(2*float64(n))) * math.Cos((float64(2*y+1)*float64(v)*math.Pi)/(2*float64(n)))
-				}
+			for x := 0; x < n; x++ {
+				sum += float64(vals[y*n+x]) * cosTable[u*n+x]
 			}
-			out[v*n+u] = alpha(u, n) * alpha(v, n) * sum
+			tmp[y*n+u] = alpha(u, n) * sum
+		}
+	}
+	out := make([]float64, n*n)
+	for u := 0; u < n; u++ {
+		for v := 0; v < n; v++ {
+			var sum float64
+			for y := 0; y < n; y++ {
+				sum += tmp[y*n+u] * cosTable[v*n+y]
+			}
+			out[v*n+u] = alpha(v, n) * sum
 		}
 	}
 	return out

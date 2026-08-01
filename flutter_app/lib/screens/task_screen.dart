@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
+import '../utils/time_fmt.dart';
 
 class TaskScreen extends StatefulWidget {
   final ApiService api;
@@ -814,12 +815,8 @@ class _BottomRunningBar extends StatelessWidget {
   }
 }
 
-/// 格式化 SQLite 时间：yyyy-MM-dd HH:mm:ss → MM-dd HH:mm。
-String _fmtTime(String raw) {
-  final s = raw.replaceFirst('T', ' ').trim();
-  if (s.length >= 16) return s.substring(5, 16);
-  return s;
-}
+/// 格式化后端时间（UTC → 本地）：yyyy-MM-dd HH:mm。
+String _fmtTime(String raw) => formatLocalTime(raw);
 
 /// 从任务 result_json 提取可读摘要。
 String _formatResult(String raw) {

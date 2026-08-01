@@ -18,6 +18,13 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('API 健康检查失败');
   }
 
+  /// 获取服务端存储位置（缩略图目录、日志位置），供设置页展示。
+  Future<Map<String, dynamic>> fetchSettings() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/settings'));
+    if (res.statusCode != 200) throw Exception('获取设置失败: ${res.body}');
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   // ===== 收藏库管理 =====
 
   Future<List<Library>> getLibraries() async {
@@ -98,6 +105,16 @@ class ApiService {
     );
     if (res.statusCode != 200 && res.statusCode != 202)
       throw Exception('启动同步扫描失败: ${res.body}');
+    return jsonDecode(res.body);
+  }
+
+  /// 启动补齐 SHA1 后台任务（主扫描不计算视频 SHA1，需要时单独补齐）。
+  Future<Map<String, dynamic>> scanSha1(int libraryId) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/libraries/$libraryId/scan-sha1'),
+    );
+    if (res.statusCode != 200 && res.statusCode != 202)
+      throw Exception('启动补齐 SHA1 失败: ${res.body}');
     return jsonDecode(res.body);
   }
 

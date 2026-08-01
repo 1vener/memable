@@ -22,12 +22,19 @@ var migrationV2SQL string
 //go:embed migrations/003_report_task_kind.sql
 var migrationV3SQL string
 
+//go:embed migrations/004_scan_sha1_task_kind.sql
+var migrationV4SQL string
+
 // schemaVersion 当前数据库结构版本。
-const schemaVersion = 3
+const schemaVersion = 4
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
+// synchronous=NORMAL 在 WAL 模式下兼顾安全与写入性能；cache_size/mmap_size 提高大批量扫描时的读缓存。
+// 注意：modernc 驱动只认 _pragma 参数（_journal_mode/_foreign_keys 等裸参数会被静默忽略）。
 func Open(cfg *config.Config) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=5000&_time_format=sqlite", cfg.Database.Path)
+	dsn := fmt.Sprintf("file:%s?_time_format=sqlite"+
+		"&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"+
+		"&_pragma=synchronous(NORMAL)&_pragma=cache_size(-20000)&_pragma=mmap_size(268435456)", cfg.Database.Path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开连接: %w", err)
@@ -64,6 +71,7 @@ func Migrate(db *sql.DB) error {
 	}{
 		{version: 2, sql: migrationV2SQL},
 		{version: 3, sql: migrationV3SQL},
+		{version: 4, sql: migrationV4SQL},
 	}
 	cur, err := SchemaVersion(db)
 	if err != nil {

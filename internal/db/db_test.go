@@ -3,6 +3,7 @@
 package db
 
 import (
+	"path/filepath"
 	"testing"
 
 	"memable/internal/config"
@@ -70,5 +71,53 @@ func TestMigrateExistingDatabaseDoesNothing(t *testing.T) {
 	}
 	if version != 99 {
 		t.Fatalf("已有数据库被修改，version=%d", version)
+	}
+}
+
+func TestMigrateV4AcceptsScanSha1Kind(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dbh.Close()
+
+	if err := Migrate(dbh); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if _, err := dbh.Exec(
+		`INSERT INTO background_tasks (id, kind, title) VALUES ('t-sha1', 'scan_sha1', '补齐 SHA1')`,
+	); err != nil {
+		t.Fatalf("scan_sha1 任务类型被 CHECK 约束拒绝: %v", err)
+	}
+}
+
+func TestOpenAppliesWritePragmas(t *testing.T) {
+	// WAL 只对文件数据库生效，内存库恒为 memory
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: filepath.Join(t.TempDir(), "pragmas.db")}}
+	dbh, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dbh.Close()
+
+	var syncMode, journalMode, fkMode string
+	if err := dbh.QueryRow(`PRAGMA synchronous`).Scan(&syncMode); err != nil {
+		t.Fatalf("PRAGMA synchronous: %v", err)
+	}
+	if err := dbh.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("PRAGMA journal_mode: %v", err)
+	}
+	if err := dbh.QueryRow(`PRAGMA foreign_keys`).Scan(&fkMode); err != nil {
+		t.Fatalf("PRAGMA foreign_keys: %v", err)
+	}
+	if syncMode != "1" && syncMode != "normal" {
+		t.Fatalf("synchronous 应为 NORMAL(1)，实际 %q", syncMode)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode 应为 wal，实际 %q", journalMode)
+	}
+	if fkMode != "1" {
+		t.Fatalf("foreign_keys 应为 1，实际 %q", fkMode)
 	}
 }

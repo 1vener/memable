@@ -15,8 +15,10 @@ import (
 	"github.com/google/uuid"
 
 	"memable/internal/duplicate"
+	"memable/internal/media"
 	"memable/internal/recycle"
 	"memable/internal/repo"
+	"memable/internal/worker"
 )
 
 // Runner 任务调度器，串行执行 queued 任务。
@@ -210,28 +212,33 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 
 	slog.Info("开始执行任务", "task_id", task.ID, "kind", task.Kind, "title", task.Title)
 
-	// EWMA 速度计算 + 节流写库（最多 500ms 一次）
-	var lastProcessed int
+	// EWMA 吞吐计算 + 节流写库（最多 500ms 一次）。
+	// 吞吐优先按“实际工作字节数”计算（跳过文件不计入，避免速率虚高）；
+	// 无字节数据时退化为文件数口径，同样排除跳过文件。
+	var lastProcessedBytes int64
 	var lastSampleTime time.Time
 	var ewmaRate float64
 	var lastFlush time.Time
+	startTime := time.Now()
 
-	progress := repo.ProgressFunc(func(phase string, total, processed, succeeded, skipped, failed int, rate float64, eta *int64) {
+	progress := repo.ProgressFunc(func(phase string, total, processed, succeeded, skipped, failed int, totalBytes, processedBytes int64, rate float64, eta *int64) {
 		now := time.Now()
 		if !lastSampleTime.IsZero() {
 			elapsed := now.Sub(lastSampleTime).Seconds()
 			if elapsed >= 0.5 {
-				instant := float64(processed-lastProcessed) / elapsed
-				if ewmaRate == 0 {
-					ewmaRate = instant
-				} else {
-					ewmaRate = 0.25*instant + 0.75*ewmaRate
+				instant := float64(processedBytes-lastProcessedBytes) / elapsed
+				if instant > 0 {
+					if ewmaRate == 0 {
+						ewmaRate = instant
+					} else {
+						ewmaRate = 0.25*instant + 0.75*ewmaRate
+					}
 				}
-				lastProcessed = processed
+				lastProcessedBytes = processedBytes
 				lastSampleTime = now
 			}
 		} else {
-			lastProcessed = processed
+			lastProcessedBytes = processedBytes
 			lastSampleTime = now
 		}
 		// 节流：最少 500ms 写一次库
@@ -239,10 +246,28 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 			return
 		}
 		lastFlush = now
+
 		var etaPtr *int64
-		if total > 0 && processed > 0 && ewmaRate > 0 {
-			e := int64(float64(total-processed) / ewmaRate)
+		remainingBytes := totalBytes - processedBytes
+		if ewmaRate > 0 && remainingBytes > 0 {
+			// 字节口径：剩余实际工作量 / 字节吞吐
+			e := int64(float64(remainingBytes) / ewmaRate)
 			etaPtr = &e
+		} else if total > processed && processed > skipped {
+			// 文件口径兜底：跳过文件不参与速率，并按已见跳过比例折算未来跳过文件
+			elapsedTotal := now.Sub(startTime).Seconds()
+			work := processed - skipped
+			if elapsedTotal > 0 {
+				remaining := total - processed
+				if skipped > 0 {
+					remaining = remaining * work / processed
+				}
+				ratePerSec := float64(work) / elapsedTotal
+				if ratePerSec > 0 {
+					e := int64(float64(remaining) / ratePerSec)
+					etaPtr = &e
+				}
+			}
 		}
 		_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
 			Phase: phase, Total: total, Processed: processed,
@@ -270,6 +295,8 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 		execErr = r.execPromote(taskCtx, task, progress)
 	case repo.TaskKindDirectoryDelete:
 		execErr = r.execDirectoryDelete(taskCtx, task, progress)
+	case repo.TaskKindScanSha1:
+		execErr = r.execScanSha1(taskCtx, task, progress)
 	default:
 		execErr = fmt.Errorf("未知任务类型: %s", task.Kind)
 	}
@@ -350,9 +377,11 @@ func (r *Runner) execScan(ctx context.Context, task *repo.BackgroundTask, tempor
 	}
 
 	resJSON, _ := json.Marshal(map[string]any{
-		"session_id": result.Session.ID,
-		"library_id": lib.ID,
-		"cleaned":    result.Cleaned,
+		"session_id":      result.Session.ID,
+		"library_id":      lib.ID,
+		"cleaned":         result.Cleaned,
+		"total_bytes":     result.TotalBytes,
+		"processed_bytes": result.ProcessedBytes,
 	})
 	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
 		Phase: "done", Total: result.Found,
@@ -382,8 +411,10 @@ func (r *Runner) execLegacyRepair(ctx context.Context, task *repo.BackgroundTask
 	}
 
 	resJSON, _ := json.Marshal(map[string]any{
-		"session_id": result.Session.ID,
-		"library_id": lib.ID,
+		"session_id":      result.Session.ID,
+		"library_id":      lib.ID,
+		"total_bytes":     result.TotalBytes,
+		"processed_bytes": result.ProcessedBytes,
 	})
 	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
 		Phase: "done", Total: result.Found,
@@ -394,10 +425,102 @@ func (r *Runner) execLegacyRepair(ctx context.Context, task *repo.BackgroundTask
 	return nil
 }
 
+// execScanSha1 执行补齐 SHA1 任务：为该收藏库中 sha1 缺失的记录计算并写入 SHA1。
+// 只处理缺失记录、不强制重算；用 worker pool 并发读取文件，支持取消与进度统计。
+func (r *Runner) execScanSha1(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
+	if task.LibraryID == nil {
+		return fmt.Errorf("补齐 SHA1 任务缺少 library_id")
+	}
+	lib, err := r.Libraries.GetByID(*task.LibraryID)
+	if err != nil {
+		return fmt.Errorf("查询收藏库: %w", err)
+	}
+
+	missing, err := r.Media.ListMissingSha1(lib.ID)
+	if err != nil {
+		return err
+	}
+	total := len(missing)
+
+	// 计数与进度上报：worker 并发更新计数，progress 调用加锁串行化
+	// （runner 的 EWMA 闭包非并发安全，需保证同一时刻只有一个调用者）。
+	var mu sync.Mutex
+	var processed, succeeded, failed int
+	report := func() {
+		mu.Lock()
+		p, s, f := processed, succeeded, failed
+		mu.Unlock()
+		progress("hashing", total, p, s, 0, f, 0, 0, 0, (*int64)(nil))
+	}
+
+	pool := worker.NewPool(r.Config.PoolSize)
+	pool.Start(ctx)
+	for _, item := range missing {
+		item := item
+		if !pool.Submit(&worker.ScanJob{
+			Run: func(jobCtx context.Context) error {
+				slog.Info("处理文件", "dir", filepath.Dir(item.RelativePath), "file", filepath.Base(item.RelativePath))
+				mu.Lock()
+				processed++
+				mu.Unlock()
+				abs := filepath.Join(lib.Path, filepath.FromSlash(item.RelativePath))
+				sha, err := media.SHA1File(abs)
+				if err != nil {
+					mu.Lock()
+					failed++
+					mu.Unlock()
+					report()
+					return fmt.Errorf("计算 SHA1 %q: %w", abs, err)
+				}
+				if err := r.Media.UpdateSha1(item.ID, sha); err != nil {
+					mu.Lock()
+					failed++
+					mu.Unlock()
+					report()
+					return err
+				}
+				mu.Lock()
+				succeeded++
+				mu.Unlock()
+				report()
+				return nil
+			},
+		}) {
+			// 任务已取消/池已关闭：未派发的记录按失败计数
+			mu.Lock()
+			processed++
+			failed++
+			mu.Unlock()
+		}
+	}
+	pool.Stop()
+
+	mu.Lock()
+	p, s, f := processed, succeeded, failed
+	mu.Unlock()
+	resJSON, _ := json.Marshal(map[string]any{
+		"library_id": lib.ID,
+		"checked":    total,
+		"updated":    s,
+		"failed":     f,
+	})
+	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
+		Phase: "done", Total: total,
+		Processed: p, Succeeded: s, Skipped: 0, Failed: f,
+	})
+	_ = r.Tasks.Complete(task.ID, string(resJSON))
+
+	// sha1 补齐后重复报告可能产生新的 sha1_exact 分组，标记旧报告失效
+	if s > 0 && r.Dup != nil {
+		_ = r.Dup.SetStale()
+	}
+	return nil
+}
+
 // execReport 执行重复检测并将结构化结果保存到任务中。
 func (r *Runner) execReport(ctx context.Context, task *repo.BackgroundTask, kind string, progress repo.ProgressFunc) error {
 	det := duplicate.NewDetector(r.Media, nil)
-	progress("detecting", 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	progress("detecting", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
 
 	var groups []duplicate.Group
 	var err error
@@ -418,7 +541,7 @@ func (r *Runner) execReport(ctx context.Context, task *repo.BackgroundTask, kind
 	if err != nil {
 		return fmt.Errorf("序列化重复检测结果: %w", err)
 	}
-	progress("done", len(groups), len(groups), len(groups), 0, 0, 0, (*int64)(nil))
+	progress("done", len(groups), len(groups), len(groups), 0, 0, 0, 0, 0, (*int64)(nil))
 	_ = r.Tasks.Complete(task.ID, string(result))
 	return nil
 }
@@ -439,7 +562,7 @@ func (r *Runner) execDuplicateReport(ctx context.Context, task *repo.BackgroundT
 	if r.Dup == nil {
 		return fmt.Errorf("重复报告服务未初始化")
 	}
-	progress("detecting", 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	progress("detecting", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
 	rep, err := r.Dup.Generate(payload.Options, task.ID)
 	if err != nil {
 		return err
@@ -451,7 +574,7 @@ func (r *Runner) execDuplicateReport(ctx context.Context, task *repo.BackgroundT
 		"media_type":   rep.MediaType,
 		"scope":        rep.Scope,
 	})
-	progress("done", rep.TotalGroups, rep.TotalGroups, rep.TotalGroups, 0, 0, 0, (*int64)(nil))
+	progress("done", rep.TotalGroups, rep.TotalGroups, rep.TotalGroups, 0, 0, 0, 0, 0, (*int64)(nil))
 	_ = r.Tasks.Complete(task.ID, string(result))
 	return nil
 }
@@ -515,7 +638,7 @@ func (r *Runner) execPromote(ctx context.Context, task *repo.BackgroundTask, pro
 			slog.Error("更新媒体库归属失败", "media_id", m.ID, "err", err)
 		}
 		if (i+1)%50 == 0 || i+1 == total {
-			progress("promoting", total, i+1, moved, 0, 0, 0, (*int64)(nil))
+			progress("promoting", total, i+1, moved, 0, 0, 0, 0, 0, (*int64)(nil))
 		}
 	}
 
@@ -574,14 +697,14 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 	}
 
 	// 阶段1：删除数据库媒体记录，收集缩略图路径
-	progress("deleting_db", 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	progress("deleting_db", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
 	_, thumbRefs, err := r.Media.DeleteByDirectory(payload.LibraryID, payload.DirPath)
 	if err != nil {
 		return fmt.Errorf("删除数据库记录: %w", err)
 	}
 
 	// 阶段2：删除本地目录（按配置：永久删除或移入回收站）
-	progress("deleting_files", 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	progress("deleting_files", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
 	absDir := filepath.Join(lib.Path, payload.DirPath)
 	var dirErr error
 	if r.Config.PermanentDelete {
@@ -594,7 +717,7 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 	}
 
 	// 阶段3：清理无引用缩略图
-	progress("cleaning_thumbs", 0, len(thumbRefs), 0, 0, 0, 0, (*int64)(nil))
+	progress("cleaning_thumbs", 0, len(thumbRefs), 0, 0, 0, 0, 0, 0, (*int64)(nil))
 	deleted := 0
 	for i, ref := range thumbRefs {
 		n, err := r.Media.CountThumbnailReferences(ref.Rel)
@@ -610,7 +733,7 @@ func (r *Runner) execDirectoryDelete(ctx context.Context, task *repo.BackgroundT
 		_ = os.Remove(filepath.Dir(thumbAbs))
 		deleted++
 		if (i+1)%50 == 0 || i+1 == len(thumbRefs) {
-			progress("cleaning_thumbs", len(thumbRefs), i+1, deleted, 0, 0, 0, (*int64)(nil))
+			progress("cleaning_thumbs", len(thumbRefs), i+1, deleted, 0, 0, 0, 0, 0, (*int64)(nil))
 		}
 	}
 

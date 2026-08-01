@@ -774,6 +774,32 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                           },
                         ),
                         IconButton(
+                          icon: const Icon(Icons.fingerprint, size: 18),
+                          tooltip: '补齐 SHA1',
+                          onPressed: () async {
+                            try {
+                              await widget.api.scanSha1(widget.library.id);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('补齐 SHA1 已启动'),
+                                    backgroundColor: Color(0xFF2563EB),
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('启动补齐 SHA1 失败: $e'),
+                                    backgroundColor: const Color(0xFFEF4444),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                        IconButton(
                           icon: const Icon(Icons.refresh, size: 18),
                           tooltip: '刷新文件树',
                           onPressed: () {

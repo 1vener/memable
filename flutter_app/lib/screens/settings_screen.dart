@@ -17,6 +17,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _hexCtrl;
   bool _testLoading = false;
   String? _testResult;
+  bool _pathsLoading = false;
+  bool _pathsLoaded = false;
+  String? _pathsError;
+  String? _imageDir;
+  String? _videoDir;
+  String _logFile = '';
 
   @override
   void initState() {
@@ -24,6 +30,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _apiUrlCtrl = TextEditingController(text: widget.api.baseUrl);
     _hexCtrl = TextEditingController();
     _syncHex();
+    _loadPaths();
   }
 
   @override
@@ -92,6 +99,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (mounted) setState(() => _testResult = 'error: $e');
     } finally {
       if (mounted) setState(() => _testLoading = false);
+    }
+  }
+
+  /// 获取服务端缩略图/日志保存位置。
+  Future<void> _loadPaths() async {
+    setState(() {
+      _pathsLoading = true;
+      _pathsError = null;
+    });
+    try {
+      final s = await widget.api.fetchSettings();
+      if (mounted) {
+        setState(() {
+          _imageDir = s['thumbnail_image_dir'] as String?;
+          _videoDir = s['thumbnail_video_dir'] as String?;
+          _logFile = (s['log_file'] as String?) ?? '';
+          _pathsLoaded = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _pathsError = '$e';
+          _pathsLoaded = false;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _pathsLoading = false);
     }
   }
 
@@ -314,6 +349,75 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 32),
 
+            // ========== 存储位置 ==========
+            _SectionTitle(title: '存储位置', icon: Icons.folder_outlined, cs: cs),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          '服务端保存位置',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: cs.onSurface,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.refresh, size: 18),
+                          tooltip: '刷新',
+                          onPressed: _pathsLoading ? null : _loadPaths,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    if (_pathsLoading)
+                      const Padding(
+                        padding: EdgeInsets.all(8),
+                        child: Center(
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        ),
+                      ),
+                    if (_pathsError != null) ...[
+                      Text(
+                        '获取失败: $_pathsError',
+                        style: TextStyle(fontSize: 12, color: cs.error),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    if (_pathsLoaded) ...[
+                      _PathRow(
+                        icon: Icons.image_outlined,
+                        label: '图片缩略图',
+                        value: _imageDir ?? '',
+                      ),
+                      _PathRow(
+                        icon: Icons.movie_outlined,
+                        label: '视频封面',
+                        value: _videoDir ?? '',
+                      ),
+                      _PathRow(
+                        icon: Icons.notes,
+                        label: '日志',
+                        value: _logFile.isEmpty ? '控制台（标准输出）' : _logFile,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+
             // ========== 关于 ==========
             _SectionTitle(title: '关于', icon: Icons.info_outline, cs: cs),
             const SizedBox(height: 16),
@@ -432,6 +536,39 @@ class _AboutRow extends StatelessWidget {
           child: Text(value, style: TextStyle(fontSize: 13, color: cs.onSurface), overflow: TextOverflow.ellipsis),
         ),
       ],
+    );
+  }
+}
+
+class _PathRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  const _PathRow({required this.icon, required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 16, color: cs.outline),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 90,
+            child: Text(label, style: TextStyle(fontSize: 12, color: cs.outline)),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: SelectableText(
+              value,
+              style: TextStyle(fontSize: 12, color: cs.onSurface),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

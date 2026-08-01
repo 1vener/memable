@@ -1,5 +1,5 @@
-// 默认 config.yaml；可用 -config 指定其他路径，也可用 MEMABLE_* 环境变量覆盖。
-// 所有路径均支持相对路径（相对于工作目录）。
+# 默认 config.yaml；可用 -config 指定其他路径，也可用 MEMABLE_* 环境变量覆盖。
+# 所有路径均支持相对路径（相对于工作目录）。
 
 database:
   path: memable.db          # SQLite 数据库文件路径；":memory:" 为内存库
@@ -26,7 +26,7 @@ similarity:
   video_duration_diff_ms: 3000  # 视频允许时长差（毫秒）
 
 worker:
-  pool_size: 4              # 扫描/处理 Worker Pool 并发数
+  pool_size: 8              # 扫描/处理 Worker Pool 并发数
 
 delete:
   permanent: true          # true=永久删除源文件；false=默认移入系统回收站
@@ -38,3 +38,4 @@ ui:
 log:
   level: info               # debug/info/warn/error
   format: text              # text/json
+  file: ""                  # 可选：日志文件路径（留空输出到控制台）

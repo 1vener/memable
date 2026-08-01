@@ -46,7 +46,8 @@ type ffprobeOutput struct {
 
 // ProbeVideo 调用 ffprobe 采集视频 metadata。
 func ProbeVideo(ctx context.Context, path string) (*VideoMeta, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// 正常视频 probe <1s，10s 超时已足够；过长超时会让损坏/超大文件拖慢整批扫描。
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ffprobe",

@@ -4,17 +4,21 @@ package repo
 
 import "time"
 
-// ProgressFunc 进度回调函数（扫描/修复过程中调用）。
-type ProgressFunc func(phase string, total, processed, succeeded, skipped, failed int, rate float64, etaSeconds *int64)
+// ProgressFunc 进度回调函数（扫描/修复等任务过程中调用）。
+// totalBytes/processedBytes 为需要处理/已完成（均不含跳过文件）的字节数，
+// 用于按实际工作量估算 ETA，避免跳过文件把速率拉高导致预计过于乐观。
+type ProgressFunc func(phase string, total, processed, succeeded, skipped, failed int, totalBytes, processedBytes int64, rate float64, etaSeconds *int64)
 
 // ScanResult 扫描执行结果。
 type ScanResult struct {
-	Session  *ScanSession
-	Found    int
-	Imported int
-	Skipped  int
-	Failed   int
-	Cleaned  int
+	Session        *ScanSession
+	Found          int
+	Imported       int
+	Skipped        int
+	Failed         int
+	Cleaned        int
+	TotalBytes     int64 // 需要处理（不含跳过）的文件总字节数
+	ProcessedBytes int64 // 已完成处理（含失败，不含跳过）的文件字节数
 }
 
 // Library 收藏库（媒体根目录）。
@@ -81,6 +85,7 @@ const (
 	TaskKindReportDuplicate TaskKind = "report_duplicate"
 	TaskKindPromote         TaskKind = "promote"
 	TaskKindDirectoryDelete TaskKind = "directory_delete"
+	TaskKindScanSha1        TaskKind = "scan_sha1"
 )
 
 // TaskStatus 任务状态。

@@ -167,7 +167,10 @@ func isBlackOrSolid(path string) bool {
 	if err != nil {
 		return true
 	}
+	return isBlackOrSolidImage(img)
+}
 
+func isBlackOrSolidImage(img image.Image) bool {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	if w == 0 || h == 0 {

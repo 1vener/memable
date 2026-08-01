@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"memable/internal/config"
 	"memable/internal/db"
@@ -33,6 +34,73 @@ func writePNG(t *testing.T, path string, c color.RGBA, size int) {
 	}
 	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestVideoSHA1ExactGrouping 验证视频补齐 sha1 后参与 sha1_exact 精确去重，缺失时不生成该分组。
+func TestVideoSHA1ExactGrouping(t *testing.T) {
+	cfg := &config.Config{
+		Database: config.DatabaseConfig{Path: ":memory:"},
+		Similarity: config.SimilarityConfig{
+			VideoPHashDistance: 12, VideoDurationDiffMs: 3000,
+		},
+	}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	lib := &repo.Library{Name: "视频库", Path: t.TempDir(), Kind: "video"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+
+	// 两个视频 sha1 相同、sprite pHash 不同（差异 > 阈值），用于隔离 sha1_exact 分组
+	mt := time.Now()
+	sha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	ph1 := "0123456789abcdef"
+	ph2 := "fedcba9876543210"
+	rel1, rel2 := "videos/a.mp4", "videos/b.mp4"
+	dur := int64(1000)
+	osh := "oshash"
+	w, h := 640, 480
+	format := "mp4"
+	for _, m := range []*repo.Media{
+		{LibraryID: lib.ID, Kind: "video", RelativePath: rel1, FileSize: 100, Mtime: mt,
+			Format: &format, Width: &w, Height: &h, Phash: &ph1, DurationMs: &dur, Oshash: &osh, Sha1: &sha},
+		{LibraryID: lib.ID, Kind: "video", RelativePath: rel2, FileSize: 100, Mtime: mt,
+			Format: &format, Width: &w, Height: &h, Phash: &ph2, DurationMs: &dur, Oshash: &osh, Sha1: &sha},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	det := NewDetector(mr, cfg)
+	groups, err := det.DetectWithOptions(Options{MediaType: "video", IncludeSHA1: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Reason != "sha1_exact" || len(groups[0].Media) != 2 {
+		t.Fatalf("补齐 sha1 后应生成 sha1_exact 分组: %+v", groups)
+	}
+
+	// 清空 sha1 后不再生成 sha1_exact 分组（pHash 差异大也不会进入相似分组）
+	if _, err := dbh.Exec(`UPDATE media SET sha1 = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	groups2, err := det.DetectWithOptions(Options{MediaType: "video", IncludeSHA1: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups2) != 0 {
+		t.Fatalf("无 sha1 时不应生成分组: %+v", groups2)
 	}
 }
 
@@ -89,7 +157,7 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 		Sessions: sessionRepo, Media: mediaRepo, Config: cfg,
 		ImageThumbBase: thumbDir, Libraries: libRepo,
 	}
-	noop := func(string, int, int, int, int, int, float64, *int64) {}
+	noop := func(string, int, int, int, int, int, int64, int64, float64, *int64) {}
 	result, err := scanSvc.ExecuteScan(context.Background(), *lib, "session-1", false, false, 2, noop)
 	if err != nil {
 		t.Fatal(err)

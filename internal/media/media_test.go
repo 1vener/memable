@@ -75,6 +75,48 @@ func TestProbeVideo(t *testing.T) {
 	}
 }
 
+func TestVideoThumbnailKey(t *testing.T) {
+	k1 := VideoThumbnailKey("osh1", 100, 2000, 300)
+	if k1 != VideoThumbnailKey("osh1", 100, 2000, 300) {
+		t.Fatal("相同输入应得到相同 key")
+	}
+	for name, other := range map[string]string{
+		"oshash":   VideoThumbnailKey("osh2", 100, 2000, 300),
+		"fileSize": VideoThumbnailKey("osh1", 101, 2000, 300),
+		"duration": VideoThumbnailKey("osh1", 100, 2001, 300),
+		"maxEdge":  VideoThumbnailKey("osh1", 100, 2000, 400),
+	} {
+		if other == k1 {
+			t.Fatalf("%s 变化后 key 未改变", name)
+		}
+	}
+	if len(k1) != 64 {
+		t.Fatalf("key 长度异常: %q", k1)
+	}
+}
+
+func TestComputeVideoSpritePHash(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg 未安装，跳过 sprite 测试")
+	}
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "sprite.mp4")
+	out, err := exec.Command("ffmpeg", "-y", "-f", "lavfi",
+		"-i", "testsrc2=size=320x240:rate=30:d=4",
+		"-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+		"-pix_fmt", "yuv420p", videoPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("生成测试视频失败: %v\n%s", err, string(out))
+	}
+	ph, err := ComputeVideoSpritePHash(context.Background(), videoPath, 4000)
+	if err != nil {
+		t.Fatalf("ComputeVideoSpritePHash: %v", err)
+	}
+	if len(ph) != 16 {
+		t.Fatalf("pHash 长度异常: %q", ph)
+	}
+}
+
 // TestDecodeGoFallsBackToFFmpegForMislabeledFile 验证扩展名为 .jpg 但内容为
 // 其他格式（此处用 PNG 字节模拟）时，原生解码失败后回退 FFmpeg 仍能成功。
 func TestDecodeGoFallsBackToFFmpegForMislabeledFile(t *testing.T) {
@@ -92,6 +134,18 @@ func TestDecodeGoFallsBackToFFmpegForMislabeledFile(t *testing.T) {
 	b := decoded.Image.Bounds()
 	if b.Dx() != 8 || b.Dy() != 8 {
 		t.Fatalf("解码尺寸异常: %+v", b)
+	}
+}
+
+func TestDecodeGoDoesNotFallBackForOversizedImage(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "oversized.png")
+	writePNGConfigOnly(t, imgPath, 6000, 5000)
+
+	t.Setenv("PATH", "")
+	decoded, err := DecodeImage(context.Background(), imgPath, DecoderGo)
+	if err == nil {
+		t.Fatalf("超大图片 FFmpeg 失败时应返回错误，实际解码成功: %+v", decoded)
 	}
 }
 
@@ -178,6 +232,25 @@ func writeTestPNG(t *testing.T, path string, w, h int) {
 	}
 	defer f.Close()
 	if err := png.Encode(f, img); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writePNGConfigOnly 写入可读取尺寸但像素数据损坏的 PNG，避免测试分配超大图片。
+func writePNGConfigOnly(t *testing.T, path string, w, h uint32) {
+	t.Helper()
+	var data bytes.Buffer
+	data.WriteString("\x89PNG\r\n\x1a\n")
+	data.Write([]byte{0, 0, 0, 13})
+	data.WriteString("IHDR")
+	data.Write([]byte{
+		byte(w >> 24), byte(w >> 16), byte(w >> 8), byte(w),
+		byte(h >> 24), byte(h >> 16), byte(h >> 8), byte(h),
+		8, 2, 0, 0, 0,
+	})
+	// DecodeConfig 会在校验 CRC 前取得 IHDR 尺寸；后续不应进入完整 Go 解码。
+	data.Write([]byte{0, 0, 0, 0})
+	if err := os.WriteFile(path, data.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -46,6 +46,10 @@ type scanState struct {
 	imported int
 	skipped  int
 	failed   int
+	// workBytes 需要处理（不含跳过）的文件总字节数；doneBytes 已完成（含失败）的字节数。
+	// 用于按实际工作量估算 ETA，跳过文件不计入。
+	workBytes int64
+	doneBytes int64
 }
 
 // ScanLibraryAsync 使用 Worker Pool 并发扫描；返回 sessionID 和 error。
@@ -70,26 +74,70 @@ func (s *Service) ScanLibraryAsync(ctx context.Context, lib repo.Library, sessio
 	return sessionID, nil
 }
 
+// mediaSnapshot 一次扫描的增量判定快照：一次性加载库内记录，避免逐文件串行查询 SQLite。
+type mediaSnapshot struct {
+	byPath map[string]repo.Media
+}
+
+// loadMediaSnapshot 加载收藏库全部媒体记录到内存快照。
+func (s *Service) loadMediaSnapshot(libraryID int64) (*mediaSnapshot, error) {
+	stored, err := s.Media.ListByLibrary(libraryID)
+	if err != nil {
+		return nil, fmt.Errorf("加载媒体快照: %w", err)
+	}
+	snap := &mediaSnapshot{byPath: make(map[string]repo.Media, len(stored))}
+	for _, m := range stored {
+		snap.byPath[m.RelativePath] = m
+	}
+	return snap, nil
+}
+
+// needScanFromSnapshot 增量判定：记录不存在，或 mtime/file_size 任一变化时需要重新扫描。
+func (s *Service) needScanFromSnapshot(snap *mediaSnapshot, entry media.FileEntry) bool {
+	stored, ok := snap.byPath[entry.RelativePath]
+	if !ok {
+		return true
+	}
+	return stored.FileSize != entry.Size || !stored.Mtime.Equal(entry.Mtime)
+}
+
+// needRepairFromSnapshot 完整性判定：记录缺失或必要字段/缩略图缺失时需修补。
+func (s *Service) needRepairFromSnapshot(snap *mediaSnapshot, entry media.FileEntry) bool {
+	stored, ok := snap.byPath[entry.RelativePath]
+	if !ok {
+		return true
+	}
+	switch string(entry.Kind) {
+	case "image":
+		if stored.Phash == nil || stored.Width == nil || stored.Height == nil {
+			return true
+		}
+	case "video":
+		if stored.Phash == nil || stored.Oshash == nil || stored.Width == nil || stored.Height == nil || stored.DurationMs == nil {
+			return true
+		}
+	}
+	return stored.ThumbnailPath == nil
+}
+
 // runScan 实际执行扫描（在 goroutine 中运行）。
 func (s *Service) runScan(ctx context.Context, lib repo.Library, sessionID string, temporary bool, poolSize int) {
 	st := &scanState{}
 
 	result := media.Walk(ctx, lib.Path)
 	entries := result.Entries
+	snap, err := s.loadMediaSnapshot(lib.ID)
+	if err != nil {
+		slog.Error("加载媒体快照失败", "library_id", lib.ID, "err", err)
+		_ = s.Sessions.UpdateStatus(sessionID, "failed")
+		return
+	}
 
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
 
 	for _, e := range entries {
-		need, err := s.Media.NeedScan(lib.ID, e.RelativePath, e.Mtime, e.Size)
-		if err != nil {
-			slog.Error("增量判定失败", "path", e.RelativePath, "err", err)
-			st.mu.Lock()
-			st.failed++
-			st.mu.Unlock()
-			continue
-		}
-		if !need {
+		if !s.needScanFromSnapshot(snap, e) {
 			st.mu.Lock()
 			st.skipped++
 			st.mu.Unlock()
@@ -160,20 +208,17 @@ func (s *Service) runRepair(ctx context.Context, lib repo.Library, sessionID str
 
 	result := media.Walk(ctx, lib.Path)
 	entries := result.Entries
+	snap, err := s.loadMediaSnapshot(lib.ID)
+	if err != nil {
+		slog.Error("加载媒体快照失败", "library_id", lib.ID, "err", err)
+		_ = s.Sessions.UpdateStatus(sessionID, "failed")
+		return
+	}
 
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
-
 	for _, e := range entries {
-		need, err := s.Media.NeedRepair(lib.ID, e.RelativePath, string(e.Kind))
-		if err != nil {
-			slog.Error("完整性判定失败", "path", e.RelativePath, "err", err)
-			st.mu.Lock()
-			st.failed++
-			st.mu.Unlock()
-			continue
-		}
-		if !need {
+		if !s.needRepairFromSnapshot(snap, e) {
 			st.mu.Lock()
 			st.skipped++
 			st.mu.Unlock()
@@ -192,7 +237,7 @@ func (s *Service) runRepair(ctx context.Context, lib repo.Library, sessionID str
 					return err
 				}
 				if err := s.Media.Upsert(m); err != nil {
-					slog.Error("修补入库失败", "path", entry.RelativePath, "err", err)
+					slog.Error("入库失败", "path", entry.RelativePath, "err", err)
 					st.mu.Lock()
 					st.failed++
 					st.mu.Unlock()
@@ -244,15 +289,13 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 	result := media.Walk(ctx, lib.Path)
 	entries := result.Entries
 	stats.Found = len(entries)
+	snap, err := s.loadMediaSnapshot(lib.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, e := range entries {
-		need, err := s.Media.NeedScan(lib.ID, e.RelativePath, e.Mtime, e.Size)
-		if err != nil {
-			slog.Error("增量判定失败", "path", e.RelativePath, "err", err)
-			stats.Failed++
-			continue
-		}
-		if !need {
+		if !s.needScanFromSnapshot(snap, e) {
 			stats.Skipped++
 			continue
 		}
@@ -282,9 +325,16 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 }
 
 func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string, e media.FileEntry) (*repo.Media, error) {
-	sha1, err := media.SHA1File(e.AbsPath)
-	if err != nil {
-		return nil, fmt.Errorf("计算 SHA1 %q: %w", e.AbsPath, err)
+	slog.Info("处理文件", "dir", filepath.Dir(e.RelativePath), "file", filepath.Base(e.RelativePath))
+	// 图片需要 SHA1（缩略图内容寻址 + sha1_exact 精确去重）；
+	// 视频主扫描不计算 SHA1，避免大文件全量读取，需要时由独立 scan_sha1 任务补齐。
+	var sha1Ptr *string
+	if e.Kind == media.KindImage {
+		sha1, err := media.SHA1File(e.AbsPath)
+		if err != nil {
+			return nil, fmt.Errorf("计算 SHA1 %q: %w", e.AbsPath, err)
+		}
+		sha1Ptr = &sha1
 	}
 	m := &repo.Media{
 		LibraryID:     libraryID,
@@ -293,7 +343,7 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		RelativePath:  e.RelativePath,
 		FileSize:      e.Size,
 		Mtime:         e.Mtime,
-		Sha1:          &sha1,
+		Sha1:          sha1Ptr,
 	}
 
 	maxEdge := 300
@@ -324,7 +374,7 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		m.Ahash = &hashes.AHash
 
 		// 内容寻址缩略图（复用同一次解码）
-		storageKey := media.ThumbnailKey("image", sha1, maxEdge)
+		storageKey := media.ThumbnailKey("image", *sha1Ptr, maxEdge)
 		thumbRel := media.ThumbnailStoragePath(storageKey)
 		thumbAbs := filepath.Join(s.thumbBaseFor(media.KindImage), thumbRel)
 		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
@@ -354,26 +404,29 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		m.BitRate = &meta.BitRate
 		m.Oshash = &oshash
 
-		// 内容寻址视频封面缩略图
-		storageKey := media.ThumbnailKey("video", sha1, maxEdge)
+		// 一次抽取 sprite，同时生成 pHash 和封面，避免重复读取视频。
+		storageKey := media.VideoThumbnailKey(oshash, e.Size, meta.DurationMs, maxEdge)
 		thumbRel := media.ThumbnailStoragePath(storageKey)
 		thumbAbs := filepath.Join(s.thumbBaseFor(media.KindVideo), thumbRel)
+		var spritePhash string
 		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
-			_, err := media.ExtractVideoCover(ctx, e.AbsPath, tmp, maxEdge, meta.DurationMs)
+			var err error
+			spritePhash, err = media.ComputeVideoSpritePHashAndCover(ctx, e.AbsPath, meta.DurationMs, tmp, maxEdge)
 			return err
 		}); err != nil {
-			slog.Warn("生成视频封面失败", "path", e.AbsPath, "err", err)
+			return nil, fmt.Errorf("生成视频 sprite 与封面 %q: %w", e.AbsPath, err)
 		} else {
 			m.ThumbnailPath = &thumbRel
 		}
 
-		// 计算 sprite pHash（临时截图计算后自动清理）
-		spritePhash, err := media.ComputeVideoSpritePHash(ctx, e.AbsPath, meta.DurationMs)
-		if err != nil {
-			slog.Warn("计算视频 sprite pHash 失败", "path", e.AbsPath, "err", err)
-		} else {
-			m.Phash = &spritePhash
+		// 缩略图已存在时仍需计算缺失/强制更新的 sprite pHash。
+		if spritePhash == "" {
+			spritePhash, err = media.ComputeVideoSpritePHash(ctx, e.AbsPath, meta.DurationMs)
+			if err != nil {
+				return nil, fmt.Errorf("计算视频 sprite pHash %q: %w", e.AbsPath, err)
+			}
 		}
+		m.Phash = &spritePhash
 	}
 	return m, nil
 }
@@ -433,36 +486,51 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 	result := media.Walk(ctx, lib.Path)
 	entries := result.Entries
 	var err error
-	progress("discovering", len(entries), 0, 0, 0, 0, 0, (*int64)(nil))
+	// 统一进度上报：字节统计不含跳过文件（workBytes/doneBytes 只累计实际工作量）
+	report := func(phase string) {
+		st.mu.Lock()
+		total := st.imported + st.skipped + st.failed
+		imported, skipped, failed := st.imported, st.skipped, st.failed
+		workBytes, doneBytes := st.workBytes, st.doneBytes
+		st.mu.Unlock()
+		progress(phase, len(entries), total, imported, skipped, failed, workBytes, doneBytes, 0, (*int64)(nil))
+	}
+	report("discovering")
 	localPaths := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		localPaths[entry.RelativePath] = struct{}{}
+	}
+	snap, err := s.loadMediaSnapshot(lib.ID)
+	if err != nil {
+		return nil, err
 	}
 
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
 
 	for _, e := range entries {
-		need, err := s.needsSync(lib.ID, e, force)
+		need, err := s.needsSync(snap, e, force)
 		if err != nil {
 			slog.Error("增量判定失败", "path", e.RelativePath, "err", err)
 			st.mu.Lock()
 			st.failed++
-			total := st.imported + st.skipped + st.failed
+			st.doneBytes += e.Size
 			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+			report("processing")
 			continue
 		}
 		if !need {
 			st.mu.Lock()
 			st.skipped++
-			total := st.imported + st.skipped + st.failed
 			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+			report("processing")
 			continue
 		}
 
 		entry := e
+		st.mu.Lock()
+		st.workBytes += entry.Size
+		st.mu.Unlock()
 		pool.Submit(&worker.ScanJob{
 			Run: func(jobCtx context.Context) error {
 				m, err := s.collect(jobCtx, lib.ID, sessionID, entry)
@@ -470,25 +538,25 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 					slog.Warn("采集失败", "path", entry.AbsPath, "err", err)
 					st.mu.Lock()
 					st.failed++
-					total := st.imported + st.skipped + st.failed
+					st.doneBytes += entry.Size
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+					report("processing")
 					return err
 				}
 				if err := s.Media.Upsert(m); err != nil {
 					slog.Error("入库失败", "path", entry.RelativePath, "err", err)
 					st.mu.Lock()
 					st.failed++
-					total := st.imported + st.skipped + st.failed
+					st.doneBytes += entry.Size
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+					report("processing")
 					return err
 				}
 				st.mu.Lock()
 				st.imported++
-				total := st.imported + st.skipped + st.failed
+				st.doneBytes += entry.Size
 				st.mu.Unlock()
-				progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+				report("processing")
 				return nil
 			},
 		})
@@ -502,7 +570,7 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 
 	cleaned := 0
 	if !temporary {
-		progress("cleaning", len(entries), len(entries), st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+		report("cleaning")
 		cleaned, err = s.cleanMissing(lib.ID, localPaths)
 		if err != nil {
 			_ = s.Sessions.UpdateStatus(sessionID, "failed")
@@ -517,29 +585,36 @@ func (s *Service) ExecuteScan(ctx context.Context, lib repo.Library, sessionID s
 
 	session, _ := s.Sessions.GetByID(sessionID)
 	return &repo.ScanResult{
-		Session:  session,
-		Found:    len(entries),
-		Imported: st.imported,
-		Skipped:  st.skipped,
-		Failed:   st.failed,
-		Cleaned:  cleaned,
+		Session:        session,
+		Found:          len(entries),
+		Imported:       st.imported,
+		Skipped:        st.skipped,
+		Failed:         st.failed,
+		Cleaned:        cleaned,
+		TotalBytes:     st.workBytes,
+		ProcessedBytes: st.doneBytes,
 	}, nil
 }
 
-// needsSync 同时检查文件属性、必要字段和缩略图实体。
-func (s *Service) needsSync(libraryID int64, entry media.FileEntry, force bool) (bool, error) {
+// needsSync 同时检查文件属性、必要字段和缩略图实体（基于内存快照，避免逐文件查询）。
+func (s *Service) needsSync(snap *mediaSnapshot, entry media.FileEntry, force bool) (bool, error) {
 	if force {
 		return true, nil
 	}
-	stored, err := s.Media.GetByPath(libraryID, entry.RelativePath)
-	if err != nil || stored == nil {
-		return stored == nil, err
+	stored, ok := snap.byPath[entry.RelativePath]
+	if !ok {
+		return true, nil
 	}
 	if stored.Kind != string(entry.Kind) || stored.FileSize != entry.Size || !stored.Mtime.Equal(entry.Mtime) {
 		return true, nil
 	}
-	if stored.Sha1 == nil || stored.Format == nil || stored.Width == nil || stored.Height == nil ||
+	if stored.Format == nil || stored.Width == nil || stored.Height == nil ||
 		stored.Phash == nil || stored.ThumbnailPath == nil || *stored.ThumbnailPath == "" {
+		return true, nil
+	}
+	// 图片依赖 SHA1（内容寻址缩略图 + 精确去重）；视频由独立 scan_sha1 任务补齐，
+	// 不作为主扫描完整性要求，否则未补齐 sha1 的视频会被反复重扫。
+	if stored.Kind == string(media.KindImage) && stored.Sha1 == nil {
 		return true, nil
 	}
 	if entry.Kind == media.KindImage && (stored.Dhash == nil || stored.Ahash == nil) {
@@ -548,7 +623,7 @@ func (s *Service) needsSync(libraryID int64, entry media.FileEntry, force bool) 
 	if entry.Kind == media.KindVideo && (stored.DurationMs == nil || stored.Oshash == nil) {
 		return true, nil
 	}
-	_, err = os.Stat(filepath.Join(s.thumbBaseFor(entry.Kind), filepath.FromSlash(*stored.ThumbnailPath)))
+	_, err := os.Stat(filepath.Join(s.thumbBaseFor(entry.Kind), filepath.FromSlash(*stored.ThumbnailPath)))
 	if err == nil {
 		return false, nil
 	}
@@ -649,32 +724,37 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 	st := &scanState{}
 	result := media.Walk(ctx, lib.Path)
 	entries := result.Entries
-	progress("discovering", len(entries), 0, 0, 0, 0, 0, (*int64)(nil))
+	// 统一进度上报：字节统计不含跳过文件
+	report := func(phase string) {
+		st.mu.Lock()
+		total := st.imported + st.skipped + st.failed
+		imported, skipped, failed := st.imported, st.skipped, st.failed
+		workBytes, doneBytes := st.workBytes, st.doneBytes
+		st.mu.Unlock()
+		progress(phase, len(entries), total, imported, skipped, failed, workBytes, doneBytes, 0, (*int64)(nil))
+	}
+	report("discovering")
+	snap, err := s.loadMediaSnapshot(lib.ID)
+	if err != nil {
+		return nil, err
+	}
 
 	pool := worker.NewPool(poolSize)
 	pool.Start(ctx)
 
 	for _, e := range entries {
-		need, err := s.Media.NeedRepair(lib.ID, e.RelativePath, string(e.Kind))
-		if err != nil {
-			slog.Error("完整性判定失败", "path", e.RelativePath, "err", err)
-			st.mu.Lock()
-			st.failed++
-			total := st.imported + st.skipped + st.failed
-			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
-			continue
-		}
-		if !need {
+		if !s.needRepairFromSnapshot(snap, e) {
 			st.mu.Lock()
 			st.skipped++
-			total := st.imported + st.skipped + st.failed
 			st.mu.Unlock()
-			progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+			report("processing")
 			continue
 		}
 
 		entry := e
+		st.mu.Lock()
+		st.workBytes += entry.Size
+		st.mu.Unlock()
 		pool.Submit(&worker.ScanJob{
 			Run: func(jobCtx context.Context) error {
 				m, err := s.collect(jobCtx, lib.ID, sessionID, entry)
@@ -682,25 +762,25 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 					slog.Warn("修补采集失败", "path", entry.AbsPath, "err", err)
 					st.mu.Lock()
 					st.failed++
-					total := st.imported + st.skipped + st.failed
+					st.doneBytes += entry.Size
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+					report("processing")
 					return err
 				}
 				if err := s.Media.Upsert(m); err != nil {
-					slog.Error("修补入库失败", "path", entry.RelativePath, "err", err)
+					slog.Error("入库失败", "path", entry.RelativePath, "err", err)
 					st.mu.Lock()
 					st.failed++
-					total := st.imported + st.skipped + st.failed
+					st.doneBytes += entry.Size
 					st.mu.Unlock()
-					progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+					report("processing")
 					return err
 				}
 				st.mu.Lock()
 				st.imported++
-				total := st.imported + st.skipped + st.failed
+				st.doneBytes += entry.Size
 				st.mu.Unlock()
-				progress("processing", len(entries), total, st.imported, st.skipped, st.failed, 0, (*int64)(nil))
+				report("processing")
 				return nil
 			},
 		})
@@ -715,10 +795,12 @@ func (s *Service) ExecuteRepair(ctx context.Context, lib repo.Library, sessionID
 
 	session, _ := s.Sessions.GetByID(sessionID)
 	return &repo.ScanResult{
-		Session:  session,
-		Found:    len(entries),
-		Imported: st.imported,
-		Skipped:  st.skipped,
-		Failed:   st.failed,
+		Session:        session,
+		Found:          len(entries),
+		Imported:       st.imported,
+		Skipped:        st.skipped,
+		Failed:         st.failed,
+		TotalBytes:     st.workBytes,
+		ProcessedBytes: st.doneBytes,
 	}, nil
 }

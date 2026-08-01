@@ -9,6 +9,7 @@ import (
 	"image/color"
 	_ "image/jpeg"
 	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,15 @@ import (
 
 	_ "golang.org/x/image/bmp"
 )
+
+// maxDirectDecodePixels 直接使用 Go 原生解码的最大像素数。
+// 超过该值（高像素相机照片、拼接全景图等）先经 FFmpeg 限分辨率转码再解码，
+// 避免 processSOS 等解码阶段一次性分配数百 MB 内存导致进程 OOM。
+const maxDirectDecodePixels = 24_000_000
+
+// maxScaledDecodeEdge FFmpeg 限分辨率解码输出的最大边长（像素）。
+// 感知哈希仅需 32×32、缩略图默认 300px，3000px 边长已足够且内存可控。
+const maxScaledDecodeEdge = 3000
 
 // DecodedImage 解码后的图片。
 type DecodedImage struct {
@@ -27,7 +37,7 @@ type DecodedImage struct {
 func DecodeImage(ctx context.Context, path string, decoder DecoderKind) (*DecodedImage, error) {
 	switch decoder {
 	case DecoderGo:
-		decoded, err := decodeGoImage(path)
+		decoded, err := decodeGoImage(ctx, path)
 		if err == nil {
 			return decoded, nil
 		}
@@ -51,12 +61,32 @@ func DecodeImage(ctx context.Context, path string, decoder DecoderKind) (*Decode
 }
 
 // decodeGoImage 使用 Go 标准/扩展库解码图片（jpg/jpeg/jfif/png/bmp）。
-func decodeGoImage(path string) (*DecodedImage, error) {
+// 先读取头部尺寸：超过 maxDirectDecodePixels 的图片改走 FFmpeg 限分辨率解码，
+// 防止超大图片全分辨率解码耗尽内存（32 位进程堆上限约 2GB）。
+func decodeGoImage(ctx context.Context, path string) (*DecodedImage, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("打开图片 %q: %w", path, err)
 	}
 	defer f.Close()
+
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return nil, fmt.Errorf("解码图片 %q: %w", path, err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("重置图片读取位置 %q: %w", path, err)
+	}
+
+	if cfg.Width > 0 && cfg.Height > 0 &&
+		uint64(cfg.Width)*uint64(cfg.Height) > maxDirectDecodePixels {
+		img, format, err := decodeImageWithFFmpegScaled(ctx, path, cfg.Width, cfg.Height)
+		if err != nil {
+			return nil, fmt.Errorf("缩放解码超大图片 %q (%dx%d): %w", path, cfg.Width, cfg.Height, err)
+		}
+		return &DecodedImage{Image: img, Format: format}, nil
+	}
+
 	img, format, err := image.Decode(f)
 	if err != nil {
 		return nil, fmt.Errorf("解码图片 %q: %w", path, err)
@@ -68,6 +98,31 @@ func decodeGoImage(path string) (*DecodedImage, error) {
 // 适用于 HEIC、CR2 等解码器不直接支持的格式。
 // 单文件超时 60 秒；若 ctx 先到期则以 ctx 为准。
 func decodeImageWithFFmpeg(ctx context.Context, srcPath string) (image.Image, string, error) {
+	return decodeImageWithFFmpegFilter(ctx, srcPath, "")
+}
+
+// decodeImageWithFFmpegScaled 通过 FFmpeg 限分辨率转码超大图片（scale 滤镜），
+// 输出最长边不超过 maxScaledDecodeEdge 的临时 PNG 后再解码。
+func decodeImageWithFFmpegScaled(ctx context.Context, srcPath string, srcW, srcH int) (image.Image, string, error) {
+	var tw, th int
+	if srcW >= srcH {
+		tw = maxScaledDecodeEdge
+		th = srcH * maxScaledDecodeEdge / srcW
+	} else {
+		th = maxScaledDecodeEdge
+		tw = srcW * maxScaledDecodeEdge / srcH
+	}
+	if tw < 1 {
+		tw = 1
+	}
+	if th < 1 {
+		th = 1
+	}
+	return decodeImageWithFFmpegFilter(ctx, srcPath, fmt.Sprintf("scale=%d:%d", tw, th))
+}
+
+// decodeImageWithFFmpegFilter 执行 FFmpeg 转码并解码临时 PNG；vf 非空时附加 -vf 滤镜。
+func decodeImageWithFFmpegFilter(ctx context.Context, srcPath, vf string) (image.Image, string, error) {
 	tmpDir, err := os.MkdirTemp("", "memable-decode-")
 	if err != nil {
 		return nil, "", fmt.Errorf("创建临时目录: %w", err)
@@ -80,14 +135,12 @@ func decodeImageWithFFmpeg(ctx context.Context, srcPath string) (image.Image, st
 
 	tmpPNG := filepath.Join(tmpDir, "decoded.png")
 
-	ffCmd := exec.CommandContext(ffCtx,
-		"ffmpeg",
-		"-v", "error",
-		"-y",
-		"-i", srcPath,
-		"-frames:v", "1",
-		tmpPNG,
-	)
+	args := []string{"-v", "error", "-y", "-i", srcPath}
+	if vf != "" {
+		args = append(args, "-vf", vf)
+	}
+	args = append(args, "-frames:v", "1", tmpPNG)
+	ffCmd := exec.CommandContext(ffCtx, "ffmpeg", args...)
 	if out, err := ffCmd.CombinedOutput(); err != nil {
 		return nil, "", fmt.Errorf("FFmpeg 转换 %q: %w\n%s", srcPath, err, string(out))
 	}

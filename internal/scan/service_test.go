@@ -9,12 +9,14 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"memable/internal/config"
 	"memable/internal/db"
+	"memable/internal/media"
 	"memable/internal/repo"
 )
 
@@ -76,6 +78,64 @@ func TestScanLibraryImageIncremental(t *testing.T) {
 	}
 }
 
+func TestScanVideoSkipsSHA1AndIncremental(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg 未安装，跳过视频扫描测试")
+	}
+	dbh := newTestDB(t)
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+
+	dir := t.TempDir()
+	videoPath := filepath.Join(dir, "sample.mp4")
+	out, err := exec.Command("ffmpeg", "-y", "-f", "lavfi",
+		"-i", "testsrc=size=64x48:d=2", "-pix_fmt", "yuv420p", videoPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("ffmpeg 生成测试视频失败: %v\n%s", err, string(out))
+	}
+
+	lib := &repo.Library{Name: "视频库", Path: dir, Kind: "video"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &Service{Sessions: sr, Media: mr, VideoThumbBase: t.TempDir()}
+	stats, err := svc.ScanLibrary(context.Background(), *lib, "video-scan-1", false)
+	if err != nil {
+		t.Fatalf("ScanLibrary: %v", err)
+	}
+	if stats.Found != 1 || stats.Imported != 1 || stats.Skipped != 0 {
+		t.Fatalf("第一次扫描统计错误: %+v", stats)
+	}
+
+	m, err := mr.GetByPath(lib.ID, "sample.mp4")
+	if err != nil || m == nil {
+		t.Fatalf("GetByPath: %+v %v", m, err)
+	}
+	if m.Sha1 != nil {
+		t.Fatalf("主扫描不应生成视频 SHA1: %q", *m.Sha1)
+	}
+	if m.Oshash == nil || m.Phash == nil || m.DurationMs == nil || m.Width == nil || m.Height == nil {
+		t.Fatalf("视频 metadata 缺失: %+v", m)
+	}
+	if m.ThumbnailPath == nil || *m.ThumbnailPath == "" {
+		t.Fatalf("视频封面未生成: %+v", m)
+	}
+	if _, err := os.Stat(filepath.Join(svc.VideoThumbBase, filepath.FromSlash(*m.ThumbnailPath))); err != nil {
+		t.Fatalf("封面文件不存在: %v", err)
+	}
+
+	// 视频无 sha1 时第二次扫描仍应增量跳过（needsSync 不把 sha1 当作视频完整性要求）
+	stats, err = svc.ScanLibrary(context.Background(), *lib, "video-scan-2", false)
+	if err != nil {
+		t.Fatalf("第二次扫描: %v", err)
+	}
+	if stats.Imported != 0 || stats.Skipped != 1 {
+		t.Fatalf("视频增量跳过统计错误: %+v", stats)
+	}
+}
+
 func TestExecuteScanRepairsMissingThumbnailAndSupportsForce(t *testing.T) {
 	dbh := newTestDB(t)
 	lr := repo.NewLibraryRepo(dbh)
@@ -91,7 +151,7 @@ func TestExecuteScanRepairsMissingThumbnailAndSupportsForce(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &Service{Sessions: sr, Media: mr, ImageThumbBase: thumbDir}
-	progress := repo.ProgressFunc(func(string, int, int, int, int, int, float64, *int64) {})
+	progress := repo.ProgressFunc(func(string, int, int, int, int, int, int64, int64, float64, *int64) {})
 
 	result, err := svc.ExecuteScan(context.Background(), *lib, "sync-1", false, false, 1, progress)
 	if err != nil || result.Imported != 1 {
@@ -120,6 +180,124 @@ func TestExecuteScanRepairsMissingThumbnailAndSupportsForce(t *testing.T) {
 	}
 }
 
+// TestExecuteScanProgressBytesExcludeSkipped 验证字节统计只累计实际工作量，跳过文件不计入。
+func TestExecuteScanProgressBytesExcludeSkipped(t *testing.T) {
+	dbh := newTestDB(t)
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+
+	dir := t.TempDir()
+	thumbDir := t.TempDir()
+	writePNG(t, filepath.Join(dir, "a.png"), 10, 7)
+	writePNG(t, filepath.Join(dir, "b.png"), 12, 7)
+	lib := &repo.Library{Name: "字节库", Path: dir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Sessions: sr, Media: mr, ImageThumbBase: thumbDir}
+
+	var lastTotalBytes, lastDoneBytes int64
+	progress := repo.ProgressFunc(func(phase string, total, processed, succeeded, skipped, failed int, totalBytes, processedBytes int64, rate float64, eta *int64) {
+		if phase == "processing" {
+			lastTotalBytes, lastDoneBytes = totalBytes, processedBytes
+		}
+	})
+
+	result, err := svc.ExecuteScan(context.Background(), *lib, "bytes-1", false, false, 2, progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	infoA, err := os.Stat(filepath.Join(dir, "a.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	infoB, err := os.Stat(filepath.Join(dir, "b.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := infoA.Size() + infoB.Size()
+	if result.TotalBytes != want || result.ProcessedBytes != want {
+		t.Fatalf("字节统计错误: total=%d processed=%d want=%d", result.TotalBytes, result.ProcessedBytes, want)
+	}
+	if lastTotalBytes != want || lastDoneBytes != want {
+		t.Fatalf("进度字节错误: total=%d done=%d want=%d", lastTotalBytes, lastDoneBytes, want)
+	}
+
+	// 第二次扫描全部跳过：字节统计应为 0（跳过不计入工作量）
+	result, err = svc.ExecuteScan(context.Background(), *lib, "bytes-2", false, false, 2, progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skipped != 2 || result.TotalBytes != 0 || result.ProcessedBytes != 0 {
+		t.Fatalf("跳过文件不应计入字节: %+v", result)
+	}
+	if lastTotalBytes != 0 || lastDoneBytes != 0 {
+		t.Fatalf("进度字节未随跳过清零: total=%d done=%d", lastTotalBytes, lastDoneBytes)
+	}
+}
+
+// TestMediaSnapshotDecisions 验证内存快照的增量/完整性判定与逐文件查询语义一致。
+func TestMediaSnapshotDecisions(t *testing.T) {
+	dbh := newTestDB(t)
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+
+	dir := t.TempDir()
+	lib := &repo.Library{Name: "快照库", Path: dir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now()
+	ph := "0123456789abcdef"
+	w, h := 10, 10
+	thumb := "ab/key.png"
+	format := "png"
+	if err := mr.Upsert(&repo.Media{
+		LibraryID: lib.ID, Kind: "image", RelativePath: "ok.png",
+		FileSize: 100, Mtime: mt, Format: &format, Width: &w, Height: &h,
+		Phash: &ph, ThumbnailPath: &thumb,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mr.Upsert(&repo.Media{
+		LibraryID: lib.ID, Kind: "image", RelativePath: "broken.png",
+		FileSize: 200, Mtime: mt, Format: &format, Width: &w, Height: &h,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := &Service{Media: mr}
+	snap, err := svc.loadMediaSnapshot(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.byPath) != 2 {
+		t.Fatalf("快照记录数错误: %d", len(snap.byPath))
+	}
+	okEntry := media.FileEntry{RelativePath: "ok.png", Size: 100, Mtime: mt}
+	if svc.needScanFromSnapshot(snap, okEntry) {
+		t.Fatal("属性未变化应跳过")
+	}
+	changed := okEntry
+	changed.Size = 101
+	if !svc.needScanFromSnapshot(snap, changed) {
+		t.Fatal("size 变化应重扫")
+	}
+	if !svc.needScanFromSnapshot(snap, media.FileEntry{RelativePath: "new.png"}) {
+		t.Fatal("新文件应重扫")
+	}
+	if svc.needRepairFromSnapshot(snap, okEntry) {
+		t.Fatal("字段完整应跳过修补")
+	}
+	if !svc.needRepairFromSnapshot(snap, media.FileEntry{RelativePath: "broken.png", Kind: media.KindImage}) {
+		t.Fatal("缺失 phash/缩略图应修补")
+	}
+	if !svc.needRepairFromSnapshot(snap, media.FileEntry{RelativePath: "missing.png", Kind: media.KindImage}) {
+		t.Fatal("无记录应修补")
+	}
+}
+
 func TestExecuteScanCleansMissingMediaAndThumbnail(t *testing.T) {
 	dbh := newTestDB(t)
 	lr := repo.NewLibraryRepo(dbh)
@@ -135,7 +313,7 @@ func TestExecuteScanCleansMissingMediaAndThumbnail(t *testing.T) {
 		t.Fatal(err)
 	}
 	svc := &Service{Sessions: sr, Media: mr, ImageThumbBase: thumbDir}
-	progress := repo.ProgressFunc(func(string, int, int, int, int, int, float64, *int64) {})
+	progress := repo.ProgressFunc(func(string, int, int, int, int, int, int64, int64, float64, *int64) {})
 
 	if _, err := svc.ExecuteScan(context.Background(), *lib, "clean-1", false, false, 1, progress); err != nil {
 		t.Fatal(err)

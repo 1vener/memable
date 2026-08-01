@@ -434,6 +434,40 @@ func (s *Server) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleScanSha1 启动补齐 SHA1 后台任务（主扫描不生成视频 SHA1，需要时单独补齐）。
+func (s *Server) handleScanSha1(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的库 ID")
+		return
+	}
+	lib, err := s.libraries.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+
+	// 检查是否有活动任务
+	if active, _ := s.tasks.HasActiveForLibrary(id); active {
+		writeError(w, 409, "该库已有排队中或运行中的任务")
+		return
+	}
+
+	dedupeKey := fmt.Sprintf("scan_sha1:%d", lib.ID)
+	task, err := s.runner.Enqueue(repo.TaskKindScanSha1, "补齐 SHA1: "+lib.Name, &dedupeKey, &lib.ID, nil)
+	if err != nil {
+		writeError(w, 409, "相同任务已在等待或执行")
+		return
+	}
+
+	pos, _ := s.tasks.QueuePosition(task.ID)
+	writeJSON(w, 202, map[string]any{
+		"task_id":        task.ID,
+		"status":         task.Status,
+		"queue_position": pos,
+	})
+}
+
 type scanTempReq struct {
 	Path string `json:"path"`
 }
@@ -818,6 +852,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp["ffprobe"] = s.ffprobeCaps
 	}
 	writeJSON(w, 200, resp)
+}
+
+// handleSettings 返回服务端存储位置（设置页展示用）。
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	imageDir, _ := filepath.Abs(s.cfg.ImageThumbDir())
+	videoDir, _ := filepath.Abs(s.cfg.VideoThumbDir())
+	logFile := ""
+	if strings.TrimSpace(s.cfg.Log.File) != "" {
+		logFile, _ = filepath.Abs(s.cfg.Log.File)
+	}
+	writeJSON(w, 200, map[string]any{
+		"thumbnail_image_dir": imageDir, // 图片缩略图保存目录
+		"thumbnail_video_dir": videoDir, // 视频封面保存目录
+		"log_file":            logFile,  // 日志文件路径；空=输出到控制台
+	})
 }
 
 // ===== 任务管理 =====

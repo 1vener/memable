@@ -20,6 +20,17 @@ func ThumbnailKey(kind, sha1 string, maxEdge int) (storageKey string) {
 	return hex.EncodeToString(h[:])
 }
 
+// VideoThumbnailKey 生成视频封面缩略图内容寻址存储键。
+// 主扫描不再计算视频 SHA1，因此改用 oshash + 文件大小 + 时长派生 key：
+// 三者均来自元数据（oshash 只读头尾 64KB、时长来自 ffprobe、大小来自目录遍历），
+// 无需全文件读取；之后即使补齐 SHA1 也不会改变已生成封面的 key。
+func VideoThumbnailKey(oshash string, fileSize, durationMs int64, maxEdge int) string {
+	recipe := fmt.Sprintf("v1-%d", maxEdge)
+	input := fmt.Sprintf("video:%s:%d:%d:%s", oshash, fileSize, durationMs, recipe)
+	h := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(h[:])
+}
+
 // ThumbnailStoragePath 返回缩略图相对"该类型缩略图根目录"的存储路径。
 // 格式：{storageKey[:2]}/{storageKey}.png
 // 说明：路径不含类型前缀，类型由根目录区分（image/video 各自根目录）；
