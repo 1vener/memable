@@ -103,6 +103,8 @@ func reasonLabel(reason string) string {
 		return "pHash 视觉相似"
 	case "sprite_phash_similar":
 		return "sprite pHash 视觉相似"
+	case "oshash_short_exact":
+		return "短视频 OSHash 相同"
 	case "oshash_coarse":
 		return "oshash 粗筛命中"
 	default:

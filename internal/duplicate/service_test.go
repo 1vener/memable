@@ -91,7 +91,7 @@ func TestVideoSHA1ExactGrouping(t *testing.T) {
 		t.Fatalf("补齐 sha1 后应生成 sha1_exact 分组: %+v", groups)
 	}
 
-	// 清空 sha1 后不再生成 sha1_exact 分组（pHash 差异大也不会进入相似分组）
+	// 清空 sha1 后仍按短视频 OSHash 相同生成相似组；pHash 差异不参与判断。
 	if _, err := dbh.Exec(`UPDATE media SET sha1 = NULL`); err != nil {
 		t.Fatal(err)
 	}
@@ -99,8 +99,8 @@ func TestVideoSHA1ExactGrouping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(groups2) != 0 {
-		t.Fatalf("无 sha1 时不应生成分组: %+v", groups2)
+	if len(groups2) != 1 || groups2[0].Reason != "oshash_short_exact" || len(groups2[0].Media) != 2 {
+		t.Fatalf("无 sha1 时应按相同 oshash 生成短视频相似组: %+v", groups2)
 	}
 }
 

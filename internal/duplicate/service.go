@@ -75,6 +75,8 @@ func reasonToGroupType(reason string) string {
 		return "image_similar"
 	case "sprite_phash_similar":
 		return "video_similar"
+	case "oshash_short_exact":
+		return "video_similar"
 	default:
 		return "sha1"
 	}

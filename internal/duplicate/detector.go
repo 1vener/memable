@@ -16,7 +16,7 @@ import (
 // Group 重复/相似分组。
 type Group struct {
 	Kind   string       // image/video
-	Reason string       // sha1_exact / phash_similar / oshash_coarse / sprite_phash_similar
+	Reason string       // sha1_exact / phash_similar / oshash_short_exact / oshash_coarse / sprite_phash_similar
 	Media  []repo.Media // 组内媒体
 }
 
@@ -136,31 +136,125 @@ func (d *Detector) detectImages(images []repo.Media, opts Options, maxDist int) 
 	return groups
 }
 
-// detectVideos 视频：SHA1 精确 + oshash 粗筛 + sprite pHash/时长差。
+const shortVideoDurationMs int64 = 4000
+
+// detectVideos 视频：短视频按 SHA1/OSHash 关系检测，普通视频按 sprite pHash/时长差检测。
 func (d *Detector) detectVideos(videos []repo.Media, opts Options) []Group {
-	var groups []Group
-	if opts.IncludeSHA1 {
-		for _, items := range groupBySha1(videos) {
-			if len(items) >= 2 {
-				groups = append(groups, Group{Kind: "video", Reason: "sha1_exact", Media: items})
-			}
-		}
-	}
-	represented := map[int64]bool{}
-	for _, g := range groups {
-		for _, m := range g.Media {
-			represented[m.ID] = true
-		}
-	}
+	groups, represented := d.detectVideoHashGroups(videos, opts.IncludeSHA1)
+
+	// 短视频不参与 sprite pHash：即使指纹相近，也避免短时长视频抽帧信息不足造成误报。
 	candidates := make([]repo.Media, 0, len(videos))
 	for _, m := range videos {
-		if !represented[m.ID] && m.Phash != nil {
+		if represented[m.ID] || isShortVideo(m) {
+			continue
+		}
+		if m.Phash != nil {
 			candidates = append(candidates, m)
 		}
 	}
 	groups = append(groups, d.detectVideoPHashSimilarDist(
 		candidates, opts.VideoPhashDistance, opts.VideoDurationDiffMs, opts.OshashFilter)...)
 	return groups
+}
+
+// detectVideoHashGroups 合并视频的 hash 关系。
+// SHA1 关系适用于全部视频；OSHash 关系仅适用于短视频。
+// 两种关系使用 OR 语义：任一 hash 相同即可连边，并查集负责合并传递关系。
+func (d *Detector) detectVideoHashGroups(videos []repo.Media, includeSHA1 bool) ([]Group, map[int64]bool) {
+	uf := newUnionFind(len(videos))
+	indexByID := make(map[int64]int, len(videos))
+	sha1Member := make([]bool, len(videos))
+	for i, m := range videos {
+		indexByID[m.ID] = i
+	}
+
+	if includeSHA1 {
+		for _, items := range groupBySha1(videos) {
+			if len(items) < 2 {
+				continue
+			}
+			first, ok := indexByID[items[0].ID]
+			if !ok {
+				continue
+			}
+			for _, m := range items[1:] {
+				if idx, ok := indexByID[m.ID]; ok {
+					sha1Member[first] = true
+					sha1Member[idx] = true
+					uf.union(first, idx)
+				}
+			}
+		}
+	}
+
+	shortVideos := make([]repo.Media, 0, len(videos))
+	for _, m := range videos {
+		if isShortVideo(m) {
+			shortVideos = append(shortVideos, m)
+		}
+	}
+	oshashGroups := groupByOshash(shortVideos)
+	for _, items := range oshashGroups {
+		if len(items) < 2 {
+			continue
+		}
+		first, ok := indexByID[items[0].ID]
+		if !ok {
+			continue
+		}
+		for _, m := range items[1:] {
+			if idx, ok := indexByID[m.ID]; ok {
+				uf.union(first, idx)
+			}
+		}
+	}
+
+	components := make(map[int][]int)
+	for i := range videos {
+		root := uf.find(i)
+		components[root] = append(components[root], i)
+	}
+
+	// 记录各连通分量的关系来源；若同时存在 SHA1 关系，优先保留 SHA1 精确标签。
+	oshashComponent := make(map[int]bool)
+	sha1Component := make(map[int]bool)
+	for _, items := range oshashGroups {
+		if len(items) < 2 {
+			continue
+		}
+		if idx, ok := indexByID[items[0].ID]; ok {
+			oshashComponent[uf.find(idx)] = true
+		}
+	}
+	for idx, related := range sha1Member {
+		if related {
+			sha1Component[uf.find(idx)] = true
+		}
+	}
+
+	groups := make([]Group, 0, len(components))
+	represented := make(map[int64]bool)
+	for root, indices := range components {
+		if len(indices) < 2 {
+			continue
+		}
+		reason := "sha1_exact"
+		if !sha1Component[root] && oshashComponent[root] {
+			reason = "oshash_short_exact"
+		}
+		mediaList := make([]repo.Media, 0, len(indices))
+		for _, idx := range indices {
+			mediaList = append(mediaList, videos[idx])
+			represented[videos[idx].ID] = true
+		}
+		groups = append(groups, Group{Kind: "video", Reason: reason, Media: mediaList})
+	}
+	return groups, represented
+}
+
+// isShortVideo 判断是否为短视频；时长缺失时返回 false，沿用普通视频检测路径。
+func isShortVideo(m repo.Media) bool {
+	return m.DurationMs != nil && *m.DurationMs >= 0 && *m.DurationMs < shortVideoDurationMs
 }
 
 // DetectImageDuplicates 检测图片重复：SHA1 精确 + pHash/dHash/aHash 相似。
@@ -263,7 +357,7 @@ func (d *Detector) detectImagePHashSimilarDist(items []repo.Media, maxDist int) 
 	return groups
 }
 
-// DetectVideoDuplicates 检测视频重复：SHA1 精确 → oshash 粗筛 → sprite pHash + 时长差。
+// DetectVideoDuplicates 检测视频重复：短视频按 SHA1/OSHash，普通视频按 sprite pHash + 时长差。
 func (d *Detector) DetectVideoDuplicates() ([]Group, error) {
 	videos, err := d.Media.ListByKind("video")
 	if err != nil {
@@ -271,37 +365,23 @@ func (d *Detector) DetectVideoDuplicates() ([]Group, error) {
 	}
 	slog.Info("视频重复检测开始", "count", len(videos))
 
-	// 第一层：SHA1 精确重复
-	sha1Groups := groupBySha1(videos)
-	var groups []Group
-	for _, items := range sha1Groups {
-		if len(items) >= 2 {
-			groups = append(groups, Group{
-				Kind:   "video",
-				Reason: "sha1_exact",
-				Media:  items,
-			})
+	maxDist := 12
+	maxDurationDiff := int64(3000)
+	if d.Config != nil {
+		if d.Config.Similarity.VideoPHashDistance > 0 {
+			maxDist = d.Config.Similarity.VideoPHashDistance
+		}
+		if d.Config.Similarity.VideoDurationDiffMs > 0 {
+			maxDurationDiff = d.Config.Similarity.VideoDurationDiffMs
 		}
 	}
-
-	// 排除已分组的
-	represented := make(map[int64]bool)
-	for _, g := range groups {
-		for _, m := range g.Media {
-			represented[m.ID] = true
-		}
-	}
-
-	var candidates []repo.Media
-	for _, m := range videos {
-		if !represented[m.ID] && m.Phash != nil {
-			candidates = append(candidates, m)
-		}
-	}
-
-	// 第二层 + 第三层：sprite pHash 距离 + 时长差
-	phashGroups := d.detectVideoPHashSimilar(candidates)
-	groups = append(groups, phashGroups...)
+	groups := d.detectVideos(videos, Options{
+		MediaType:           "video",
+		IncludeSHA1:         true,
+		VideoPhashDistance:  maxDist,
+		VideoDurationDiffMs: maxDurationDiff,
+		OshashFilter:        true,
+	})
 
 	slog.Info("视频重复检测完成", "groups", len(groups))
 	return groups, nil
@@ -432,6 +512,18 @@ func groupBySha1(items []repo.Media) map[string][]repo.Media {
 			continue
 		}
 		groups[*m.Sha1] = append(groups[*m.Sha1], m)
+	}
+	return groups
+}
+
+// groupByOshash 按非空 OSHash 分组。
+func groupByOshash(items []repo.Media) map[string][]repo.Media {
+	groups := make(map[string][]repo.Media)
+	for _, m := range items {
+		if m.Oshash == nil || strings.TrimSpace(*m.Oshash) == "" {
+			continue
+		}
+		groups[*m.Oshash] = append(groups[*m.Oshash], m)
 	}
 	return groups
 }

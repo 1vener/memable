@@ -15,10 +15,10 @@
 - 数据流：Flutter → REST（127.0.0.1:8080）→ `internal/api` → `repo`/服务层 → SQLite；媒体处理走 `internal/media`（ffprobe/ffmpeg 解码、SHA1、pHash/dHash/aHash、OSHASH、sprite pHash、封面、300px 缩略图）。
 - 图片解码：Go 原生解码，超过 `maxDirectDecodePixels`（2400 万像素）改走 FFmpeg 限分辨率转码（最长边 3000px），防超大图解码 OOM。
 - 视频 SHA1：主扫描/修复扫描**不生成**视频 SHA1；独立 `scan_sha1` 后台任务按收藏库补齐 `sha1 IS NULL` 的记录（不强制重算）。视频缩略图内容寻址 key 用 `oshash+file_size+duration_ms`（`VideoThumbnailKey`），图片仍用 SHA1。
-- sprite pHash：5%~95% 区间分 5 段，每段 `-ss` 快速定位只解码 1 秒窗口抽 5 帧（`fps=5,scale=160:-1,tile=5x1`），Go 拼 5×5 后算 pHash；失败依次回退单条 `trim+fps+tile`、逐帧 25 次。封面由 sprite 中帧向两侧选非黑屏/纯色帧（`ComputeVideoSpritePHashAndCover`）。
+- sprite pHash：5%~95% 区间分 5 段，每段 `-ss` 快速定位只解码 1 秒窗口抽 5 帧（`fps=5,scale=160:-1,tile=5x1`），Go 拼 5×5 后算 pHash；失败依次回退单条 `trim+fps+tile`、逐帧 25 次。封面由 sprite 中帧向两侧选非黑屏/纯色帧（`ComputeVideoSpritePHashAndCover`）。视频重复检测中，时长 `<4000ms` 的短视频不比较 sprite pHash，只按 SHA1 或 OSHash 相同合并；`>=4000ms` 的普通视频继续使用 sprite pHash + 时长差。
 - 数据库：DSN 一律用 `_pragma` 形式设置 `journal_mode(WAL)`、`foreign_keys(1)`、`busy_timeout`、`synchronous(NORMAL)`、`cache_size`、`mmap_size`；**modernc 驱动只认 `_pragma`，裸参数（如 `_journal_mode=WAL`）会被静默忽略**。媒体入库为单条 `Upsert`（`INSERT ... RETURNING id`，无批量写入）。
 - 扫描判定与进度：增量/完整性判定用内存快照（`mediaSnapshot`，扫描前一次加载全库记录），逐文件不再查库；`repo.ProgressFunc` 带 `totalBytes/processedBytes`，ETA 按字节吞吐计算且排除跳过文件，速度显示为字节/秒。
-- 重复报告：三张表 `duplicate_reports/groups/members`；生成任务 kind=`report_duplicate`，单事务替换旧报告；删除类变更即时级联并清理成员数 <2 的组；新增/重新处理置 `stale=1`。**任务双队列**：报告类任务（`report_image`/`report_video`/`report_duplicate`）在独立报告队列串行执行（`TaskRepo.DequeueNextReport`/`reportKindsCSV`，`QueuePosition` 按所属队列计数），与主队列（扫描等）互不阻塞、可并发运行。
+- 重复报告：三张表 `duplicate_reports/groups/members`；生成任务 kind=`report_duplicate`，单事务替换旧报告；删除类变更即时级联并清理成员数 <2 的组；新增/重新处理置 `stale=1`。视频短时长规则：`duration_ms < 4000` 时 SHA1 或 OSHash 任一相同即合并，跳过 sprite pHash；普通视频沿用 pHash/时长差。**任务双队列**：报告类任务（`report_image`/`report_video`/`report_duplicate`）在独立报告队列串行执行（`TaskRepo.DequeueNextReport`/`reportKindsCSV`，`QueuePosition` 按所属队列计数），与主队列（扫描等）互不阻塞、可并发运行。
 - 主要 API：`/api/reports/duplicate`（生成/摘要/分组分页(支持 `directory` 过滤)/目录树/默认值/clear）、`POST /api/reports/duplicate/exclude`（排除重复：从当前报告移除指定媒体，仅当前报告生效，重新生成后重新参与检测）、`/api/media/delete`、`POST /api/libraries/{id}/scan-sha1`（补齐 SHA1 任务）、`GET /api/settings`（缩略图/日志保存位置）、`/api/tools/file-stats[/{id}/diff[/export]]`（文件统计与目录差异，xlsx 由 `internal/api/xlsx.go` 用 Go 标准库 archive/zip 手写，无第三方依赖）。
 - 删除安全：源文件默认移入系统回收站（`internal/recycle`，Windows 用 PowerShell），`delete.permanent: true` 可永久删除；目录删除为同步接口；缩略图为生成物直接删除。
 
@@ -39,7 +39,7 @@
 
 - 代码注释使用中文；行为/需求变更同步更新 `需求文档.md`。
 - 缩略图路径：`media.thumbnail_path` 只存相对"该类型缩略图根目录"的内容寻址路径（`{key[:2]}/{key}.png`，不含类型前缀）；根目录默认系统缓存（Windows `%LOCALAPPDATA%`、macOS `~/Library/Caches`、Linux `$XDG_CACHE_HOME` 下 `memable/thumbnails/{image,video}`），`config.yaml` 的 `thumbnail.image_dir/video_dir` 可覆盖；静态访问 `/api/thumbnails/{kind}/{rel}`，整体移动缩略图目录只需改配置无需改库。
-- 检测阈值：图片相似度默认由 `similarity.image_phash_distance` 换算百分比（10→84%）；视频 pHash 距离/时长差取配置；oshash 仅作候选提示，**不得作为硬过滤**（否则视觉相似但 oshash 不同的视频会漏检）。
+- 检测阈值：图片相似度默认由 `similarity.image_phash_distance` 换算百分比（10→84%）；普通视频 pHash 距离/时长差取配置；普通视频的 oshash 仅作候选提示，**不得作为硬过滤**（否则视觉相似但 oshash 不同的视频会漏检）；短视频（`duration_ms < 4000`）是例外，按 SHA1 或 OSHash 相同直接合并且不比较 sprite pHash。
 - 视频 SHA1 语义：主扫描不生成视频 SHA1；`needsSync` 对视频不要求 sha1（否则未补齐的视频会被反复重扫）；`scan_sha1` 任务只补 `sha1 IS NULL` 的记录；补齐后视频可参与 `sha1_exact` 精确分组；主扫描重新处理视频时会清空旧 sha1。
 - JSON 字段一律 snake_case（repo/服务层结构体必须写 json tag；曾因缺 tag 导致客户端解析失败）。
 - 进度回调 `repo.ProgressFunc` 签名含字节参数（totalBytes/processedBytes）；修改签名需同步 runner 的 EWMA/ETA 计算、scan 服务上报与相关测试。
