@@ -117,6 +117,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/reports/duplicate/tree", s.handleDuplicateReportTree)
 	mux.HandleFunc("GET /api/reports/duplicate/defaults", s.handleGetDuplicateReportDefaults)
 	mux.HandleFunc("POST /api/reports/duplicate/clear", s.handleClearDuplicateReport)
+	mux.HandleFunc("POST /api/reports/duplicate/exclude", s.handleExcludeDuplicateMedia)
 
 	// 缩略图静态服务：/api/thumbnails/{kind}/{rel}，kind ∈ image/video
 	mux.HandleFunc("GET /api/thumbnails/{kind}/", s.handleThumbnail)

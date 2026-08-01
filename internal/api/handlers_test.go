@@ -14,6 +14,7 @@ import (
 
 	"memable/internal/config"
 	"memable/internal/db"
+	"memable/internal/duplicate"
 	"memable/internal/repo"
 )
 
@@ -122,6 +123,24 @@ func TestDeleteLibraryRemovesRelatedDataAndUnreferencedThumbnails(t *testing.T) 
 
 func formatInt64(value int64) string {
 	return fmt.Sprintf("%d", value)
+}
+
+// TestExplorerSelectCmdArgument 验证 Windows 打开文件路径时 /select, 与路径
+// 必须是同一个参数（否则资源管理器不会选中文件），路径含空格时也能保持单参数。
+func TestExplorerSelectCmdArgument(t *testing.T) {
+	for _, path := range []string{
+		`C:\Pictures\photo.jpg`,
+		`C:\Pictures\my photo 01.jpg`,
+	} {
+		cmd := explorerSelectCmd(path)
+		if len(cmd.Args) != 2 {
+			t.Fatalf("应只有 2 个参数（explorer + 单参数 /select,path），实际 %v", cmd.Args)
+		}
+		want := "/select," + path
+		if cmd.Args[1] != want {
+			t.Fatalf("第二个参数应为 %q，实际 %q", want, cmd.Args[1])
+		}
+	}
 }
 
 func TestOpenMediaFileValid(t *testing.T) {
@@ -259,4 +278,72 @@ func TestOpenMediaDirectoryAction(t *testing.T) {
 
 func body(s string) *strings.Reader {
 	return strings.NewReader(s)
+}
+
+// TestExcludeDuplicateMedia 验证 POST /api/reports/duplicate/exclude：
+// 从当前报告移除指定媒体（幂等），无效 media_id 返回 400。
+func TestExcludeDuplicateMedia(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+	dup := duplicate.NewService(repo.NewDuplicateRepo(dbh), mr, lr, cfg, "", "")
+
+	lib := &repo.Library{Name: "库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	sha := "cccccccccccccccccccccccccccccccccccccccc"
+	mt := time.Now().UTC()
+	m1 := &repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: "a.png", FileSize: 4, Mtime: mt, Sha1: &sha}
+	m2 := &repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: "b.png", FileSize: 4, Mtime: mt, Sha1: &sha}
+	if err := mr.Upsert(m1); err != nil {
+		t.Fatal(err)
+	}
+	if err := mr.Upsert(m2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dup.Generate(duplicate.Options{Scope: "all", MediaType: "image", IncludeSHA1: true}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", dup)
+
+	// 排除报告中成员 a
+	req := httptest.NewRequest(http.MethodPost, "/api/reports/duplicate/exclude",
+		body(`{"media_id":`+formatInt64(m1.ID)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("排除失败: code=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"removed_members":1`) {
+		t.Fatalf("应返回 removed_members=1: %s", resp.Body.String())
+	}
+	// 幂等：再次排除返回 removed_members=0
+	req2 := httptest.NewRequest(http.MethodPost, "/api/reports/duplicate/exclude",
+		body(`{"media_id":`+formatInt64(m1.ID)+`}`))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2 := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp2, req2)
+	if resp2.Code != http.StatusOK || !strings.Contains(resp2.Body.String(), `"removed_members":0`) {
+		t.Fatalf("重复排除应幂等: code=%d body=%s", resp2.Code, resp2.Body.String())
+	}
+	// 非法 media_id 返回 400
+	req3 := httptest.NewRequest(http.MethodPost, "/api/reports/duplicate/exclude", body(`{"media_id":0}`))
+	req3.Header.Set("Content-Type", "application/json")
+	resp3 := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp3, req3)
+	if resp3.Code != http.StatusBadRequest {
+		t.Fatalf("media_id=0 应返回 400: code=%d", resp3.Code)
+	}
 }

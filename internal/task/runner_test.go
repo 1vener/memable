@@ -47,6 +47,74 @@ func TestEnqueueWakesRunnerWithoutStoppingIt(t *testing.T) {
 	waitTaskTerminal(t, tasks, second.ID)
 }
 
+// TestReportQueueRunsWhileMainQueueBlocked 验证报告任务在独立队列中执行：
+// 主队列扫描任务运行期间，报告任务可立即开始并完成，互不阻塞。
+func TestReportQueueRunsWhileMainQueueBlocked(t *testing.T) {
+	dbh, err := db.Open(&config.Config{Database: config.DatabaseConfig{Path: ":memory:"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := repo.NewTaskRepo(dbh)
+	lr := repo.NewLibraryRepo(dbh)
+	lib := &repo.Library{Name: "并发库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+
+	// 扫描执行器阻塞在 channel 上，模拟长时间运行的扫描任务
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	executor := stubScanExecutor{call: func(ctx context.Context, lib repo.Library, sessionID string, temporary, force bool, poolSize int, progress repo.ProgressFunc) (*repo.ScanResult, error) {
+		close(entered)
+		<-release
+		return &repo.ScanResult{Session: &repo.ScanSession{ID: "s-blocked"}, Found: 0}, nil
+	}}
+
+	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, executor, RunnerConfig{PoolSize: 2}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner.Start(ctx)
+	defer runner.Stop()
+
+	// 主队列扫描任务入队并进入运行态（阻塞中）
+	scan, err := runner.Enqueue(repo.TaskKindScan, "阻塞扫描", nil, &lib.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("扫描任务未进入执行态")
+	}
+
+	// 报告任务应绕过扫描，直接在报告队列中执行并完成
+	rep, err := runner.Enqueue(repo.TaskKindReportImage, "图片重复统计", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTaskTerminal(t, tasks, rep.ID)
+	done, err := tasks.GetByID(rep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != repo.TaskStatusCompleted {
+		t.Fatalf("报告任务应在扫描运行期间完成: %+v", done)
+	}
+	// 主队列扫描仍处于运行中，未被报告任务打断
+	if s, _ := tasks.GetByID(scan.ID); s.Status != repo.TaskStatusRunning {
+		t.Fatalf("扫描任务不应在报告期间结束: %+v", s)
+	}
+
+	// 释放扫描，主队列继续消费
+	close(release)
+	waitTaskTerminal(t, tasks, scan.ID)
+}
+
 func waitTaskTerminal(t *testing.T, tasks *repo.TaskRepo, id string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -158,7 +226,9 @@ func (s stubScanExecutor) ExecuteScan(ctx context.Context, lib repo.Library, ses
 	return s.call(ctx, lib, sessionID, temporary, force, poolSize, progress)
 }
 
-// TestScanTaskETAUsesWorkBytesAndExcludesSkipped 验证 ETA 按字节口径计算且跳过文件不计入。
+// TestScanTaskETAUsesWorkBytesAndExcludesSkipped 验证 ETA 双口径估算：
+// 字节口径给出 1s（剩余 50000 字节 / 50000 B/s），文件口径给出约 4.8s
+// （剩余 80 文件按跳过比例折算 24 个工作文件 / 5 文件每秒），ETA 取较大值。
 func TestScanTaskETAUsesWorkBytesAndExcludesSkipped(t *testing.T) {
 	dbh, err := db.Open(&config.Config{Database: config.DatabaseConfig{Path: ":memory:"}})
 	if err != nil {
@@ -203,7 +273,9 @@ func TestScanTaskETAUsesWorkBytesAndExcludesSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 运行期间轮询：进度闭包按字节计算速率与 ETA（剩余 50000 字节 / 50000 B/s ≈ 1s）
+	// 运行期间轮询：字节速率 50000 B/s、文件速率 5 文件/s。
+	// 字节口径 ETA≈1s，文件口径（80 剩余文件 × 30% 折算 = 24 个工作文件 / 5 ≈ 4.8s），
+	// ETA 取较大值，应 >= 4s。
 	var rate float64
 	var eta int64
 	deadline := time.Now().Add(5 * time.Second)
@@ -222,8 +294,8 @@ func TestScanTaskETAUsesWorkBytesAndExcludesSkipped(t *testing.T) {
 	if rate <= 0 {
 		t.Fatalf("应按字节计算速率: %f", rate)
 	}
-	if eta <= 0 {
-		t.Fatalf("应按剩余字节计算 ETA: %d", eta)
+	if eta < 4 {
+		t.Fatalf("ETA 应取文件口径的较大值（约 4s），实际 %d", eta)
 	}
 
 	waitTaskTerminal(t, tasks, task.ID)
@@ -238,4 +310,68 @@ func TestScanTaskETAUsesWorkBytesAndExcludesSkipped(t *testing.T) {
 	if stored.ResultJSON == nil || !strings.Contains(*stored.ResultJSON, `"processed_bytes":50000`) {
 		t.Fatalf("结果应包含已处理字节: %s", *stored.ResultJSON)
 	}
+}
+
+// TestScanTaskETAFileCountFallback 验证无字节数据时 ETA 退化为文件数口径：
+// 剩余文件数按已见跳过比例折算后除以文件速率。
+func TestScanTaskETAFileCountFallback(t *testing.T) {
+	dbh, err := db.Open(&config.Config{Database: config.DatabaseConfig{Path: ":memory:"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := repo.NewTaskRepo(dbh)
+	lr := repo.NewLibraryRepo(dbh)
+	lib := &repo.Library{Name: "ETA库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	executor := stubScanExecutor{call: func(ctx context.Context, lib repo.Library, sessionID string, temporary, force bool, poolSize int, progress repo.ProgressFunc) (*repo.ScanResult, error) {
+		// 全程无字节数据（totalBytes/processedBytes 均为 0），只上报文件数。
+		// 20 个已决定文件中 14 个跳过 → 文件速率 5 个/s（跳过不计入）。
+		progress("processing", 100, 10, 1, 9, 0, 0, 0, 0, (*int64)(nil))
+		time.Sleep(time.Second)
+		progress("processing", 100, 20, 6, 14, 0, 0, 0, 0, (*int64)(nil))
+		time.Sleep(500 * time.Millisecond)
+		return &repo.ScanResult{
+			Session:  &repo.ScanSession{ID: "s-eta-files"},
+			Found:    100,
+			Imported: 6,
+			Skipped:  14,
+		}, nil
+	}}
+	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, executor, RunnerConfig{PoolSize: 2}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner.Start(ctx)
+	defer runner.Stop()
+
+	task, err := runner.Enqueue(repo.TaskKindScan, "同步扫描", nil, &lib.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 文件速率 5/s；剩余 80 文件按跳过比例 14/20=70% 折算为 24 个工作文件 → ETA≈4.8s
+	var eta int64
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		running, err := tasks.GetByID(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if running.EtaSeconds != nil && *running.EtaSeconds > 0 {
+			eta = *running.EtaSeconds
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if eta < 4 {
+		t.Fatalf("无字节数据时 ETA 应按文件口径计算（约 4s），实际 %d", eta)
+	}
+
+	waitTaskTerminal(t, tasks, task.ID)
 }

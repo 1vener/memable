@@ -1,4 +1,5 @@
-// runner.go：任务调度器，单消费者串行执行所有后台任务。
+// runner.go：任务调度器。主队列串行执行扫描等普通任务，
+// 报告队列单独串行执行生成报告类任务，两条队列互不阻塞。
 // 代码注释使用中文。
 package task
 
@@ -21,7 +22,8 @@ import (
 	"memable/internal/worker"
 )
 
-// Runner 任务调度器，串行执行 queued 任务。
+// Runner 任务调度器。维护两条独立队列：
+// 主队列（扫描等）与报告队列（生成报告类任务），各自串行消费、互不阻塞。
 type Runner struct {
 	Tasks       *repo.TaskRepo
 	Sessions    *repo.SessionRepo
@@ -33,7 +35,8 @@ type Runner struct {
 	cancelFuncs sync.Map // taskID -> context.CancelFunc
 	running     bool
 	mu          sync.Mutex
-	wakeCh      chan struct{}
+	wakeCh      chan struct{} // 主队列唤醒信号
+	reportWake  chan struct{} // 报告队列唤醒信号
 	stopCh      chan struct{}
 }
 
@@ -57,19 +60,20 @@ func NewRunner(tasks *repo.TaskRepo, sessions *repo.SessionRepo, media *repo.Med
 		cfg.PoolSize = 4
 	}
 	return &Runner{
-		Tasks:     tasks,
-		Sessions:  sessions,
-		Media:     media,
-		Libraries: libraries,
-		ScanSvc:   scanSvc,
-		Dup:       dup,
-		Config:    cfg,
-		wakeCh:    make(chan struct{}, 1),
-		stopCh:    make(chan struct{}),
+		Tasks:      tasks,
+		Sessions:   sessions,
+		Media:      media,
+		Libraries:  libraries,
+		ScanSvc:    scanSvc,
+		Dup:        dup,
+		Config:     cfg,
+		wakeCh:     make(chan struct{}, 1),
+		reportWake: make(chan struct{}, 1),
+		stopCh:     make(chan struct{}),
 	}
 }
 
-// Start 启动调度器，重置遗留任务后开始消费队列。
+// Start 启动调度器，重置遗留任务后开始消费两条队列。
 func (r *Runner) Start(ctx context.Context) {
 	r.mu.Lock()
 	if r.running {
@@ -87,6 +91,7 @@ func (r *Runner) Start(ctx context.Context) {
 	}
 
 	go r.loop(ctx)
+	go r.reportLoop(ctx)
 	slog.Info("任务调度器已启动")
 }
 
@@ -158,16 +163,30 @@ func (r *Runner) Enqueue(kind repo.TaskKind, title string, dedupeKey *string, li
 		return nil, err
 	}
 
-	// 尝试立即唤醒调度器（非阻塞）。唤醒和停止必须使用不同通道。
+	// 尝试立即唤醒所属队列的调度器（非阻塞）。唤醒和停止必须使用不同通道。
+	wake := r.wakeCh
+	if repo.IsReportKind(kind) {
+		wake = r.reportWake
+	}
 	select {
-	case r.wakeCh <- struct{}{}:
+	case wake <- struct{}{}:
 	default:
 	}
 	return task, nil
 }
 
-// loop 主循环：串行消费队列。
+// loop 主循环：串行消费主队列（报告类任务除外）。
 func (r *Runner) loop(ctx context.Context) {
+	r.consume(ctx, r.wakeCh, r.Tasks.DequeueNext)
+}
+
+// reportLoop 报告队列循环：串行消费报告类任务，与其他任务互不影响。
+func (r *Runner) reportLoop(ctx context.Context) {
+	r.consume(ctx, r.reportWake, r.Tasks.DequeueNextReport)
+}
+
+// consume 消费指定队列：循环取出最早的 queued 任务并执行，队列为空时等待唤醒或定时轮询。
+func (r *Runner) consume(ctx context.Context, wakeCh chan struct{}, dequeue func() (*repo.BackgroundTask, error)) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -180,7 +199,7 @@ func (r *Runner) loop(ctx context.Context) {
 		default:
 		}
 
-		task, err := r.Tasks.DequeueNext()
+		task, err := dequeue()
 		if err != nil {
 			slog.Error("取出任务失败", "err", err)
 			time.Sleep(time.Second)
@@ -193,7 +212,7 @@ func (r *Runner) loop(ctx context.Context) {
 				return
 			case <-r.stopCh:
 				return
-			case <-r.wakeCh:
+			case <-wakeCh:
 				continue
 			case <-ticker.C:
 				continue
@@ -212,67 +231,83 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 
 	slog.Info("开始执行任务", "task_id", task.ID, "kind", task.Kind, "title", task.Title)
 
-	// EWMA 吞吐计算 + 节流写库（最多 500ms 一次）。
-	// 吞吐优先按“实际工作字节数”计算（跳过文件不计入，避免速率虚高）；
-	// 无字节数据时退化为文件数口径，同样排除跳过文件。
+	// 双口径吞吐估算 + 节流写库（最多 500ms 一次）。
+	// 字节口径与文件口径均按“实际工作”计算（跳过文件不计入速率，避免虚高）：
+	//   - 字节速率：已完成工作字节 / 时间，覆盖“剩余都是大文件”的场景；
+	//   - 文件速率：已完成工作文件数 / 时间，覆盖“剩余都是小文件/字节统计未全量”的场景；
+	// ETA 取两条口径的较大值（保守），并对 ETA 做轻量平滑避免跳变。
 	var lastProcessedBytes int64
+	var lastProcessedWorkFiles int
 	var lastSampleTime time.Time
-	var ewmaRate float64
+	var byteRate, fileRate float64
+	var lastEta float64
 	var lastFlush time.Time
-	startTime := time.Now()
 
 	progress := repo.ProgressFunc(func(phase string, total, processed, succeeded, skipped, failed int, totalBytes, processedBytes int64, rate float64, eta *int64) {
 		now := time.Now()
+		workFiles := processed - skipped
 		if !lastSampleTime.IsZero() {
 			elapsed := now.Sub(lastSampleTime).Seconds()
 			if elapsed >= 0.5 {
-				instant := float64(processedBytes-lastProcessedBytes) / elapsed
-				if instant > 0 {
-					if ewmaRate == 0 {
-						ewmaRate = instant
+				byteInstant := float64(processedBytes-lastProcessedBytes) / elapsed
+				fileInstant := float64(workFiles-lastProcessedWorkFiles) / elapsed
+				if byteInstant > 0 {
+					if byteRate == 0 {
+						byteRate = byteInstant
 					} else {
-						ewmaRate = 0.25*instant + 0.75*ewmaRate
+						byteRate = 0.25*byteInstant + 0.75*byteRate
 					}
 				}
-				lastProcessedBytes = processedBytes
-				lastSampleTime = now
+				if fileInstant > 0 {
+					if fileRate == 0 {
+						fileRate = fileInstant
+					} else {
+						fileRate = 0.25*fileInstant + 0.75*fileRate
+					}
+				}
 			}
-		} else {
-			lastProcessedBytes = processedBytes
-			lastSampleTime = now
 		}
+		lastProcessedBytes = processedBytes
+		lastProcessedWorkFiles = workFiles
+		lastSampleTime = now
+
 		// 节流：最少 500ms 写一次库
 		if !lastFlush.IsZero() && now.Sub(lastFlush) < 500*time.Millisecond {
 			return
 		}
 		lastFlush = now
 
+		// ETA：双口径取较大值（保守）。跳过文件不参与速率；
+		// 剩余文件数按已见跳过比例折算未来跳过文件。
 		var etaPtr *int64
+		var etaSeconds float64 = -1
 		remainingBytes := totalBytes - processedBytes
-		if ewmaRate > 0 && remainingBytes > 0 {
-			// 字节口径：剩余实际工作量 / 字节吞吐
-			e := int64(float64(remainingBytes) / ewmaRate)
-			etaPtr = &e
-		} else if total > processed && processed > skipped {
-			// 文件口径兜底：跳过文件不参与速率，并按已见跳过比例折算未来跳过文件
-			elapsedTotal := now.Sub(startTime).Seconds()
-			work := processed - skipped
-			if elapsedTotal > 0 {
-				remaining := total - processed
-				if skipped > 0 {
-					remaining = remaining * work / processed
-				}
-				ratePerSec := float64(work) / elapsedTotal
-				if ratePerSec > 0 {
-					e := int64(float64(remaining) / ratePerSec)
-					etaPtr = &e
+		if byteRate > 0 && remainingBytes > 0 {
+			etaSeconds = float64(remainingBytes) / byteRate
+		}
+		if fileRate > 0 && processed > skipped {
+			skipRatio := float64(skipped) / float64(processed)
+			remainingWorkFiles := int64(float64(total-processed) * (1 - skipRatio))
+			if remainingWorkFiles > 0 {
+				e := float64(remainingWorkFiles) / fileRate
+				if e > etaSeconds {
+					etaSeconds = e
 				}
 			}
+		}
+		if etaSeconds >= 0 {
+			// 轻量平滑：新值占 30%，避免 ETA 频繁跳变
+			if lastEta > 0 {
+				etaSeconds = 0.3*etaSeconds + 0.7*lastEta
+			}
+			lastEta = etaSeconds
+			e := int64(etaSeconds)
+			etaPtr = &e
 		}
 		_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
 			Phase: phase, Total: total, Processed: processed,
 			Succeeded: succeeded, Skipped: skipped, Failed: failed,
-			ProcessingRate: ewmaRate, EtaSeconds: etaPtr,
+			ProcessingRate: byteRate, EtaSeconds: etaPtr,
 		})
 	})
 

@@ -681,28 +681,47 @@ func (s *Server) handleOpenMedia(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
-// openFile 跨平台打开文件或文件所在目录。
+// openFile 跨平台打开文件或文件所在目录；
+// 打开目录时在文件管理器中选中该文件，方便一眼定位。
 func openFile(action, absPath string) error {
 	switch runtime.GOOS {
 	case "windows":
 		if action == "directory" {
-			// explorer /select,<path> 打开目录并选中文件
-			return exec.Command("explorer", "/select,", absPath).Start()
+			// explorer /select,<path> 打开文件所在目录并选中该文件。
+			// 注意：/select, 必须与路径作为同一个参数（explorer 官方语法，
+			// 路径含空格时由 os/exec 自动加引号），拆成两个参数会导致不选中。
+			return explorerSelectCmd(absPath).Start()
 		}
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", absPath).Start()
 	case "darwin":
 		if action == "directory" {
+			// open -R 在 Finder 中显示文件所在目录并选中该文件
 			return exec.Command("open", "-R", absPath).Start()
 		}
 		return exec.Command("open", absPath).Start()
 	case "linux":
 		if action == "directory" {
+			// 常见文件管理器支持 --select 打开目录并选中文件；未安装时回退为仅打开目录
+			for _, cmd := range [][]string{
+				{"nautilus", "--select", absPath},
+				{"dolphin", "--select", absPath},
+			} {
+				if err := exec.Command(cmd[0], cmd[1:]...).Start(); err == nil {
+					return nil
+				}
+			}
 			return exec.Command("xdg-open", filepath.Dir(absPath)).Start()
 		}
 		return exec.Command("xdg-open", absPath).Start()
 	default:
 		return fmt.Errorf("不支持的平台: %s", runtime.GOOS)
 	}
+}
+
+// explorerSelectCmd 构造 Windows 资源管理器"打开目录并选中文件"的命令。
+// /select, 必须与路径合并为单个参数，否则 explorer 不会选中文件。
+func explorerSelectCmd(absPath string) *exec.Cmd {
+	return exec.Command("explorer", "/select,"+absPath)
 }
 
 // ===== 搜索（阶段 7）=====

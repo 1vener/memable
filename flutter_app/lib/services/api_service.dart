@@ -403,6 +403,19 @@ class ApiService {
     return ClearResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
+  /// 从当前重复报告中排除指定媒体（人工筛选无重复）。
+  /// 仅对当前报告生效：重新生成报告后该文件重新参与检测。
+  Future<int> excludeDuplicateMedia(int mediaId) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/reports/duplicate/exclude'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'media_id': mediaId}),
+    );
+    if (res.statusCode != 200) throw Exception('排除重复失败: ${res.body}');
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return (data['removed_members'] as num?)?.toInt() ?? 0;
+  }
+
   /// 删除媒体（源文件默认移入回收站，可永久删除）。
   Future<DeleteResult> deleteMedia(
     List<int> mediaIds, {

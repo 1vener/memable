@@ -926,6 +926,11 @@ class _ReportScreenState extends State<ReportScreen> {
             onTap: () => _openMedia(item.id, false),
           ),
           const ContextMenuItem.divider(),
+          ContextMenuItem(
+            icon: Icons.block,
+            label: '排除重复',
+            onTap: () => _excludeMedia(item.id),
+          ),
           if (group != null && group.items.length > 1)
             ContextMenuItem(
               icon: Icons.delete_forever_outlined,
@@ -977,6 +982,11 @@ class _ReportScreenState extends State<ReportScreen> {
                   : Icons.image_outlined,
           label: item.kind == 'video' ? '打开视频' : '打开图片',
           onTap: () => _openMedia(item.id, false),
+        ),
+        ContextMenuItem(
+          icon: Icons.block,
+          label: '排除重复',
+          onTap: () => _excludeMedia(item.id),
         ),
         if (otherPaths.isNotEmpty) ...[
           const ContextMenuItem.divider(),
@@ -1043,6 +1053,26 @@ class _ReportScreenState extends State<ReportScreen> {
           : await widget.api.openMediaFile(mediaId);
     } catch (e) {
       if (mounted) setState(() => _error = '打开失败: $e');
+    }
+  }
+
+  /// 排除重复：人工判定该文件无重复，将其从当前报告中移除。
+  /// 仅对当前报告生效——重新生成报告后该文件重新参与检测。
+  Future<void> _excludeMedia(int mediaId) async {
+    try {
+      await widget.api.excludeDuplicateMedia(mediaId);
+      // 乐观更新：立即从本地状态移除该文件（组员 <2 的组自动丢弃）
+      _removeMediaFromLocalState([mediaId]);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已排除该文件：不再计入当前报告的重复统计，重新生成报告后恢复参与检测'),
+          ),
+        );
+      }
+      await _refreshAll();
+    } catch (e) {
+      if (mounted) setState(() => _error = '排除重复失败: $e');
     }
   }
 
@@ -2065,6 +2095,11 @@ class _DuplicateMemberCard extends StatelessWidget {
             onTap: () => _open(false),
           ),
           const ContextMenuItem.divider(),
+          ContextMenuItem(
+            icon: Icons.block,
+            label: '排除重复',
+            onTap: () => _exclude(context, item),
+          ),
           if (group != null && group!.items.length > 1)
             ContextMenuItem(
               icon: Icons.delete_forever_outlined,
@@ -2105,6 +2140,11 @@ class _DuplicateMemberCard extends StatelessWidget {
                   : Icons.image_outlined,
           label: item.kind == 'video' ? '打开视频' : '打开图片',
           onTap: () => _open(false),
+        ),
+        ContextMenuItem(
+          icon: Icons.block,
+          label: '排除重复',
+          onTap: () => _exclude(context, item),
         ),
         if (showOtherPaths && otherPaths.isNotEmpty) ...[
           const ContextMenuItem.divider(),
@@ -2147,6 +2187,11 @@ class _DuplicateMemberCard extends StatelessWidget {
           label: other.kind == 'video' ? '打开视频' : '打开图片',
           onTap: () => _openFor(other, false),
         ),
+        ContextMenuItem(
+          icon: Icons.block,
+          label: '排除重复',
+          onTap: () => _exclude(context, other),
+        ),
       ],
     );
   }
@@ -2174,6 +2219,25 @@ class _DuplicateMemberCard extends StatelessWidget {
           : await api.openMediaFile(target.id);
     } catch (e) {
       onError('打开失败: $e');
+    }
+  }
+
+  /// 排除重复：人工判定该文件无重复，将其从当前报告中移除。
+  /// 仅对当前报告生效——重新生成报告后该文件重新参与检测。
+  Future<void> _exclude(BuildContext context, DuplicateItem target) async {
+    try {
+      await api.excludeDuplicateMedia(target.id);
+      // 复用父级乐观更新：从本地状态移除该文件（组员 <2 的组自动丢弃）
+      onDeleted([target.id]);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已排除该文件：不再计入当前报告的重复统计，重新生成报告后恢复参与检测'),
+          ),
+        );
+      }
+    } catch (e) {
+      onError('排除重复失败: $e');
     }
   }
 

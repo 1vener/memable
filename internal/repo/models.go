@@ -88,6 +88,20 @@ const (
 	TaskKindScanSha1        TaskKind = "scan_sha1"
 )
 
+// ReportKinds 报告队列任务类型：生成报告类任务在独立队列中串行执行，
+// 与其他任务（扫描等）互不阻塞。
+var ReportKinds = []TaskKind{TaskKindReportImage, TaskKindReportVideo, TaskKindReportDuplicate}
+
+// IsReportKind 判断任务类型是否属于报告队列。
+func IsReportKind(kind TaskKind) bool {
+	for _, k := range ReportKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
 // TaskStatus 任务状态。
 type TaskStatus string
 

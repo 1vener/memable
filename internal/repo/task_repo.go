@@ -4,6 +4,7 @@ package repo
 
 import (
 	"database/sql"
+	"strings"
 	"time"
 
 	"memable/internal/errx"
@@ -97,12 +98,32 @@ func (r *TaskRepo) ListAll(limit, offset int) ([]BackgroundTask, error) {
 	return r.query(q)
 }
 
-// DequeueNext 取出队列中最早的 queued 任务并置为 running。
+// DequeueNext 取出主队列中最早的 queued 任务（报告类任务除外）并置为 running。
 func (r *TaskRepo) DequeueNext() (*BackgroundTask, error) {
+	return r.dequeueWhere("kind NOT IN (" + reportKindsCSV() + ")")
+}
+
+// DequeueNextReport 取出报告队列中最早的 queued 报告任务并置为 running。
+// 报告任务在独立队列中串行执行，与主队列任务互不影响。
+func (r *TaskRepo) DequeueNextReport() (*BackgroundTask, error) {
+	return r.dequeueWhere("kind IN (" + reportKindsCSV() + ")")
+}
+
+// reportKindsCSV 报告任务类型的 SQL IN 列表（与 ReportKinds 保持同步）。
+func reportKindsCSV() string {
+	parts := make([]string, len(ReportKinds))
+	for i, k := range ReportKinds {
+		parts[i] = "'" + string(k) + "'"
+	}
+	return strings.Join(parts, ",")
+}
+
+// dequeueWhere 按过滤条件取出最早的 queued 任务并原子置为 running。
+func (r *TaskRepo) dequeueWhere(where string) (*BackgroundTask, error) {
 	var t BackgroundTask
 	err := r.db.QueryRow(
 		`SELECT `+taskCols+` FROM background_tasks
-		 WHERE status = 'queued' ORDER BY queued_at ASC LIMIT 1`,
+		 WHERE status = 'queued' AND `+where+` ORDER BY queued_at ASC LIMIT 1`,
 	).Scan(&t.ID, &t.Kind, &t.Status, &t.Title, &t.DedupeKey, &t.LibraryID,
 		&t.ScanSessionID, &t.PayloadJSON, &t.Phase, &t.TotalItems, &t.ProcessedItems,
 		&t.SucceededItems, &t.SkippedItems, &t.FailedItems, &t.ResultJSON, &t.ErrorMessage,
@@ -231,13 +252,25 @@ func (r *TaskRepo) HasActiveForSession(sessionID string) (bool, error) {
 }
 
 // QueuePosition 获取指定任务的排队位置（仅 queued 任务有效）。
+// 按任务所属队列计数：报告类任务在报告队列中只与报告任务互排，
+// 其余任务在主队列中排队，两条队列互不影响。
 func (r *TaskRepo) QueuePosition(id string) (int, error) {
-	var pos int
+	var kind TaskKind
+	var queuedAt time.Time
 	err := r.db.QueryRow(
+		`SELECT kind, queued_at FROM background_tasks WHERE id = ?`, id,
+	).Scan(&kind, &queuedAt)
+	if err != nil {
+		return 0, errx.Wrapf(err, "查询任务 %s", id)
+	}
+	pred := "kind NOT IN (" + reportKindsCSV() + ")"
+	if IsReportKind(kind) {
+		pred = "kind IN (" + reportKindsCSV() + ")"
+	}
+	var pos int
+	err = r.db.QueryRow(
 		`SELECT COUNT(*) FROM background_tasks
-		 WHERE status = 'queued' AND queued_at < (
-			SELECT queued_at FROM background_tasks WHERE id = ?
-		 )`, id,
+		 WHERE status = 'queued' AND `+pred+` AND queued_at < ?`, queuedAt,
 	).Scan(&pos)
 	return pos + 1, errx.Wrapf(err, "计算任务 %s 排队位置", id)
 }

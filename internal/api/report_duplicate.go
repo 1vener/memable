@@ -204,6 +204,33 @@ func (s *Server) handleDuplicateReportTree(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, 200, tree)
 }
 
+// handleExcludeDuplicateMedia 从当前重复报告中排除指定媒体（人工筛选无重复）。
+// 仅对当前报告生效：重新生成报告后该文件重新参与检测。
+func (s *Server) handleExcludeDuplicateMedia(w http.ResponseWriter, r *http.Request) {
+	if s.dup == nil {
+		writeError(w, 500, "重复报告服务未初始化")
+		return
+	}
+	var req struct {
+		MediaID int64 `json:"media_id"`
+	}
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	if req.MediaID <= 0 {
+		writeError(w, 400, "media_id 必须为正整数")
+		return
+	}
+	removed, err := s.dup.ExcludeMedia(req.MediaID)
+	if err != nil {
+		writeError(w, 500, "排除重复失败: "+err.Error())
+		return
+	}
+	slog.Info("排除重复完成", "media_id", req.MediaID, "removed_members", removed)
+	writeJSON(w, 200, map[string]any{"status": "ok", "removed_members": removed})
+}
+
 // handleClearDuplicateReport 一键清除重复文件（按目录/整页/单组 + 保留条件）。
 func (s *Server) handleClearDuplicateReport(w http.ResponseWriter, r *http.Request) {
 	if s.dup == nil {

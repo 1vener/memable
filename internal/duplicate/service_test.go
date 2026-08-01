@@ -378,3 +378,116 @@ func TestReportJSONFieldNames(t *testing.T) {
 		t.Fatalf("清除请求反序列化不符: %+v", req)
 	}
 }
+
+// TestExcludeMediaRemovesFromCurrentReport 验证"排除重复"：
+// 移除文件在当前报告中的全部成员关系，成员数 <2 的组被清理、统计刷新；
+// 文件不在报告中时幂等返回 0；重新生成报告后文件重新参与检测。
+func TestExcludeMediaRemovesFromCurrentReport(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	lib := &repo.Library{Name: "图库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+
+	// a/b 完全相同（sha1 相同 → sha1_exact 组），c 无重复
+	mt := time.Now()
+	sha := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	ph := "0123456789abcdef"
+	format := "png"
+	var idA, idB, idC int64
+	for _, m := range []*repo.Media{
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "a.png", FileSize: 100, Mtime: mt, Sha1: &sha, Phash: &ph, Format: &format},
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "b.png", FileSize: 100, Mtime: mt, Sha1: &sha, Phash: &ph, Format: &format},
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "c.png", FileSize: 100, Mtime: mt, Phash: &ph, Format: &format},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+		if m.RelativePath == "a.png" {
+			idA = m.ID
+		} else if m.RelativePath == "b.png" {
+			idB = m.ID
+		} else {
+			idC = m.ID
+		}
+	}
+
+	svc := NewService(repo.NewDuplicateRepo(dbh), mr, lr, cfg, "", "")
+	rep, err := svc.Generate(Options{Scope: "all", MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.TotalGroups != 1 || rep.TotalFiles != 2 {
+		t.Fatalf("报告应含 1 组 2 文件，实际 %+v", rep)
+	}
+
+	// 排除 a：移除成员、组被清理、统计归零
+	removed, err := svc.ExcludeMedia(idA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("应移除 1 个成员，实际 %d", removed)
+	}
+	page, err := svc.Groups(1, 20, "all", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 || len(page.Items) != 0 {
+		t.Fatalf("排除后报告应为空: %+v", page)
+	}
+	latest, err := repo.NewDuplicateRepo(dbh).GetLatestReport()
+	if err != nil || latest == nil {
+		t.Fatalf("查询最新报告失败: %v", err)
+	}
+	if latest.TotalGroups != 0 || latest.TotalFiles != 0 {
+		t.Fatalf("报告统计未刷新: %+v", latest)
+	}
+
+	// 幂等：再次排除同一文件返回 0
+	removed, err = svc.ExcludeMedia(idA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("重复排除应返回 0，实际 %d", removed)
+	}
+	// 排除不在报告中的文件（c）返回 0
+	if removed, err = svc.ExcludeMedia(idC); err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("排除报告外文件应返回 0，实际 %d", removed)
+	}
+
+	// 重新生成报告后，被排除的文件重新参与检测
+	rep2, err := svc.Generate(Options{Scope: "all", MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.TotalGroups != 1 || rep2.TotalFiles != 2 {
+		t.Fatalf("重新生成后 a/b 应重新成组: %+v", rep2)
+	}
+	page2, err := svc.Groups(1, 20, "all", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]int64, 0, 2)
+	for _, it := range page2.Items[0].Items {
+		ids = append(ids, it.ID)
+	}
+	if len(ids) != 2 || (ids[0] != idA && ids[1] != idA) || (ids[0] != idB && ids[1] != idB) {
+		t.Fatalf("重新生成的组应包含 a/b，实际 %v", ids)
+	}
+}

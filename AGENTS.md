@@ -18,15 +18,16 @@
 - sprite pHash：5%~95% 区间分 5 段，每段 `-ss` 快速定位只解码 1 秒窗口抽 5 帧（`fps=5,scale=160:-1,tile=5x1`），Go 拼 5×5 后算 pHash；失败依次回退单条 `trim+fps+tile`、逐帧 25 次。封面由 sprite 中帧向两侧选非黑屏/纯色帧（`ComputeVideoSpritePHashAndCover`）。
 - 数据库：DSN 一律用 `_pragma` 形式设置 `journal_mode(WAL)`、`foreign_keys(1)`、`busy_timeout`、`synchronous(NORMAL)`、`cache_size`、`mmap_size`；**modernc 驱动只认 `_pragma`，裸参数（如 `_journal_mode=WAL`）会被静默忽略**。媒体入库为单条 `Upsert`（`INSERT ... RETURNING id`，无批量写入）。
 - 扫描判定与进度：增量/完整性判定用内存快照（`mediaSnapshot`，扫描前一次加载全库记录），逐文件不再查库；`repo.ProgressFunc` 带 `totalBytes/processedBytes`，ETA 按字节吞吐计算且排除跳过文件，速度显示为字节/秒。
-- 重复报告：三张表 `duplicate_reports/groups/members`；生成任务 kind=`report_duplicate`，单事务替换旧报告；删除类变更即时级联并清理成员数 <2 的组；新增/重新处理置 `stale=1`。
-- 主要 API：`/api/reports/duplicate`（生成/摘要/分组分页(支持 `directory` 过滤)/目录树/默认值/clear）、`/api/media/delete`、`POST /api/libraries/{id}/scan-sha1`（补齐 SHA1 任务）、`GET /api/settings`（缩略图/日志保存位置）。
+- 重复报告：三张表 `duplicate_reports/groups/members`；生成任务 kind=`report_duplicate`，单事务替换旧报告；删除类变更即时级联并清理成员数 <2 的组；新增/重新处理置 `stale=1`。**任务双队列**：报告类任务（`report_image`/`report_video`/`report_duplicate`）在独立报告队列串行执行（`TaskRepo.DequeueNextReport`/`reportKindsCSV`，`QueuePosition` 按所属队列计数），与主队列（扫描等）互不阻塞、可并发运行。
+- 主要 API：`/api/reports/duplicate`（生成/摘要/分组分页(支持 `directory` 过滤)/目录树/默认值/clear）、`POST /api/reports/duplicate/exclude`（排除重复：从当前报告移除指定媒体，仅当前报告生效，重新生成后重新参与检测）、`/api/media/delete`、`POST /api/libraries/{id}/scan-sha1`（补齐 SHA1 任务）、`GET /api/settings`（缩略图/日志保存位置）。
 - 删除安全：源文件默认移入系统回收站（`internal/recycle`，Windows 用 PowerShell），`delete.permanent: true` 可永久删除；目录删除为同步接口；缩略图为生成物直接删除。
 
 ## 已实现的关键行为
 
 - 报告页目录树视图：card_swiper 叠卡（45° 平移 20px、数量胶囊、底部首个文件信息、`_LazyThumb` 懒加载）；**目录树默认全部展开**，点击可收起，刷新后收起状态保留。
-- 分组视图：平铺分页（默认 20 组/页，可切 10/20/50/100）；右键菜单（打开/复制/打开媒体、其它目录二级菜单、删除此文件外本组重复文件）；一键清除（目录/整页 + 六种保留条件）；删除后局部刷新，空组不再展示。
-- 任务页展示完整统计/元信息/结果摘要（含 `total_bytes/processed_bytes`）、ETA（字节口径、排除跳过）与速度（MB/s）；主屏幕底部常驻运行中任务进度条（HomeScreen 每 2 秒轮询）。
+- 分组视图：平铺分页（默认 20 组/页，可切 10/20/50/100）；右键菜单（打开/复制/打开媒体、**排除重复**（`POST /api/reports/duplicate/exclude`，删除该文件全部组成员关系并清理 <2 的组、刷新统计，仅当前报告生效）、其它目录二级菜单、删除此文件外本组重复文件）；一键清除（目录/整页 + 六种保留条件）；删除后局部刷新，空组不再展示。
+- 打开文件路径：统一走 `POST /api/media/{id}/open`（action=directory），Windows 用 `explorer /select,<path>`（必须单参数、路径含空格由 os/exec 引号包裹，否则不选中）、macOS 用 `open -R`、Linux 依次尝试 nautilus/dolphin `--select` 后回退 xdg-open，打开后文件处于选中状态。
+- 任务页展示完整统计/元信息/结果摘要（含 `total_bytes/processed_bytes`）、ETA（双口径：剩余字节/字节速率 与 剩余文件数折算/文件速率，取较大值 + 轻量平滑）与速度（MB/s）；主屏幕底部常驻运行中任务进度条（HomeScreen 每 2 秒轮询）。
 - 扫描处理每个文件时打印 `处理文件 dir=... file=...` 日志；`log.file` 配置可把日志追加写入文件（默认控制台标准输出）。
 - 设置页新增"存储位置"卡片：图片缩略图目录、视频封面目录、日志位置（数据来自 `GET /api/settings`，路径为服务端绝对路径）。
 - 时间字段后端一律存/返 UTC，客户端经 `utils/time_fmt.dart` 的 `formatLocalTime` 统一转本地显示。

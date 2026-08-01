@@ -195,6 +195,19 @@ func (r *DuplicateRepo) SetStaleOnLatest() error {
 	return nil
 }
 
+// DeleteMembersByMedia 删除指定媒体在当前报告中的全部成员关系，返回删除行数。
+// 用于"排除重复"：人工判定某文件无重复后将其从报告中移除（仅当前报告生效）。
+func (r *DuplicateRepo) DeleteMembersByMedia(mediaID int64) (int64, error) {
+	res, err := r.db.Exec(
+		`DELETE FROM duplicate_group_members WHERE media_id = ?`, mediaID,
+	)
+	if err != nil {
+		return 0, errx.Wrapf(err, "删除媒体 %d 的重复组成员关系", mediaID)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // PruneGroupsAndUpdateStats 清理成员数 <2 的重复组，并刷新最新报告统计。
 func (r *DuplicateRepo) PruneGroupsAndUpdateStats() error {
 	if _, err := r.db.Exec(

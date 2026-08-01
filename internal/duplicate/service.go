@@ -301,6 +301,23 @@ func parentDir(dir string) string {
 	return dir[:idx]
 }
 
+// ExcludeMedia 人工排除重复：将该文件从当前报告中移除（仅对当前报告生效，
+// 重新生成报告后该文件重新参与检测）。删除其全部组成员关系，并清理因此
+// 成员数 <2 的组、刷新报告统计；返回移除的成员数（不在报告中时返回 0）。
+func (s *Service) ExcludeMedia(mediaID int64) (int64, error) {
+	n, err := s.Dup.DeleteMembersByMedia(mediaID)
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, nil // 文件不在报告中，幂等
+	}
+	if err := s.Dup.PruneGroupsAndUpdateStats(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // ClearRequest 一键清除请求。
 type ClearRequest struct {
 	Scope     string  `json:"scope"`               // directory / page / group
