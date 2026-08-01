@@ -9,6 +9,7 @@ import (
 	"math"
 	"math/bits"
 	"sort"
+	"strconv"
 )
 
 // ImageHashes 图片相似度哈希，均为 64 bit 的 16 进制字符串。
@@ -37,6 +38,17 @@ func HammingHex64(a, b string) (int, error) {
 		return 0, err
 	}
 	return bits.OnesCount64(x ^ y), nil
+}
+
+// ParseHex64 将 64 bit 十六进制哈希字符串解析为 uint64。
+// 比 fmt.Sscanf 快约 10-20 倍；检测前预解析可大幅减少比较开销。
+func ParseHex64(s string) (uint64, error) {
+	return strconv.ParseUint(s, 16, 64)
+}
+
+// HammingUint64 计算两个 uint64 的 Hamming 距离（纯位运算，无字符串解析）。
+func HammingUint64(a, b uint64) int {
+	return bits.OnesCount64(a ^ b)
 }
 
 func aHash(img image.Image) string {

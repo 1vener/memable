@@ -76,13 +76,15 @@ CREATE INDEX IF NOT EXISTS idx_media_kind   ON media(kind);
 CREATE INDEX IF NOT EXISTS idx_media_lib    ON media(library_id);
 
 CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_media_scan_session_kind ON media(scan_session_id, kind);
+CREATE INDEX IF NOT EXISTS idx_media_kind_created ON media(kind, created_at);
 
 -- ============================================================
 -- 4. 后台任务（统一任务队列）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS background_tasks (
     id                  TEXT    PRIMARY KEY,                             -- UUID
-    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','report_duplicate','promote','directory_delete','scan_sha1')),
+    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','report_duplicate','report_directory','promote','directory_delete','scan_sha1')),
     status              TEXT    NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued','running','completed','failed','cancelled')),
     title               TEXT    NOT NULL,                               -- 任务显示名称
@@ -124,3 +126,39 @@ CREATE TABLE IF NOT EXISTS file_stats (
     created_at      TIMESTAMP NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_file_stats_created ON file_stats(created_at DESC);
+
+-- ============================================================
+-- 6.1 目录对比报告（所选目录 vs 存量数据，独立三表）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS dir_duplicate_reports (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    background_task_id      TEXT    REFERENCES background_tasks(id) ON DELETE SET NULL,
+    library_id              INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+    directory               TEXT    NOT NULL DEFAULT '',   -- 所选目录相对库根路径（正斜杠，含子目录）
+    media_type              TEXT    NOT NULL DEFAULT 'all' CHECK (media_type IN ('image','video','all')),
+    image_threshold         INTEGER NOT NULL DEFAULT 90,
+    video_phash_distance    INTEGER NOT NULL DEFAULT 12,
+    video_duration_diff_ms  INTEGER NOT NULL DEFAULT 3000,
+    oshash_filter           INTEGER NOT NULL DEFAULT 1,
+    include_sha1            INTEGER NOT NULL DEFAULT 1,
+    total_groups            INTEGER NOT NULL DEFAULT 0,
+    total_files             INTEGER NOT NULL DEFAULT 0,
+    created_at              TIMESTAMP NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS dir_duplicate_groups (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id   INTEGER NOT NULL REFERENCES dir_duplicate_reports(id) ON DELETE CASCADE,
+    group_type  TEXT    NOT NULL CHECK (group_type IN ('sha1','image_similar','video_similar'))
+);
+CREATE INDEX IF NOT EXISTS idx_dir_groups_report ON dir_duplicate_groups(report_id);
+
+CREATE TABLE IF NOT EXISTS dir_duplicate_members (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id    INTEGER NOT NULL REFERENCES dir_duplicate_groups(id) ON DELETE CASCADE,
+    media_id    INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    is_target   INTEGER NOT NULL DEFAULT 0 CHECK (is_target IN (0,1)), -- 1=所选目录文件
+    UNIQUE (group_id, media_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dir_members_group ON dir_duplicate_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_dir_members_media ON dir_duplicate_members(media_id);

@@ -83,6 +83,7 @@ const (
 	TaskKindReportImage     TaskKind = "report_image"
 	TaskKindReportVideo     TaskKind = "report_video"
 	TaskKindReportDuplicate TaskKind = "report_duplicate"
+	TaskKindReportDirectory TaskKind = "report_directory"
 	TaskKindPromote         TaskKind = "promote"
 	TaskKindDirectoryDelete TaskKind = "directory_delete"
 	TaskKindScanSha1        TaskKind = "scan_sha1"
@@ -90,7 +91,7 @@ const (
 
 // ReportKinds 报告队列任务类型：生成报告类任务在独立队列中串行执行，
 // 与其他任务（扫描等）互不阻塞。
-var ReportKinds = []TaskKind{TaskKindReportImage, TaskKindReportVideo, TaskKindReportDuplicate}
+var ReportKinds = []TaskKind{TaskKindReportImage, TaskKindReportVideo, TaskKindReportDuplicate, TaskKindReportDirectory}
 
 // IsReportKind 判断任务类型是否属于报告队列。
 func IsReportKind(kind TaskKind) bool {

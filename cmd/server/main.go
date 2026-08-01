@@ -74,7 +74,7 @@ func main() {
 		Libraries:      libRepo,
 	}
 	searchSvc := search.NewService(mediaRepo, libRepo)
-	dupSvc := duplicate.NewService(dupRepo, mediaRepo, libRepo, cfg, imageThumbBase, videoThumbBase)
+	dupSvc := duplicate.NewService(dupRepo, repo.NewDirDuplicateRepo(dbh), mediaRepo, libRepo, cfg, imageThumbBase, videoThumbBase)
 
 	// 初始化任务调度器
 	runner := task.NewRunner(taskRepo, sessionRepo, mediaRepo, libRepo, scanSvc, task.RunnerConfig{

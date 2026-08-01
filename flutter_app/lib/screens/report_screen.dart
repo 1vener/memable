@@ -43,15 +43,26 @@ class _ReportScreenState extends State<ReportScreen> {
 
   Timer? _pollTimer;
 
+  // 目录对比报告（独立，不替换重复报告）
+  DirCompareSummary? _dirSummary;
+  DirCompareGroupPage? _dirPage;
+  int _dirPageNo = 1;
+  int _dirPageSize = 20;
+  bool _dirLoading = false;
+  String? _dirTaskId; // 进行中的目录对比任务
+  Timer? _dirPollTimer;
+
   @override
   void initState() {
     super.initState();
     _refreshAll();
+    _loadDirCompare();
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _dirPollTimer?.cancel();
     super.dispose();
   }
 
@@ -259,6 +270,316 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
+  // ===== 目录对比报告 =====
+
+  /// 打开目录对比对话框：选择收藏库 + 目录（树选择）+ 阈值参数。
+  Future<void> _showDirCompareDialog() async {
+    if (mounted) setState(() => _error = null);
+    final result =
+        await showDialog<
+          ({
+            int libraryId,
+            String directory,
+            String mediaType,
+            int imageThreshold,
+            int videoPhashDistance,
+            int videoDurationDiffMs,
+          })
+        >(context: context, builder: (_) => _DirCompareDialog(api: widget.api));
+    if (result == null || !mounted) return;
+    await _submitDirCompare(
+      result.libraryId,
+      result.directory,
+      mediaType: result.mediaType,
+      imageThreshold: result.imageThreshold,
+      videoPhashDistance: result.videoPhashDistance,
+      videoDurationDiffMs: result.videoDurationDiffMs,
+    );
+  }
+
+  /// 提交目录对比任务并开始轮询。
+  Future<void> _submitDirCompare(
+    int libraryId,
+    String directory, {
+    String mediaType = 'all',
+    int? imageThreshold,
+    int? videoPhashDistance,
+    int? videoDurationDiffMs,
+  }) async {
+    setState(() => _dirLoading = true);
+    try {
+      final resp = await widget.api.generateDirCompare(
+        libraryId: libraryId,
+        directory: directory,
+        mediaType: mediaType,
+        imageThreshold: imageThreshold,
+        videoPhashDistance: videoPhashDistance,
+        videoDurationDiffMs: videoDurationDiffMs,
+      );
+      _dirTaskId = resp['task_id'] as String?;
+      _startDirPolling();
+    } catch (e) {
+      if (mounted) setState(() => _error = '提交目录对比失败: $e');
+    } finally {
+      if (mounted) setState(() => _dirLoading = false);
+    }
+  }
+
+  void _startDirPolling() {
+    _dirPollTimer ??= Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _pollDirTask(),
+    );
+  }
+
+  Future<void> _pollDirTask() async {
+    final id = _dirTaskId;
+    if (id == null) {
+      _dirPollTimer?.cancel();
+      _dirPollTimer = null;
+      return;
+    }
+    try {
+      final task = await widget.api.getTask(id);
+      if (task.isCompleted || task.isFailed || task.isCancelled) {
+        _dirPollTimer?.cancel();
+        _dirPollTimer = null;
+        _dirTaskId = null;
+        if (task.isFailed && mounted) {
+          setState(() => _error = task.errorMessage ?? '目录对比任务未完成');
+        }
+        await _loadDirCompare();
+      }
+    } catch (_) {
+      // 任务查询失败不阻塞
+    }
+  }
+
+  /// 加载目录对比摘要与第一页分组。
+  Future<void> _loadDirCompare() async {
+    try {
+      final summary = await widget.api.getDirCompareSummary();
+      final page = await widget.api.getDirCompareGroups(
+        page: _dirPageNo,
+        pageSize: _dirPageSize,
+      );
+      if (!mounted) return;
+      setState(() {
+        _dirSummary = summary;
+        _dirPage = page;
+        if (page.totalPages < _dirPageNo) {
+          _dirPageNo = page.totalPages < 1 ? 1 : page.totalPages;
+        }
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '读取目录对比结果失败: $e');
+    }
+  }
+
+  Future<void> _loadDirPage(int pageNo) async {
+    setState(() => _dirPageNo = pageNo);
+    try {
+      final page = await widget.api.getDirCompareGroups(
+        page: pageNo,
+        pageSize: _dirPageSize,
+      );
+      if (mounted) setState(() => _dirPage = page);
+    } catch (e) {
+      if (mounted) setState(() => _error = '读取目录对比分组失败: $e');
+    }
+  }
+
+  /// 目录对比结果面板（摘要 + 分组列表）。
+  Widget _buildDirCompareSection(ColorScheme cs) {
+    final summary = _dirSummary;
+    if (summary == null || summary.report == null) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Text(
+            '尚未生成目录对比报告，点击工具栏"目录对比"选择目录与存量数据对比',
+            style: TextStyle(fontSize: 13, color: cs.outline),
+          ),
+        ),
+      );
+    }
+    final rep = summary.report!;
+    final page = _dirPage;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.folder_copy_outlined, size: 18, color: cs.primary),
+                const SizedBox(width: 8),
+                Text(
+                  '目录对比',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: cs.onSurface,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.folder_outlined, size: 16, color: cs.outline),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '所选目录：${rep.directory}',
+                    style: TextStyle(fontSize: 12, color: cs.onSurface),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '${rep.totalGroups} 组 · ${rep.totalFiles} 个文件'
+              ' · 可释放 ${_formatBytes(summary.freedBytes)}'
+              '（所选目录文件 vs 其余存量数据）',
+              style: TextStyle(fontSize: 12, color: cs.outline),
+            ),
+            const Divider(height: 20),
+            if (_dirLoading && page == null)
+              const Center(child: CircularProgressIndicator())
+            else if (page == null || page.items.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Center(
+                  child: Text(
+                    '所选目录与存量数据无重复',
+                    style: TextStyle(fontSize: 13, color: cs.outline),
+                  ),
+                ),
+              )
+            else ...[
+              for (final g in page.items) _buildDirGroupCard(g, cs),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.chevron_left),
+                    tooltip: '上一页',
+                    onPressed: _dirPageNo > 1
+                        ? () => _loadDirPage(_dirPageNo - 1)
+                        : null,
+                  ),
+                  Text(
+                    '${_dirPageNo} / ${page.totalPages}',
+                    style: TextStyle(fontSize: 12, color: cs.outline),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.chevron_right),
+                    tooltip: '下一页',
+                    onPressed: _dirPageNo < page.totalPages
+                        ? () => _loadDirPage(_dirPageNo + 1)
+                        : null,
+                  ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 目录对比分组卡片：目标文件（带标识）+ 存量文件。
+  Widget _buildDirGroupCard(DirCompareGroupItem g, ColorScheme cs) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: cs.outlineVariant),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${g.memberCount} 个重复文件 · 可释放 ${_formatBytes(g.freedBytes)}',
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: cs.onSurface),
+          ),
+          const SizedBox(height: 8),
+          for (final m in g.items)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(
+                children: [
+                  if (m.isTarget)
+                    Container(
+                      margin: const EdgeInsets.only(right: 6),
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: cs.primary.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        '所选目录',
+                        style: TextStyle(fontSize: 10, color: cs.primary),
+                      ),
+                    ),
+                  Icon(
+                    m.kind == 'video' ? Icons.movie_outlined : Icons.image_outlined,
+                    size: 16,
+                    color: cs.outline,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Tooltip(
+                      message: m.fullPath,
+                      child: Text(
+                        m.fullPath,
+                        style: TextStyle(fontSize: 12, color: cs.onSurface),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                  GestureDetector(
+                    onSecondaryTapDown: (d) => _showDirMemberMenu(context, d.globalPosition, m),
+                    child: Icon(Icons.more_vert, size: 18, color: cs.outline),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// 目录对比成员右键菜单：打开文件路径 / 打开媒体 / 复制路径。
+  void _showDirMemberMenu(BuildContext context, Offset position, DuplicateItem m) {
+    showContextMenu(
+      context: context,
+      position: position,
+      items: [
+        ContextMenuItem(
+          icon: Icons.folder_open,
+          label: '打开文件路径',
+          onTap: () => _openMedia(m.id, true),
+        ),
+        ContextMenuItem(
+          icon: Icons.copy,
+          label: '复制文件路径',
+          onTap: () => Clipboard.setData(ClipboardData(text: m.fullPath)),
+        ),
+        ContextMenuItem(
+          icon: m.kind == 'video' ? Icons.play_circle_outline : Icons.image_outlined,
+          label: m.kind == 'video' ? '打开视频' : '打开图片',
+          onTap: () => _openMedia(m.id, false),
+        ),
+      ],
+    );
+  }
+
   // ===== UI =====
 
   @override
@@ -276,8 +597,15 @@ class _ReportScreenState extends State<ReportScreen> {
               TextButton(
                 onPressed: () => setState(() => _error = null),
                 child: const Text('关闭'),
-              ),
-            ],
+              ),            ],
+          ),
+        if (_dirSummary != null || _dirTaskId != null)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 380),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: _buildDirCompareSection(cs),
+            ),
           ),
         if (_summary == null)
           Expanded(child: _buildEmpty(cs))
@@ -360,6 +688,14 @@ class _ReportScreenState extends State<ReportScreen> {
                     )
                     : const Icon(Icons.play_arrow, size: 18),
             label: Text(_taskBusy ? '统计中' : '生成报告'),
+          ),
+          OutlinedButton.icon(
+            onPressed:
+                (_taskBusy || _dirTaskId != null)
+                    ? null
+                    : _showDirCompareDialog,
+            icon: const Icon(Icons.folder_copy_outlined, size: 18),
+            label: Text(_dirTaskId != null ? '目录对比中' : '目录对比'),
           ),
         ],
       ),
@@ -2314,5 +2650,357 @@ class _DuplicateMemberCard extends StatelessWidget {
     } catch (e) {
       onError('删除失败: $e');
     }
+  }
+}
+
+// ===== 目录对比对话框 =====
+
+/// 目录对比对话框：选择收藏库 + 目录（树选择）+ 阈值参数，返回 (libraryId, directory)。
+class _DirCompareDialog extends StatefulWidget {
+  final ApiService api;
+  const _DirCompareDialog({required this.api});
+
+  @override
+  State<_DirCompareDialog> createState() => _DirCompareDialogState();
+}
+
+class _DirCompareDialogState extends State<_DirCompareDialog> {
+  List<Library> _libraries = [];
+  Library? _selectedLib;
+  List<FileTreeNode> _treeNodes = [];
+  final Map<String, List<FileTreeNode>> _childrenCache = {};
+  String? _selectedDir;
+  String _mediaType = 'all';
+  final _imageCtrl = TextEditingController(text: '90');
+  final _videoCtrl = TextEditingController(text: '12');
+  final _durCtrl = TextEditingController(text: '3000');
+  bool _loading = true;
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLibraries();
+  }
+
+  @override
+  void dispose() {
+    _imageCtrl.dispose();
+    _videoCtrl.dispose();
+    _durCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadLibraries() async {
+    try {
+      final libs = await widget.api.getLibraries();
+      // 仅展示有媒体可比的库
+      if (!mounted) return;
+      setState(() {
+        _libraries = libs;
+        _selectedLib = libs.isNotEmpty ? libs.first : null;
+        _loading = false;
+      });
+      if (_selectedLib != null) {
+        await _loadRoot();
+      }
+    } catch (e) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadRoot() async {
+    final lib = _selectedLib;
+    if (lib == null) return;
+    setState(() {
+      _treeNodes = [];
+      _selectedDir = '.'; // 默认选中库根目录
+    });
+    try {
+      final nodes = await widget.api.getFileTree(lib.id);
+      if (mounted) {
+        setState(() {
+          _treeNodes = nodes.where((n) => n.isDir).toList();
+          _childrenCache[''] = nodes;
+        });
+      }
+    } catch (_) {}
+  }
+
+  /// 展开目录节点：懒加载子目录。
+  Future<void> _expandDir(String path) async {
+    if (_childrenCache.containsKey(path)) return;
+    final lib = _selectedLib;
+    if (lib == null) return;
+    try {
+      final nodes = await widget.api.getFileTree(lib.id, path: path);
+      if (mounted) {
+        setState(() {
+          _childrenCache[path] = nodes;
+        });
+      }
+    } catch (_) {}
+  }
+
+  List<FileTreeNode> _dirsOf(String path) {
+    final cached = _childrenCache[path];
+    if (cached == null) return const [];
+    return cached.where((n) => n.isDir).toList();
+  }
+
+  void _onSubmit() {
+    final lib = _selectedLib;
+    final dir = _selectedDir;
+    if (lib == null || dir == null) return;
+    setState(() => _submitting = true);
+    Navigator.of(context).pop((
+      libraryId: lib.id,
+      directory: dir,
+      mediaType: _mediaType,
+      imageThreshold: int.tryParse(_imageCtrl.text.trim()) ?? 90,
+      videoPhashDistance: int.tryParse(_videoCtrl.text.trim()) ?? 12,
+      videoDurationDiffMs: int.tryParse(_durCtrl.text.trim()) ?? 3000,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('目录对比（所选目录 vs 存量数据）'),
+      content: SizedBox(
+        width: 480,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('收藏库', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<int>(
+                value: _selectedLib?.id,
+                isExpanded: true,
+                items: [
+                  for (final l in _libraries)
+                    DropdownMenuItem(
+                      value: l.id,
+                      child: Text(
+                        l.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (v) {
+                  final lib = _libraries.firstWhere((l) => l.id == v);
+                  setState(() => _selectedLib = lib);
+                  _loadRoot();
+                },
+              ),
+              const SizedBox(height: 12),
+              const Text('选择目录（含子目录）', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 4),
+              Container(
+                height: 220,
+                decoration: BoxDecoration(
+                  border: Border.all(color: cs.outlineVariant),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _buildDirTree(cs),
+              ),
+              const SizedBox(height: 8),
+              // 已选目录展示（支持库根目录）
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle_outline, size: 16, color: cs.primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '已选择：${_selectedLib?.name ?? '-'} / '
+                        '${_selectedDir == null ? '未选择' : (_selectedDir == '.' ? '库根目录' : _selectedDir)}',
+                        style: TextStyle(fontSize: 12, color: cs.onSurface),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text('媒体类型', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 4),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'all', label: Text('全部')),
+                  ButtonSegment(value: 'image', label: Text('图片')),
+                  ButtonSegment(value: 'video', label: Text('视频')),
+                ],
+                selected: {_mediaType},
+                onSelectionChanged: (v) => setState(() => _mediaType = v.first),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _imageCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '图片相似度阈值 %',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _videoCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '视频 pHash 距离',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _durCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: '时长差 ms',
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _selectedDir == null || _submitting
+              ? null
+              : () => _onSubmit(),
+          child: const Text('开始对比'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDirTree(ColorScheme cs) {
+    if (_selectedLib == null) {
+      return Center(
+        child: Text('库中无目录', style: TextStyle(fontSize: 13, color: cs.outline)),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.all(4),
+      children: [
+        // 库根目录选项（path='.' 表示整个库）
+        _buildRootTile(cs),
+        for (final n in _treeNodes) _buildDirTile(n.path, n.name, 0),
+      ],
+    );
+  }
+
+  /// 库根目录选项（选择整个收藏库参与对比）。
+  Widget _buildRootTile(ColorScheme cs) {
+    const path = '.';
+    final selected = _selectedDir == path;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () => setState(() => _selectedDir = path),
+      child: Container(
+        padding: const EdgeInsets.only(left: 8, right: 8, top: 6, bottom: 6),
+        decoration: BoxDecoration(
+          color: selected ? cs.primary.withValues(alpha: 0.1) : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              selected ? Icons.storage : Icons.storage_outlined,
+              size: 16,
+              color: selected ? cs.primary : cs.outline,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                '库根目录（全部）',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  color: cs.onSurface,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDirTile(String path, String name, int depth) {
+    final cs = Theme.of(context).colorScheme;
+    final selected = _selectedDir == path;
+    final children = _dirsOf(path);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () {
+            setState(() => _selectedDir = path);
+            _expandDir(path);
+          },
+          child: Container(
+            padding: EdgeInsets.only(
+              left: 8.0 + depth * 16,
+              right: 8,
+              top: 6,
+              bottom: 6,
+            ),
+            decoration: BoxDecoration(
+              color: selected
+                  ? cs.primary.withValues(alpha: 0.1)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.folder_outlined, size: 16, color: cs.outline),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    name,
+                    style: TextStyle(fontSize: 13, color: cs.onSurface),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (children.isNotEmpty)
+          for (final c in children) _buildDirTile(c.path, c.name, depth + 1),
+      ],
+    );
   }
 }

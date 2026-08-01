@@ -4,6 +4,7 @@ package duplicate
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,32 +18,70 @@ import (
 // Service 重复报告服务。
 type Service struct {
 	Dup            *repo.DuplicateRepo
+	Dir            *repo.DirDuplicateRepo // 目录对比报告（独立存储）
 	Media          *repo.MediaRepo
 	Libraries      *repo.LibraryRepo
 	Config         *config.Config
 	ImageThumbBase string // 图片缩略图根目录
 	VideoThumbBase string // 视频封面根目录
+	// Progress 可选进度回调，报告生成时透传给检测器。
+	Progress repo.ProgressFunc
 }
 
 // NewService 创建重复报告服务。
-func NewService(dup *repo.DuplicateRepo, mr *repo.MediaRepo, lr *repo.LibraryRepo, cfg *config.Config, imageThumbBase, videoThumbBase string) *Service {
-	return &Service{Dup: dup, Media: mr, Libraries: lr, Config: cfg, ImageThumbBase: imageThumbBase, VideoThumbBase: videoThumbBase}
+func NewService(dup *repo.DuplicateRepo, dir *repo.DirDuplicateRepo, mr *repo.MediaRepo, lr *repo.LibraryRepo, cfg *config.Config, imageThumbBase, videoThumbBase string) *Service {
+	return &Service{Dup: dup, Dir: dir, Media: mr, Libraries: lr, Config: cfg, ImageThumbBase: imageThumbBase, VideoThumbBase: videoThumbBase}
 }
 
 // Generate 检测并持久化重复报告（单事务替换旧报告），返回报告记录。
+// 当检测阈值/范围未变化时启用增量检测：仅对 created_at >= 上次报告时间
+// 的新增/修改媒体发起查询，并与旧报告分组合并，大幅减少重复检测耗时。
 func (s *Service) Generate(opts Options, taskID string) (*repo.DuplicateReport, error) {
 	det := NewDetector(s.Media, s.Config)
+	det.Progress = s.Progress
+
+	// 增量检测判定：与上次报告参数一致且旧报告有分组时才增量。
+	// 旧报告为空（如历史 bug 产生的空报告）时必须全量检测，避免空报告传染。
+	var oldGroups []repo.PersistGroup
+	incremental := false
+	if last, err := s.Dup.GetLatestReport(); err == nil && last != nil && reportParamsEqual(last, opts) {
+		// 读取旧报告分组，增量结果需与旧组合并（旧媒体之间的重复关系不在本次检测范围内）
+		if views, err := s.Dup.GroupViews(last.ID); err == nil && len(views) > 0 {
+			since := last.CreatedAt
+			det.IncrementalSince = &since
+			incremental = true
+			slog.Info("重复报告增量检测", "since", since.UTC().Format("2006-01-02 15:04:05"))
+			for _, v := range views {
+				if len(v.Items) < 2 {
+					continue
+				}
+				pg := repo.PersistGroup{GroupType: v.GroupType}
+				for _, m := range v.Items {
+					pg.MediaIDs = append(pg.MediaIDs, m.ID)
+				}
+				oldGroups = append(oldGroups, pg)
+			}
+		} else if err != nil {
+			slog.Warn("读取旧报告分组失败，回退全量检测", "err", err)
+		}
+	}
+
 	groups, err := det.DetectWithOptions(opts)
 	if err != nil {
 		return nil, err
 	}
 	persist := make([]repo.PersistGroup, 0, len(groups))
-	for _, g := range groups {
-		pg := repo.PersistGroup{GroupType: reasonToGroupType(g.Reason)}
-		for _, m := range g.Media {
-			pg.MediaIDs = append(pg.MediaIDs, m.ID)
+	if incremental && len(oldGroups) > 0 {
+		// 增量：合并旧报告分组与新检测结果，避免旧媒体之间的重复组丢失
+		persist = mergeWithOldGroups(groups, oldGroups)
+	} else {
+		for _, g := range groups {
+			pg := repo.PersistGroup{GroupType: reasonToGroupType(g.Reason)}
+			for _, m := range g.Media {
+				pg.MediaIDs = append(pg.MediaIDs, m.ID)
+			}
+			persist = append(persist, pg)
 		}
-		persist = append(persist, pg)
 	}
 	rep := &repo.DuplicateReport{
 		Scope:               opts.Scope,
@@ -65,6 +104,261 @@ func (s *Service) Generate(opts Options, taskID string) (*repo.DuplicateReport, 
 		rep = stored
 	}
 	return rep, nil
+}
+
+// mergeWithOldGroups 用并查集合并增量检测结果与旧报告分组。
+// 旧组的重复关系保留；新检测产生的组（可能含旧媒体）与其重叠组自然合并。
+func mergeWithOldGroups(newGroups []Group, oldGroups []repo.PersistGroup) []repo.PersistGroup {
+	idIndex := map[int64]int{}
+	var ids []int64
+	add := func(id int64) int {
+		if i, ok := idIndex[id]; ok {
+			return i
+		}
+		idIndex[id] = len(ids)
+		ids = append(ids, id)
+		return len(ids) - 1
+	}
+	for _, g := range oldGroups {
+		for _, id := range g.MediaIDs {
+			add(id)
+		}
+	}
+	for _, g := range newGroups {
+		for _, m := range g.Media {
+			add(m.ID)
+		}
+	}
+
+	uf := newUnionFind(len(ids))
+	// 旧组 union，记录分量类型（sha1 优先）
+	oldType := map[int]string{}
+	for _, g := range oldGroups {
+		if len(g.MediaIDs) < 2 {
+			continue
+		}
+		first := add(g.MediaIDs[0])
+		for _, id := range g.MediaIDs[1:] {
+			uf.union(first, add(id))
+		}
+		root := uf.find(first)
+		if oldType[root] != "sha1" {
+			oldType[root] = g.GroupType
+		}
+	}
+	// 新组 union，记录新检测 reason（sha1 优先）
+	newReason := map[int]string{}
+	for _, g := range newGroups {
+		if len(g.Media) < 2 {
+			continue
+		}
+		first := add(g.Media[0].ID)
+		for _, m := range g.Media[1:] {
+			uf.union(first, add(m.ID))
+		}
+		root := uf.find(first)
+		if newReason[root] != "sha1_exact" {
+			newReason[root] = g.Reason
+		}
+	}
+
+	// 输出连通分量
+	comps := map[int][]int{}
+	for i := range ids {
+		root := uf.find(i)
+		comps[root] = append(comps[root], i)
+	}
+	out := make([]repo.PersistGroup, 0, len(comps))
+	for root, indices := range comps {
+		if len(indices) < 2 {
+			continue
+		}
+		gtype := oldType[root]
+		if reason, ok := newReason[root]; ok {
+			gtype = reasonToGroupType(reason)
+		}
+		if gtype == "" {
+			gtype = "sha1"
+		}
+		pg := repo.PersistGroup{GroupType: gtype}
+		for _, i := range indices {
+			pg.MediaIDs = append(pg.MediaIDs, ids[i])
+		}
+		out = append(out, pg)
+	}
+	return out
+}
+
+// reportParamsEqual 判断本次报告参数与上次报告是否一致。
+func reportParamsEqual(last *repo.DuplicateReport, opts Options) bool {
+	return last.Scope == opts.Scope &&
+		last.MediaType == opts.MediaType &&
+		last.ImageThreshold == opts.ImageThreshold &&
+		last.VideoPhashDistance == opts.VideoPhashDistance &&
+		last.VideoDurationDiffMs == opts.VideoDurationDiffMs
+}
+
+// GenerateDirCompare 生成目录对比报告：所选目录（含子目录）与其余存量数据的重复检测，
+// 写入独立三表（不替换重复报告）。目录对比始终全量检测（不做增量）。
+func (s *Service) GenerateDirCompare(opts Options, libraryID int64, directory string, taskID string) (*repo.DirDuplicateReport, error) {
+	det := NewDetector(s.Media, s.Config)
+	det.Progress = s.Progress
+
+	opts.Scope = "dir_vs_rest"
+	opts.LibraryID = libraryID
+	opts.Directory = directory
+
+	slog.Info("目录对比检测开始", "library_id", libraryID, "directory", directory, "media_type", opts.MediaType)
+
+	groups, err := det.DetectWithOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	persist := make([]repo.DirPersistGroup, 0, len(groups))
+	for _, g := range groups {
+		pg := repo.DirPersistGroup{GroupType: reasonToGroupType(g.Reason)}
+		for _, m := range g.Media {
+			pg.Members = append(pg.Members, repo.DirMemberPersist{
+				MediaID:  m.ID,
+				IsTarget: m.LibraryID == libraryID && isUnderDir(m.RelativePath, directory),
+			})
+		}
+		persist = append(persist, pg)
+	}
+
+	rep := &repo.DirDuplicateReport{
+		LibraryID:           libraryID,
+		Directory:           directory,
+		MediaType:           opts.MediaType,
+		ImageThreshold:      opts.ImageThreshold,
+		VideoPhashDistance:  opts.VideoPhashDistance,
+		VideoDurationDiffMs: opts.VideoDurationDiffMs,
+		OshashFilter:        opts.OshashFilter,
+		IncludeSHA1:         opts.IncludeSHA1,
+	}
+	if taskID != "" {
+		rep.BackgroundTaskID = &taskID
+	}
+	id, err := s.Dir.ReplaceDirReport(rep, persist)
+	if err != nil {
+		return nil, err
+	}
+	rep.ID = id
+	// 重新读取统计快照（ReplaceDirReport 内 UPDATE 了 total_groups/total_files）
+	if stored, err := s.Dir.GetLatestDirReport(); err == nil && stored != nil {
+		rep = stored
+	}
+	return rep, nil
+}
+
+// DirReportSummary 目录对比报告摘要。
+type DirReportSummary struct {
+	Report     *repo.DirDuplicateReport
+	FreedBytes int64 // 可释放空间（每组保留 1 个）
+}
+
+// DirSummary 返回最新目录对比报告摘要。
+func (s *Service) DirSummary() (*DirReportSummary, error) {
+	if s.Dir == nil {
+		return nil, nil
+	}
+	rep, err := s.Dir.GetLatestDirReport()
+	if err != nil || rep == nil {
+		return nil, err
+	}
+	views, err := s.Dir.DirGroupViews(rep.ID)
+	if err != nil {
+		return nil, err
+	}
+	freed := int64(0)
+	for _, v := range views {
+		items := make([]repo.MediaView, 0, len(v.Items))
+		for _, it := range v.Items {
+			items = append(items, it.MediaView)
+		}
+		freed += groupFreedBytes(items)
+	}
+	return &DirReportSummary{Report: rep, FreedBytes: freed}, nil
+}
+
+// DirGroupItem 目录对比分组展示项。
+type DirGroupItem struct {
+	ID          int64                `json:"id"`
+	GroupType   string               `json:"group_type"`
+	MemberCount int                  `json:"member_count"`
+	FreedBytes  int64                `json:"freed_bytes"`
+	Items       []repo.DirMemberView `json:"items"`
+}
+
+// DirGroupPage 目录对比分组分页结果。
+type DirGroupPage struct {
+	Total      int            `json:"total"`
+	Page       int            `json:"page"`
+	PageSize   int            `json:"page_size"`
+	TotalPages int            `json:"total_pages"`
+	Items      []DirGroupItem `json:"items"`
+}
+
+// DirGroups 返回最新目录对比报告的分组分页数据。
+func (s *Service) DirGroups(page, pageSize int) (*DirGroupPage, error) {
+	if s.Dir == nil {
+		return &DirGroupPage{Page: page, PageSize: pageSize, Items: []DirGroupItem{}}, nil
+	}
+	rep, err := s.Dir.GetLatestDirReport()
+	if err != nil {
+		return nil, err
+	}
+	if rep == nil {
+		return &DirGroupPage{Page: page, PageSize: pageSize, Items: []DirGroupItem{}}, nil
+	}
+	views, err := s.Dir.DirGroupViews(rep.ID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]DirGroupItem, 0, len(views))
+	for _, v := range views {
+		if len(v.Items) < 2 {
+			continue
+		}
+		mediaItems := make([]repo.MediaView, 0, len(v.Items))
+		for _, it := range v.Items {
+			mediaItems = append(mediaItems, it.MediaView)
+		}
+		items = append(items, DirGroupItem{
+			ID:          v.ID,
+			GroupType:   v.GroupType,
+			MemberCount: len(v.Items),
+			FreedBytes:  groupFreedBytes(mediaItems),
+			Items:       v.Items,
+		})
+	}
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	total := len(items)
+	totalPages := (total + pageSize - 1) / pageSize
+	if totalPages < 1 {
+		totalPages = 1
+	}
+	start := (page - 1) * pageSize
+	if start > total {
+		start = total
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	return &DirGroupPage{
+		Total:      total,
+		Page:       page,
+		PageSize:   pageSize,
+		TotalPages: totalPages,
+		Items:      items[start:end],
+	}, nil
 }
 
 func reasonToGroupType(reason string) string {

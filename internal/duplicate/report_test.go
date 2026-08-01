@@ -71,7 +71,7 @@ func TestVideoPHashDoesNotHardFilterDifferentOshash(t *testing.T) {
 			ID: 2, Kind: "video", Phash: &secondHash,
 			Oshash: &secondOshash, DurationMs: &duration,
 		},
-	}, 0, 0, true)
+	}, 0, 0, true, nil)
 
 	if len(groups) != 1 || len(groups[0].Media) != 2 {
 		t.Fatalf("不同 oshash 的视觉相同视频不应被硬过滤: %+v", groups)
@@ -103,7 +103,7 @@ func TestVideoPHashGroupsAcrossDifferentOshash(t *testing.T) {
 		{ID: 3, Kind: "video", Phash: &ph, DurationMs: &dur, Oshash: strp("ccc")},
 	}
 	d := &Detector{}
-	groups := d.detectVideoPHashSimilarDist(items, 12, 3000, true)
+	groups := d.detectVideoPHashSimilarDist(items, 12, 3000, true, nil)
 	if len(groups) != 1 || len(groups[0].Media) != 3 {
 		t.Fatalf("oshash 不同的视频也应合并为 1 组 3 个，实际 %d 组", len(groups))
 	}
@@ -124,7 +124,7 @@ func TestShortVideoUsesSha1OrOshashWithoutPHash(t *testing.T) {
 		{ID: 5, Kind: "video", Phash: strp("0000000000000000"), DurationMs: &dur, Sha1: strp("sha-e"), Oshash: strp("osh-e")},
 	}
 
-	groups := (&Detector{}).detectVideos(items, Options{
+	groups := (&Detector{}).detectVideos(items, nil, Options{
 		MediaType: "video", IncludeSHA1: true,
 		VideoPhashDistance: 0, VideoDurationDiffMs: 0,
 	})
@@ -156,7 +156,7 @@ func TestShortVideoHashRelationsAreTransitive(t *testing.T) {
 		{ID: 2, Kind: "video", DurationMs: &dur, Sha1: strp("sha-a"), Oshash: strp("osh-b")},
 		{ID: 3, Kind: "video", DurationMs: &dur, Sha1: strp("sha-c"), Oshash: strp("osh-b")},
 	}
-	groups := (&Detector{}).detectVideos(items, Options{MediaType: "video", IncludeSHA1: true})
+	groups := (&Detector{}).detectVideos(items, nil, Options{MediaType: "video", IncludeSHA1: true})
 	if len(groups) != 1 || len(groups[0].Media) != 3 || groups[0].Reason != "sha1_exact" {
 		t.Fatalf("SHA1/OSHash 关系应传递合并: %+v", groups)
 	}
@@ -169,7 +169,7 @@ func TestFourSecondVideoStillUsesPHash(t *testing.T) {
 		{ID: 1, Kind: "video", Phash: strp("0000000000000000"), DurationMs: &dur, Sha1: strp("sha-a"), Oshash: strp("osh-a")},
 		{ID: 2, Kind: "video", Phash: strp("0000000000000000"), DurationMs: &dur, Sha1: strp("sha-b"), Oshash: strp("osh-b")},
 	}
-	groups := (&Detector{}).detectVideos(items, Options{
+	groups := (&Detector{}).detectVideos(items, nil, Options{
 		MediaType: "video", IncludeSHA1: true,
 		VideoPhashDistance: 0, VideoDurationDiffMs: 0,
 	})

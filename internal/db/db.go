@@ -25,8 +25,14 @@ var migrationV3SQL string
 //go:embed migrations/004_scan_sha1_task_kind.sql
 var migrationV4SQL string
 
+//go:embed migrations/005_media_indexes.sql
+var migrationV5SQL string
+
+//go:embed migrations/006_directory_compare.sql
+var migrationV6SQL string
+
 // schemaVersion 当前数据库结构版本。
-const schemaVersion = 4
+const schemaVersion = 6
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
 // synchronous=NORMAL 在 WAL 模式下兼顾安全与写入性能；cache_size/mmap_size 提高大批量扫描时的读缓存。
@@ -72,6 +78,8 @@ func Migrate(db *sql.DB) error {
 		{version: 2, sql: migrationV2SQL},
 		{version: 3, sql: migrationV3SQL},
 		{version: 4, sql: migrationV4SQL},
+		{version: 5, sql: migrationV5SQL},
+		{version: 6, sql: migrationV6SQL},
 	}
 	cur, err := SchemaVersion(db)
 	if err != nil {

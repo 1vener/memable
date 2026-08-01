@@ -326,6 +326,8 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 		execErr = r.execReport(taskCtx, task, "video", progress)
 	case repo.TaskKindReportDuplicate:
 		execErr = r.execDuplicateReport(taskCtx, task, progress)
+	case repo.TaskKindReportDirectory:
+		execErr = r.execDirCompareReport(taskCtx, task, progress)
 	case repo.TaskKindPromote:
 		execErr = r.execPromote(taskCtx, task, progress)
 	case repo.TaskKindDirectoryDelete:
@@ -598,6 +600,7 @@ func (r *Runner) execDuplicateReport(ctx context.Context, task *repo.BackgroundT
 		return fmt.Errorf("重复报告服务未初始化")
 	}
 	progress("detecting", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	r.Dup.Progress = progress
 	rep, err := r.Dup.Generate(payload.Options, task.ID)
 	if err != nil {
 		return err
@@ -614,7 +617,43 @@ func (r *Runner) execDuplicateReport(ctx context.Context, task *repo.BackgroundT
 	return nil
 }
 
-// PromotePayload 入库任务参数。
+// DirComparePayload 目录对比报告任务参数。
+type DirComparePayload struct {
+	Options duplicate.Options `json:"options"`
+	// 所选目录（含子目录）与存量数据的对比范围
+	LibraryID int64  `json:"library_id"`
+	Directory string `json:"directory"`
+}
+
+// execDirCompareReport 执行目录对比报告生成并持久化到独立三表。
+func (r *Runner) execDirCompareReport(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
+	var payload DirComparePayload
+	if task.PayloadJSON != nil {
+		if err := json.Unmarshal([]byte(*task.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("解析目录对比参数: %w", err)
+		}
+	}
+	if r.Dup == nil {
+		return fmt.Errorf("重复报告服务未初始化")
+	}
+	progress("detecting", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	r.Dup.Progress = progress
+	rep, err := r.Dup.GenerateDirCompare(payload.Options, payload.LibraryID, payload.Directory, task.ID)
+	if err != nil {
+		return err
+	}
+	result, _ := json.Marshal(map[string]any{
+		"report_id":    rep.ID,
+		"total_groups": rep.TotalGroups,
+		"total_files":  rep.TotalFiles,
+		"directory":    rep.Directory,
+		"media_type":   rep.MediaType,
+	})
+	progress("done", rep.TotalGroups, rep.TotalGroups, rep.TotalGroups, 0, 0, 0, 0, 0, (*int64)(nil))
+	_ = r.Tasks.Complete(task.ID, string(result))
+	return nil
+}
+
 type PromotePayload struct {
 	SessionID string `json:"session_id"`
 	LibraryID int64  `json:"library_id"`

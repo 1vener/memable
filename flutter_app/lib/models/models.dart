@@ -245,6 +245,7 @@ class DuplicateItem {
   final int? durationMs;
   final DateTime? mtime;
   final List<String> duplicatePaths;
+  final bool isTarget; // 目录对比报告：true=所选目录文件
 
   DuplicateItem({
     required this.id,
@@ -259,6 +260,7 @@ class DuplicateItem {
     this.durationMs,
     this.mtime,
     required this.duplicatePaths,
+    this.isTarget = false,
   });
 
   factory DuplicateItem.fromJson(Map<String, dynamic> json) => DuplicateItem(
@@ -277,6 +279,7 @@ class DuplicateItem {
         : null,
     duplicatePaths:
         (json['duplicate_paths'] as List<dynamic>? ?? []).cast<String>(),
+    isTarget: json['is_target'] as bool? ?? false,
   );
 }
 
@@ -815,4 +818,114 @@ class DeleteResult {
     deletedFiles: (json['deleted_files'] as num?)?.toInt() ?? 0,
     freedBytes: (json['freed_bytes'] as num?)?.toInt() ?? 0,
   );
+}
+
+/// 目录对比报告（所选目录 vs 存量数据，独立报告）。
+class DirCompareReport {
+  final int id;
+  final int libraryId;
+  final String directory;
+  final String mediaType;
+  final int totalGroups;
+  final int totalFiles;
+  final String? createdAt;
+
+  DirCompareReport({
+    required this.id,
+    required this.libraryId,
+    required this.directory,
+    required this.mediaType,
+    required this.totalGroups,
+    required this.totalFiles,
+    this.createdAt,
+  });
+
+  factory DirCompareReport.fromJson(Map<String, dynamic> json) =>
+      DirCompareReport(
+        id: (json['id'] as num?)?.toInt() ?? 0,
+        libraryId: (json['library_id'] as num?)?.toInt() ?? 0,
+        directory: json['directory'] as String? ?? '',
+        mediaType: json['media_type'] as String? ?? 'all',
+        totalGroups: (json['total_groups'] as num?)?.toInt() ?? 0,
+        totalFiles: (json['total_files'] as num?)?.toInt() ?? 0,
+        createdAt: json['created_at'] as String?,
+      );
+}
+
+/// 目录对比报告摘要。
+class DirCompareSummary {
+  final DirCompareReport? report;
+  final int freedBytes;
+
+  DirCompareSummary({this.report, this.freedBytes = 0});
+
+  factory DirCompareSummary.fromJson(Map<String, dynamic> json) =>
+      DirCompareSummary(
+        report: json['report'] == null
+            ? null
+            : DirCompareReport.fromJson(json['report'] as Map<String, dynamic>),
+        freedBytes: (json['freed_bytes'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// 目录对比组成员（复用 DuplicateItem，isTarget 标记所选目录文件）。
+
+/// 目录对比分组项。
+class DirCompareGroupItem {
+  final int id;
+  final String groupType;
+  final int memberCount;
+  final int freedBytes;
+  final List<DuplicateItem> items;
+
+  DirCompareGroupItem({
+    required this.id,
+    required this.groupType,
+    required this.memberCount,
+    this.freedBytes = 0,
+    required this.items,
+  });
+
+  factory DirCompareGroupItem.fromJson(Map<String, dynamic> json) {
+    final items = (json['items'] as List<dynamic>? ?? [])
+        .map((e) => DuplicateItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return DirCompareGroupItem(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      groupType: json['group_type'] as String? ?? '',
+      memberCount: (json['member_count'] as num?)?.toInt() ?? items.length,
+      freedBytes: (json['freed_bytes'] as num?)?.toInt() ?? 0,
+      items: items,
+    );
+  }
+}
+
+/// 目录对比分组分页结果。
+class DirCompareGroupPage {
+  final int total;
+  final int page;
+  final int pageSize;
+  final int totalPages;
+  final List<DirCompareGroupItem> items;
+
+  DirCompareGroupPage({
+    required this.total,
+    required this.page,
+    required this.pageSize,
+    required this.totalPages,
+    required this.items,
+  });
+
+  factory DirCompareGroupPage.fromJson(Map<String, dynamic> json) {
+    final items = (json['items'] as List<dynamic>? ?? [])
+        .map((e) => DirCompareGroupItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+    return DirCompareGroupPage(
+      total: (json['total'] as num?)?.toInt() ?? items.length,
+      page: (json['page'] as num?)?.toInt() ?? 1,
+      pageSize: (json['page_size'] as num?)?.toInt() ?? 20,
+      totalPages: (json['total_pages'] as num?)?.toInt() ?? 1,
+      items: items,
+    );
+  }
 }

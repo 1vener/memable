@@ -293,7 +293,7 @@ func TestExcludeDuplicateMedia(t *testing.T) {
 	lr := repo.NewLibraryRepo(dbh)
 	mr := repo.NewMediaRepo(dbh)
 	sr := repo.NewSessionRepo(dbh)
-	dup := duplicate.NewService(repo.NewDuplicateRepo(dbh), mr, lr, cfg, "", "")
+	dup := duplicate.NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
 
 	lib := &repo.Library{Name: "库", Path: t.TempDir(), Kind: "image"}
 	if err := lr.Create(lib); err != nil {
@@ -343,5 +343,82 @@ func TestExcludeDuplicateMedia(t *testing.T) {
 	server.http.Handler.ServeHTTP(resp3, req3)
 	if resp3.Code != http.StatusBadRequest {
 		t.Fatalf("media_id=0 应返回 400: code=%d", resp3.Code)
+	}
+}
+
+// TestDirCompareAPI 验证目录对比接口：提交任务（需要 runner）、摘要、分组。
+func TestDirCompareAPI(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+	tr := repo.NewTaskRepo(dbh)
+	dup := duplicate.NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
+
+	lib := &repo.Library{Name: "库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now().UTC()
+	sha := "dddddddddddddddddddddddddddddddddddddddd"
+	for _, m := range []*repo.Media{
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "target/a.jpg", FileSize: 4, Mtime: mt, Sha1: &sha},
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "other/b.jpg", FileSize: 4, Mtime: mt, Sha1: &sha},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := NewServer(cfg, lr, sr, mr, tr, nil, nil, nil, nil, "", "", dup)
+
+	// 提交目录对比任务（无 runner 时 Enqueue 会失败，这里验证 400/409 路径与参数校验）
+	req := httptest.NewRequest(http.MethodPost, "/api/reports/directory-compare",
+		body(`{"library_id":9999,"directory":"target"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("不存在的库应 404: code=%d body=%s", resp.Code, resp.Body.String())
+	}
+
+	// 空 directory 按库根目录处理（不再 400）；测试服务无 runner 时返回 500
+	req2 := httptest.NewRequest(http.MethodPost, "/api/reports/directory-compare",
+		body(`{"library_id":`+formatInt64(lib.ID)+`}`))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2 := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp2, req2)
+	if resp2.Code != http.StatusInternalServerError {
+		t.Fatalf("无 runner 应返回 500: code=%d body=%s", resp2.Code, resp2.Body.String())
+	}
+
+	// 直接生成目录对比报告（绕过任务，验证摘要/分组接口）
+	if _, err := dup.GenerateDirCompare(duplicate.Options{MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}, lib.ID, "target", ""); err != nil {
+		t.Fatal(err)
+	}
+	req3 := httptest.NewRequest(http.MethodGet, "/api/reports/directory-compare", nil)
+	resp3 := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp3, req3)
+	if resp3.Code != http.StatusOK {
+		t.Fatalf("摘要接口失败: code=%d body=%s", resp3.Code, resp3.Body.String())
+	}
+	if !strings.Contains(resp3.Body.String(), `"directory":"target"`) {
+		t.Fatalf("摘要应含 directory: %s", resp3.Body.String())
+	}
+	req4 := httptest.NewRequest(http.MethodGet, "/api/reports/directory-compare/groups?page=1&page_size=10", nil)
+	resp4 := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp4, req4)
+	if resp4.Code != http.StatusOK {
+		t.Fatalf("分组接口失败: code=%d body=%s", resp4.Code, resp4.Body.String())
+	}
+	if !strings.Contains(resp4.Body.String(), `"is_target":true`) {
+		t.Fatalf("分组应含目标标记: %s", resp4.Body.String())
 	}
 }

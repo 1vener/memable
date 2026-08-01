@@ -8,7 +8,7 @@
   - `internal/`：`api`（HTTP 处理器）、`config`、`db`（内嵌 schema.sql + migrations/）、`repo`（数据仓库）、`media`（解码/哈希/缩略图/sprite/封面）、`scan`、`duplicate`（重复报告服务）、`search`、`task`（任务调度）、`worker`、`recycle`（回收站）、`errx`、`logx`
   - `flutter_app/lib`：`screens`、`services`、`models`、`widgets`、`utils`（时间本地化 `time_fmt.dart`）
   - 根目录：`schema.sql`、`config.yaml`、`go.mod`、`需求文档.md`、`AGENTS.md`、`Build-Server.ps1`
-- 数据库迁移：`internal/db` 内嵌 `schema.sql` 与 `migrations/`（v2=重复报告三表；v3=background_tasks.kind 增加 report_duplicate；v4=background_tasks.kind 增加 scan_sha1），当前 `schema_version=4`。新表结构变更需新增迁移文件并在 `internal/db/db.go` 的 `steps` 注册；修改带 CHECK 约束的表需重建表迁移（参照 003/004），并同步内嵌 schema.sql 与根目录 schema.sql。
+- 数据库迁移：`internal/db` 内嵌 `schema.sql` 与 `migrations/`（v2=重复报告三表；v3=background_tasks.kind 增加 report_duplicate；v4=background_tasks.kind 增加 scan_sha1；v5=media 表新增 scan_session_id/kind 与 kind/created_at 索引；v6=background_tasks.kind 增加 report_directory + 目录对比报告独立三表），当前 `schema_version=6`。新表结构变更需新增迁移文件并在 `internal/db/db.go` 的 `steps` 注册；修改带 CHECK 约束的表需重建表迁移（参照 003/004/006），并同步内嵌 schema.sql 与根目录 schema.sql。
 
 ## 核心架构速览
 
@@ -18,8 +18,10 @@
 - sprite pHash：5%~95% 区间分 5 段，每段 `-ss` 快速定位只解码 1 秒窗口抽 5 帧（`fps=5,scale=160:-1,tile=5x1`），Go 拼 5×5 后算 pHash；失败依次回退单条 `trim+fps+tile`、逐帧 25 次。封面由 sprite 中帧向两侧选非黑屏/纯色帧（`ComputeVideoSpritePHashAndCover`）。视频重复检测中，时长 `<4000ms` 的短视频不比较 sprite pHash，只按 SHA1 或 OSHash 相同合并；`>=4000ms` 的普通视频继续使用 sprite pHash + 时长差。
 - 数据库：DSN 一律用 `_pragma` 形式设置 `journal_mode(WAL)`、`foreign_keys(1)`、`busy_timeout`、`synchronous(NORMAL)`、`cache_size`、`mmap_size`；**modernc 驱动只认 `_pragma`，裸参数（如 `_journal_mode=WAL`）会被静默忽略**。媒体入库为单条 `Upsert`（`INSERT ... RETURNING id`，无批量写入）。
 - 扫描判定与进度：增量/完整性判定用内存快照（`mediaSnapshot`，扫描前一次加载全库记录），逐文件不再查库；`repo.ProgressFunc` 带 `totalBytes/processedBytes`，ETA 按字节吞吐计算且排除跳过文件，速度显示为字节/秒。
-- 重复报告：三张表 `duplicate_reports/groups/members`；生成任务 kind=`report_duplicate`，单事务替换旧报告；删除类变更即时级联并清理成员数 <2 的组；新增/重新处理置 `stale=1`。视频短时长规则：`duration_ms < 4000` 时 SHA1 或 OSHash 任一相同即合并，跳过 sprite pHash；普通视频沿用 pHash/时长差。**任务双队列**：报告类任务（`report_image`/`report_video`/`report_duplicate`）在独立报告队列串行执行（`TaskRepo.DequeueNextReport`/`reportKindsCSV`，`QueuePosition` 按所属队列计数），与主队列（扫描等）互不阻塞、可并发运行。
-- 主要 API：`/api/reports/duplicate`（生成/摘要/分组分页(支持 `directory` 过滤)/目录树/默认值/clear）、`POST /api/reports/duplicate/exclude`（排除重复：从当前报告移除指定媒体，仅当前报告生效，重新生成后重新参与检测）、`/api/media/delete`、`POST /api/libraries/{id}/scan-sha1`（补齐 SHA1 任务）、`GET /api/settings`（缩略图/日志保存位置）、`/api/tools/file-stats[/{id}/diff[/export]]`（文件统计与目录差异，xlsx 由 `internal/api/xlsx.go` 用 Go 标准库 archive/zip 手写，无第三方依赖）。
+- 重复报告：三张表 `duplicate_reports/groups/members`；生成任务 kind=`report_duplicate`，单事务替换旧报告；删除类变更即时级联并清理成员数 <2 的组；新增/重新处理置 `stale=1`。视频短时长规则：`duration_ms < 4000` 时 SHA1 或 OSHash 任一相同即合并，跳过 sprite pHash；`>=4000ms` 的普通视频继续使用 sprite pHash + 时长差。**任务双队列**：报告类任务（`report_image`/`report_video`/`report_duplicate`）在独立报告队列串行执行（`TaskRepo.DequeueNextReport`/`reportKindsCSV`，`QueuePosition` 按所属队列计数），与主队列（扫描等）互不阻塞、可并发运行。
+- 重复检测性能（百万级）：pHash 相似度用 **MIH（Multi-Index Hashing）** 索引（`internal/duplicate/mih.go`，64bit 拆 4 段 ×16bit，鸽笼原理无漏检）替代 O(n²) 两两比较；pHash 预解析为 uint64（`media.ParseHex64`/`HammingUint64`，不用 fmt.Sscanf）；视频先按 `duration_ms` 分桶（桶宽=时长差阈值）再比较。**增量检测**：`Service.Generate` 与上次报告参数（scope/media_type/各阈值）一致**且旧报告有分组**时才增量（仅对 `media.created_at >= 上次报告时间` 的媒体发起查询并与旧组合并；媒体 Upsert 冲突时刷新 `created_at`）；旧报告为空（历史 bug 产物）时回退全量，防止空报告传染。**报告写入显式逐表清空三张表再写入**（不依赖外键级联，避免历史外键未启用时残留孤儿组/成员），用 prepared statement 批量插入。
+- 目录对比报告（`dir_duplicate_reports/groups/members` 独立三表）：报告页"目录对比"按钮 → 选收藏库 + 目录（含子目录）→ 任务 kind=`report_directory`（报告队列）→ `Service.GenerateDirCompare`；检测复用 queryMask 机制（scope=`dir_vs_rest`，目标=所选目录媒体，索引全量），SHA1/OSHash/pHash 组必须**同时含目标与存量**（目标内部、存量内部不比较），成员带 `is_target` 标记；不替换重复报告，重新生成替换自身。
+- 主要 API：`/api/reports/duplicate`（生成/摘要/分组分页(支持 `directory` 过滤)/目录树/默认值/clear）、`POST /api/reports/duplicate/exclude`（排除重复：从当前报告移除指定媒体，仅当前报告生效，重新生成后重新参与检测）、`/api/reports/directory-compare`（目录对比：生成/摘要/分组分页）、`/api/media/delete`、`POST /api/libraries/{id}/scan-sha1`（补齐 SHA1 任务）、`GET /api/settings`（缩略图/日志保存位置）、`/api/tools/file-stats[/{id}/diff[/export]]`（文件统计与目录差异，xlsx 由 `internal/api/xlsx.go` 用 Go 标准库 archive/zip 手写，无第三方依赖）。
 - 删除安全：源文件默认移入系统回收站（`internal/recycle`，Windows 用 PowerShell），`delete.permanent: true` 可永久删除；目录删除为同步接口；缩略图为生成物直接删除。
 
 ## 已实现的关键行为

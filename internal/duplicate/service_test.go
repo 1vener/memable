@@ -166,7 +166,7 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 		t.Fatalf("应导入 6 个文件，实际 %d", result.Imported)
 	}
 
-	svc := NewService(dupRepo, mediaRepo, libRepo, cfg, thumbDir, thumbDir)
+	svc := NewService(dupRepo, repo.NewDirDuplicateRepo(dbh), mediaRepo, libRepo, cfg, thumbDir, thumbDir)
 
 	// 全部数据：SHA1 组应包含 a/b/d（3 个文件）
 	repAll, err := svc.Generate(Options{
@@ -423,7 +423,7 @@ func TestExcludeMediaRemovesFromCurrentReport(t *testing.T) {
 		}
 	}
 
-	svc := NewService(repo.NewDuplicateRepo(dbh), mr, lr, cfg, "", "")
+	svc := NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
 	rep, err := svc.Generate(Options{Scope: "all", MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -489,5 +489,320 @@ func TestExcludeMediaRemovesFromCurrentReport(t *testing.T) {
 	}
 	if len(ids) != 2 || (ids[0] != idA && ids[1] != idA) || (ids[0] != idB && ids[1] != idB) {
 		t.Fatalf("重新生成的组应包含 a/b，实际 %v", ids)
+	}
+}
+
+// TestGenerateIncrementalAndFullRebuild 验证报告生成的增量检测与全量重建：
+// 参数不变时新增媒体只补增量；阈值变化时全量重建。
+func TestGenerateIncrementalAndFullRebuild(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	lib := &repo.Library{Name: "增量库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
+
+	// a/b sha1 相同成组
+	mt := time.Now()
+	shaA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	shaB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, m := range []*repo.Media{
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "a.jpg", FileSize: 100, Mtime: mt, Sha1: &shaA},
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "b.jpg", FileSize: 100, Mtime: mt, Sha1: &shaA},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := Options{Scope: "all", MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}
+	rep1, err := svc.Generate(opts, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep1.TotalGroups != 1 || rep1.TotalFiles != 2 {
+		t.Fatalf("首次报告应 1 组 2 文件: %+v", rep1)
+	}
+
+	// 新增 c（与 a 同 sha1）、d（独立）：再次同参数生成，增量检测应纳入 c
+	if err := mr.Upsert(&repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: "c.jpg", FileSize: 100, Mtime: mt, Sha1: &shaA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mr.Upsert(&repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: "d.jpg", FileSize: 100, Mtime: mt, Sha1: &shaB}); err != nil {
+		t.Fatal(err)
+	}
+	rep2, err := svc.Generate(opts, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.TotalGroups != 1 || rep2.TotalFiles != 3 {
+		t.Fatalf("增量后应 1 组 3 文件: %+v", rep2)
+	}
+
+	// 阈值变化：全量重建仍应得到正确结果（sha1 分组不受阈值影响）
+	rep3, err := svc.Generate(Options{Scope: "all", MediaType: "image", ImageThreshold: 50, IncludeSHA1: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep3.TotalGroups != 1 || rep3.TotalFiles != 3 {
+		t.Fatalf("阈值变化全量重建应 1 组 3 文件: %+v", rep3)
+	}
+	if rep3.ImageThreshold != 50 {
+		t.Fatalf("报告应记录新阈值: %+v", rep3)
+	}
+}
+
+// TestGenerateIncrementalKeepsOldGroups 回归：无新增媒体时再次生成报告，
+// 旧报告的重复分组必须保留（增量检测不得清空已有重复数据）。
+func TestGenerateIncrementalKeepsOldGroups(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	lib := &repo.Library{Name: "保留库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
+
+	mt := time.Now()
+	shaA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	for _, m := range []*repo.Media{
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "a.jpg", FileSize: 100, Mtime: mt, Sha1: &shaA},
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "b.jpg", FileSize: 100, Mtime: mt, Sha1: &shaA},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := Options{Scope: "all", MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}
+	rep1, err := svc.Generate(opts, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep1.TotalGroups != 1 || rep1.TotalFiles != 2 {
+		t.Fatalf("首次报告应 1 组 2 文件: %+v", rep1)
+	}
+
+	// 数据无任何变化，再次生成：增量检测必须保留旧组
+	rep2, err := svc.Generate(opts, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.TotalGroups != 1 || rep2.TotalFiles != 2 {
+		t.Fatalf("无变化再次生成应保留 1 组 2 文件: %+v", rep2)
+	}
+	page, err := svc.Groups(1, 20, "all", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].MemberCount != 2 {
+		t.Fatalf("分组数据应保留: %+v", page)
+	}
+}
+
+// TestGenerateEmptyReportDoesNotPropagate 回归：旧报告为空（0 组）时，
+// 再次生成必须走全量检测，禁止增量检测导致空报告传染。
+func TestGenerateEmptyReportDoesNotPropagate(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	lib := &repo.Library{Name: "空报告库", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
+
+	mt := time.Now()
+	shaA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	shaB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	// a/b 相同成组，c 独立
+	for _, m := range []*repo.Media{
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "a.jpg", FileSize: 100, Mtime: mt, Sha1: &shaA},
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "b.jpg", FileSize: 100, Mtime: mt, Sha1: &shaA},
+		{LibraryID: lib.ID, Kind: "image", RelativePath: "c.jpg", FileSize: 100, Mtime: mt, Sha1: &shaB},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	opts := Options{Scope: "all", MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}
+	rep1, err := svc.Generate(opts, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep1.TotalGroups != 1 {
+		t.Fatalf("首次报告应 1 组: %+v", rep1)
+	}
+
+	// 模拟历史空报告（如外键未启用时代的 bug 产物）：手工把当前报告改成空
+	if _, err := dbh.Exec(`DELETE FROM duplicate_group_members`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbh.Exec(`DELETE FROM duplicate_groups`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbh.Exec(`UPDATE duplicate_reports SET total_groups=0, total_files=0`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 再次生成：旧报告为空 → 必须全量检测恢复分组
+	rep2, err := svc.Generate(opts, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.TotalGroups != 1 || rep2.TotalFiles != 2 {
+		t.Fatalf("旧报告为空时应全量恢复 1 组 2 文件: %+v", rep2)
+	}
+}
+
+// TestGenerateDirCompare 验证目录对比：所选目录（含子目录）与存量数据成组，
+// 目标内部不比较；is_target 标记正确；独立三表存储不污染重复报告。
+func TestGenerateDirCompare(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	svc := NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
+
+	lib1 := &repo.Library{Name: "库1", Path: t.TempDir(), Kind: "image"}
+	lib2 := &repo.Library{Name: "库2", Path: t.TempDir(), Kind: "image"}
+	if err := lr.Create(lib1); err != nil {
+		t.Fatal(err)
+	}
+	if err := lr.Create(lib2); err != nil {
+		t.Fatal(err)
+	}
+
+	mt := time.Now()
+	shaTarget := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	shaBoth := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	shaOther := "cccccccccccccccccccccccccccccccccccccccc"
+	// 库1 target/ 目录：a1/a2 同 sha（目标内部相同，无存量匹配 → 不应成组）；a3 与存量 b 同 sha
+	// 库1 other/ 目录：b（存量，与目标 a3 同 sha）
+	// 库2 根目录：d（存量，与目标 a3 同 sha）
+	for _, m := range []*repo.Media{
+		{LibraryID: lib1.ID, Kind: "image", RelativePath: "target/a1.jpg", FileSize: 100, Mtime: mt, Sha1: &shaTarget},
+		{LibraryID: lib1.ID, Kind: "image", RelativePath: "target/a2.jpg", FileSize: 100, Mtime: mt, Sha1: &shaTarget},
+		{LibraryID: lib1.ID, Kind: "image", RelativePath: "target/sub/a3.jpg", FileSize: 100, Mtime: mt, Sha1: &shaBoth},
+		{LibraryID: lib1.ID, Kind: "image", RelativePath: "other/b.jpg", FileSize: 100, Mtime: mt, Sha1: &shaBoth},
+		{LibraryID: lib2.ID, Kind: "image", RelativePath: "d.jpg", FileSize: 100, Mtime: mt, Sha1: &shaBoth},
+		{LibraryID: lib1.ID, Kind: "image", RelativePath: "other/e.jpg", FileSize: 100, Mtime: mt, Sha1: &shaOther},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	opts := Options{MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}
+	rep, err := svc.GenerateDirCompare(opts, lib1.ID, "target", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Directory != "target" || rep.TotalGroups != 1 || rep.TotalFiles != 3 {
+		t.Fatalf("目录对比报告应 1 组 3 文件: %+v", rep)
+	}
+
+	// 分组详情：组内 a3（目标）+ b、d（存量），is_target 标记正确
+	views, err := svc.Dir.DirGroupViews(rep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || len(views[0].Items) != 3 {
+		t.Fatalf("应只有 1 组 3 成员: %+v", views)
+	}
+	var targetCount, nonTargetCount int
+	for _, it := range views[0].Items {
+		if it.IsTarget {
+			targetCount++
+			if it.RelativePath != "target/sub/a3.jpg" {
+				t.Fatalf("目标成员应为 a3: %+v", it)
+			}
+		} else {
+			nonTargetCount++
+		}
+	}
+	if targetCount != 1 || nonTargetCount != 2 {
+		t.Fatalf("目标 1 存量 2，实际 目标 %d 存量 %d", targetCount, nonTargetCount)
+	}
+
+	// 目标内部相同（a1/a2 同 sha）无存量匹配，不应成组 → 已在 1 组断言中隐含验证
+
+	// 独立存储：重复报告不受影响（无重复报告）
+	dupRep, err := svc.Dup.GetLatestReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dupRep != nil {
+		t.Fatalf("目录对比不应产生重复报告: %+v", dupRep)
+	}
+
+	// 分页接口
+	page, err := svc.DirGroups(1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].MemberCount != 3 {
+		t.Fatalf("分页结果不符: %+v", page)
+	}
+
+	// 摘要
+	summary, err := svc.DirSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary == nil || summary.Report == nil || summary.Report.Directory != "target" {
+		t.Fatalf("摘要不符: %+v", summary)
+	}
+
+	// 再次生成：替换旧目录对比报告（仍 1 份）
+	rep2, err := svc.GenerateDirCompare(opts, lib1.ID, "target", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.ID == rep.ID {
+		t.Fatalf("重新生成应产生新报告: %d vs %d", rep2.ID, rep.ID)
+	}
+	latest, err := svc.Dir.GetLatestDirReport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.ID != rep2.ID {
+		t.Fatalf("最新目录对比报告不符: %+v", latest)
 	}
 }

@@ -60,10 +60,19 @@ type PersistGroup struct {
 	MediaIDs  []int64
 }
 
-// ReplaceReport 在单事务中替换旧报告：删除全部旧报告（组/成员级联）→ 写入新报告 → 更新统计。
+// ReplaceReport 在单事务中替换旧报告：显式清空全部旧报告数据（组/成员）→
+// 写入新报告 → 更新统计。显式逐表 DELETE 不依赖外键级联，
+// 避免历史外键未启用时残留孤儿组/成员。
+// 组与成员使用 prepared statement 批量写入，避免逐行解析 SQL。
 func (r *DuplicateRepo) ReplaceReport(rep *DuplicateReport, groups []PersistGroup) (int64, error) {
 	var reportID int64
 	err := WithTx(r.db, 3, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`DELETE FROM duplicate_group_members`); err != nil {
+			return errx.Wrapf(err, "清空旧重复报告成员")
+		}
+		if _, err := tx.Exec(`DELETE FROM duplicate_groups`); err != nil {
+			return errx.Wrapf(err, "清空旧重复报告组")
+		}
 		if _, err := tx.Exec(`DELETE FROM duplicate_reports`); err != nil {
 			return errx.Wrapf(err, "清空旧重复报告")
 		}
@@ -72,14 +81,27 @@ func (r *DuplicateRepo) ReplaceReport(rep *DuplicateReport, groups []PersistGrou
 			return err
 		}
 		reportID = id
+
+		groupStmt, err := tx.Prepare(`INSERT INTO duplicate_groups (report_id, group_type) VALUES (?,?)`)
+		if err != nil {
+			return errx.Wrapf(err, "准备分组写入")
+		}
+		defer groupStmt.Close()
+		memberStmt, err := tx.Prepare(`INSERT OR IGNORE INTO duplicate_group_members (group_id, media_id) VALUES (?,?)`)
+		if err != nil {
+			return errx.Wrapf(err, "准备成员写入")
+		}
+		defer memberStmt.Close()
+
 		for _, pg := range groups {
-			gid, err := r.CreateGroupTx(tx, &DuplicateGroup{ReportID: reportID, GroupType: pg.GroupType})
+			res, err := groupStmt.Exec(reportID, pg.GroupType)
 			if err != nil {
-				return err
+				return errx.Wrapf(err, "创建重复组")
 			}
+			gid, _ := res.LastInsertId()
 			for _, mid := range pg.MediaIDs {
-				if err := r.CreateMemberTx(tx, gid, mid); err != nil {
-					return err
+				if _, err := memberStmt.Exec(gid, mid); err != nil {
+					return errx.Wrapf(err, "创建重复组成员")
 				}
 			}
 		}
@@ -136,8 +158,15 @@ func (r *DuplicateRepo) CreateMemberTx(tx *sql.Tx, groupID, mediaID int64) error
 	return nil
 }
 
-// DeleteAllReports 删除全部报告（生成新报告前调用，组/成员级联删除）。
+// DeleteAllReports 删除全部报告（生成新报告前调用）。
+// 显式逐表清空，不依赖外键级联，避免残留孤儿组/成员。
 func (r *DuplicateRepo) DeleteAllReports() error {
+	if _, err := r.db.Exec(`DELETE FROM duplicate_group_members`); err != nil {
+		return errx.Wrapf(err, "清空重复报告成员")
+	}
+	if _, err := r.db.Exec(`DELETE FROM duplicate_groups`); err != nil {
+		return errx.Wrapf(err, "清空重复报告组")
+	}
 	if _, err := r.db.Exec(`DELETE FROM duplicate_reports`); err != nil {
 		return errx.Wrapf(err, "清空重复报告")
 	}

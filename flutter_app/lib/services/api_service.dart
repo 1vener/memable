@@ -417,6 +417,68 @@ class ApiService {
     return (data['removed_members'] as num?)?.toInt() ?? 0;
   }
 
+  // ===== 目录对比报告（所选目录 vs 存量数据）=====
+
+  /// 提交目录对比报告生成任务（后台执行），返回任务信息。
+  Future<Map<String, dynamic>> generateDirCompare({
+    required int libraryId,
+    required String directory,
+    String mediaType = 'all',
+    int? imageThreshold,
+    int? videoPhashDistance,
+    int? videoDurationDiffMs,
+    bool? oshashFilter,
+    bool? includeSha1,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/reports/directory-compare'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'library_id': libraryId,
+        'directory': directory,
+        'media_type': mediaType,
+        if (imageThreshold != null) 'image_threshold': imageThreshold,
+        if (videoPhashDistance != null)
+          'video_phash_distance': videoPhashDistance,
+        if (videoDurationDiffMs != null)
+          'video_duration_diff_ms': videoDurationDiffMs,
+        if (oshashFilter != null) 'oshash_filter': oshashFilter,
+        if (includeSha1 != null) 'include_sha1': includeSha1,
+      }),
+    );
+    if (res.statusCode != 202) throw Exception('提交目录对比失败: ${res.body}');
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// 最新目录对比报告摘要。
+  Future<DirCompareSummary> getDirCompareSummary() async {
+    final res = await http.get(
+      Uri.parse('$baseUrl/api/reports/directory-compare'),
+    );
+    if (res.statusCode != 200) throw Exception('读取目录对比摘要失败: ${res.body}');
+    return DirCompareSummary.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
+  }
+
+  /// 目录对比分组分页数据。
+  Future<DirCompareGroupPage> getDirCompareGroups({
+    int page = 1,
+    int pageSize = 20,
+  }) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/reports/directory-compare/groups',
+    ).replace(queryParameters: {
+      'page': '$page',
+      'page_size': '$pageSize',
+    });
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('读取目录对比分组失败: ${res.body}');
+    return DirCompareGroupPage.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
+  }
+
   /// 删除媒体（源文件默认移入回收站，可永久删除）。
   Future<DeleteResult> deleteMedia(
     List<int> mediaIds, {

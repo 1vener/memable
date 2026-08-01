@@ -118,6 +118,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/reports/duplicate/defaults", s.handleGetDuplicateReportDefaults)
 	mux.HandleFunc("POST /api/reports/duplicate/clear", s.handleClearDuplicateReport)
 	mux.HandleFunc("POST /api/reports/duplicate/exclude", s.handleExcludeDuplicateMedia)
+	mux.HandleFunc("POST /api/reports/directory-compare", s.handleCreateDirCompare)
+	mux.HandleFunc("GET /api/reports/directory-compare", s.handleGetDirCompare)
+	mux.HandleFunc("GET /api/reports/directory-compare/groups", s.handleListDirCompareGroups)
 
 	// 缩略图静态服务：/api/thumbnails/{kind}/{rel}，kind ∈ image/video
 	mux.HandleFunc("GET /api/thumbnails/{kind}/", s.handleThumbnail)

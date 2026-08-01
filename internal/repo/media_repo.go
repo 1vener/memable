@@ -35,7 +35,8 @@ func (r *MediaRepo) Upsert(m *Media) error {
 			dhash=excluded.dhash, ahash=excluded.ahash, duration_ms=excluded.duration_ms,
 			video_codec=excluded.video_codec, audio_codec=excluded.audio_codec,
 			frame_rate=excluded.frame_rate, bit_rate=excluded.bit_rate,
-			oshash=excluded.oshash, sha1=excluded.sha1, thumbnail_path=excluded.thumbnail_path
+			oshash=excluded.oshash, sha1=excluded.sha1, thumbnail_path=excluded.thumbnail_path,
+			created_at=datetime('now')
 		 RETURNING id`,
 		m.LibraryID, m.ScanSessionID, m.Kind, m.RelativePath, m.FileSize, m.Mtime,
 		m.Format, m.Width, m.Height, m.Phash, m.Dhash, m.Ahash, m.DurationMs,
