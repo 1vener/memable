@@ -21,14 +21,21 @@ import (
 	"memable/internal/task"
 )
 
+// version 构建时通过 -ldflags "-X main.version=..." 注入（Build-Release.ps1 / CI）。
+var version = "dev"
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "配置文件路径")
+	port := flag.Int("port", 0, "HTTP 监听端口（覆盖配置 server.port；0=不覆盖，默认 12358）")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		slog.Error("加载配置失败", "err", err)
 		os.Exit(1)
+	}
+	if *port > 0 {
+		cfg.Server.Port = *port
 	}
 	if err := logx.Init(cfg.Log.Level, cfg.Log.Format, cfg.Log.File); err != nil {
 		slog.Error("初始化日志失败", "err", err)
@@ -98,7 +105,7 @@ func main() {
 		srv.Shutdown(context.Background())
 	}()
 
-	slog.Info("memable 服务启动完成", "addr", ":8080")
+	slog.Info("memable 服务启动", "version", version)
 	if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
 		slog.Error("服务器异常退出", "err", err)
 		os.Exit(1)

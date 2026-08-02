@@ -5,13 +5,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"memable/internal/config"
@@ -53,6 +56,7 @@ type Server struct {
 	ffmpegCaps     *ffmpegCaps
 	ffprobeCaps    *ffprobeCaps
 	http           *http.Server
+	port           int // 实际监听端口（自动避让/随机后）
 }
 
 // NewServer 创建 HTTP API 服务器。
@@ -75,12 +79,17 @@ func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, m
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 	s.http = &http.Server{
-		Addr:         ":8080",
+		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      corsMiddleware(mux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 120 * time.Second,
 	}
 	return s
+}
+
+// ActualPort 返回实际监听端口（Start 成功后有效；随机端口场景下前端以此为准）。
+func (s *Server) ActualPort() int {
+	return s.port
 }
 
 // registerRoutes 注册所有 API 路由。
@@ -153,10 +162,55 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/tools/file-stats/{id}", s.handleDeleteFileStats)
 }
 
-// Start 启动 HTTP 服务器。
+// Start 启动 HTTP 服务器。指定端口被占用（EADDRINUSE）时自动 +1 避让，
+// 最多尝试 20 个端口；配置端口为 0 时使用随机空闲端口。
+// 实际监听端口通过 ActualPort() 获取。
 func (s *Server) Start() error {
-	slog.Info("HTTP API 启动", "addr", s.http.Addr)
-	return s.http.ListenAndServe()
+	base := s.cfg.Server.Port
+	maxAttempts := 20
+	if base == 0 {
+		maxAttempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		port := base + attempt
+		addr := fmt.Sprintf(":%d", port)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			lastErr = err
+			if isAddrInUse(err) {
+				slog.Warn("端口被占用，尝试下一个端口", "addr", addr, "err", err)
+				continue
+			}
+			return fmt.Errorf("监听 %s: %w", addr, err)
+		}
+		if port == 0 {
+			// 随机端口：实际端口从监听器获取
+			s.port = ln.Addr().(*net.TCPAddr).Port
+		} else {
+			s.port = port
+		}
+		slog.Info("HTTP API 启动", "addr", addr)
+		return s.http.Serve(ln)
+	}
+	return fmt.Errorf("端口 %d~%d 均被占用: %w", base, base+maxAttempts-1, lastErr)
+}
+
+// isAddrInUse 判断端口占用错误。Windows 的错误码是 10048（WSAEADDRINUSE），
+// 与 Go 的 syscall.EADDRINUSE（Unix 语义常量）不同，需一并判断；
+// 文本匹配兜底覆盖各平台不同表述。
+func isAddrInUse(err error) bool {
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "in use") ||
+		strings.Contains(msg, "address already in use") ||
+		strings.Contains(msg, "only one usage of each socket address") {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		return errno == syscall.EADDRINUSE || errno == 10048 // WSAEADDRINUSE
+	}
+	return false
 }
 
 // Shutdown 优雅关闭。

@@ -1,10 +1,19 @@
 // main.dart：Flutter 应用入口，主题系统与全局配置
 // 代码注释使用中文
+import 'dart:io';
+import 'dart:ui' show AppExitResponse;
+
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/home_screen.dart';
 import 'services/api_service.dart';
+
+/// 后端默认端口与探测范围（覆盖服务端自动避让上限 20 个端口）。
+const kDefaultPort = 12358;
+const kPortProbeCount = 20;
 
 /// 全局主题管理器（模式 + 自定义主题色，本地持久化）
 class ThemeNotifier extends ChangeNotifier {
@@ -75,6 +84,10 @@ class ThemeNotifier extends ChangeNotifier {
 /// 全局单例
 final themeNotifier = ThemeNotifier();
 
+/// 应用退出时清理后端进程的监听器（保持引用防止被 GC，生命周期与进程一致）。
+// ignore: unused_element
+AppLifecycleListener? _exitListener;
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   themeNotifier.load();
@@ -82,11 +95,110 @@ void main() {
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
   ));
+  // 官方退出钩子：桌面窗口关闭时先停止后端再退出（比 dispose 可靠）
+  _exitListener = AppLifecycleListener(
+    onExitRequested: () async {
+      await BackendManager.stopBackend();
+      return AppExitResponse.exit;
+    },
+  );
   runApp(const MemableApp());
 }
 
-class MemableApp extends StatelessWidget {
+/// 自动发现后端服务并返回 baseUrl：
+/// 1. 快速探测默认端口；2. 并发探测避让范围（端口被占用时后端 +1 避让）；
+/// 3. release 构建仍不通则拉起同目录 server.exe 并等待就绪；4. 全部失败回退默认端口。
+Future<String> discoverBackend() async {
+  if (await _healthOk(kDefaultPort)) {
+    return 'http://localhost:$kDefaultPort';
+  }
+  final results = await Future.wait([
+    for (var p = kDefaultPort + 1; p < kDefaultPort + kPortProbeCount; p++)
+      _healthOk(p).then((ok) => ok ? p : null),
+  ]);
+  for (final p in results) {
+    if (p != null) return 'http://localhost:$p';
+  }
+  // 开发模式（flutter run）不自动拉起后端，避免重复起服务
+  if (!kDebugMode) {
+    await BackendManager.startBackend();
+    // 等待就绪（最多 10 秒）
+    for (var i = 0; i < 50; i++) {
+      await Future.delayed(const Duration(milliseconds: 200));
+      if (await _healthOk(kDefaultPort)) return 'http://localhost:$kDefaultPort';
+    }
+  }
+  return 'http://localhost:$kDefaultPort';
+}
+
+Future<bool> _healthOk(int port) async {
+  try {
+    final res = await http
+        .get(Uri.parse('http://localhost:$port/api/health'))
+        .timeout(const Duration(milliseconds: 400));
+    return res.statusCode == 200;
+  } catch (_) {
+    return false;
+  }
+}
+
+/// 后端进程管理：启动同目录 server.exe 并在应用退出时终止。
+class BackendManager {
+  static Process? _process;
+
+  /// 启动与前端 exe 同目录的 server.exe（仅 release 构建调用）。
+  static Future<void> startBackend() async {
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final serverExe = File('$exeDir${Platform.pathSeparator}server.exe');
+      if (!await serverExe.exists()) return;
+      // detached：stdout/stderr 脱离管道，避免服务端日志积压管道缓冲导致阻塞；
+      // Process 句柄仍保留，退出时可 kill。
+      _process = await Process.start(
+        serverExe.path,
+        const ['-config', 'config.yaml'],
+        mode: ProcessStartMode.detached,
+      );
+    } catch (_) {
+      _process = null;
+    }
+  }
+
+  /// 停止后端进程（应用退出时调用，幂等）。
+  static Future<void> stopBackend() async {
+    final p = _process;
+    _process = null;
+    if (p != null) {
+      p.kill();
+      await p.exitCode.timeout(const Duration(seconds: 2), onTimeout: () => -1);
+    }
+  }
+}
+
+class MemableApp extends StatefulWidget {
   const MemableApp({super.key});
+
+  @override
+  State<MemableApp> createState() => _MemableAppState();
+}
+
+class _MemableAppState extends State<MemableApp> {
+  String? _baseUrl; // null = 发现中
+
+  @override
+  void initState() {
+    super.initState();
+    discoverBackend().then((url) {
+      if (mounted) setState(() => _baseUrl = url);
+    });
+  }
+
+  @override
+  void dispose() {
+    // 双保险：正常情况下退出走 AppLifecycleListener.onExitRequested
+    BackendManager.stopBackend();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -99,7 +211,9 @@ class MemableApp extends StatelessWidget {
           themeMode: themeNotifier.mode,
           theme: _lightTheme(themeNotifier.seedColor),
           darkTheme: _darkTheme(themeNotifier.seedColor),
-          home: HomeScreen(api: ApiService()),
+          home: _baseUrl == null
+              ? const Center(child: CircularProgressIndicator())
+              : HomeScreen(api: ApiService(baseUrl: _baseUrl!)),
         );
       },
     );

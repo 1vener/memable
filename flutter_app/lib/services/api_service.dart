@@ -10,7 +10,7 @@ import '../models/models.dart';
 class ApiService {
   final String baseUrl;
 
-  ApiService({this.baseUrl = 'http://localhost:8080'});
+  ApiService({this.baseUrl = 'http://localhost:12358'});
 
   // ===== 健康检查 =====
 

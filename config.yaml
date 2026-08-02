@@ -1,6 +1,11 @@
 # 默认 config.yaml；可用 -config 指定其他路径，也可用 MEMABLE_* 环境变量覆盖。
 # 所有路径均支持相对路径（相对于工作目录）。
 
+server:
+  port: 12358              # HTTP 监听端口。被占用时自动 +1 避让（最多试 20 个端口）；
+                           # 0=随机空闲端口；也可用 -port flag 或 MEMABLE_SERVER__PORT 覆盖。
+                           # 实际端口见启动日志或 /api/settings 的 server_port。
+
 #database:
 #  path: memable.db          # SQLite 数据库文件路径；":memory:" 为内存库。
                             # 注释掉/留空时默认系统数据目录：

@@ -1266,7 +1266,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// handleSettings 返回服务端存储位置（设置页展示用）。
+// handleSettings 返回服务端存储位置与监听信息（设置页展示用）。
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	dbPath, _ := filepath.Abs(s.cfg.Database.Path)
 	imageDir, _ := filepath.Abs(s.cfg.ImageThumbDir())
@@ -1275,7 +1275,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(s.cfg.Log.File) != "" {
 		logFile, _ = filepath.Abs(s.cfg.Log.File)
 	}
+	port := s.ActualPort()
+	if port <= 0 {
+		port = s.cfg.Server.Port
+	}
 	writeJSON(w, 200, map[string]any{
+		"server_port":         port,     // 实际监听端口（可能因占用自动避让）
 		"database_path":       dbPath,   // 数据库文件路径
 		"thumbnail_image_dir": imageDir, // 图片缩略图保存目录
 		"thumbnail_video_dir": videoDir, // 视频封面保存目录

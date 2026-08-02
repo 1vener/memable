@@ -14,6 +14,7 @@ import (
 
 // Config 聚合全部运行配置（不入库，来自 config.yaml）。
 type Config struct {
+	Server     ServerConfig     `mapstructure:"server"`
 	Database   DatabaseConfig   `mapstructure:"database"`
 	Thumbnail  ThumbnailConfig  `mapstructure:"thumbnail"`
 	Video      VideoConfig      `mapstructure:"video"`
@@ -22,6 +23,13 @@ type Config struct {
 	Log        LogConfig        `mapstructure:"log"`
 	Delete     DeleteConfig     `mapstructure:"delete"`
 	UI         UIConfig         `mapstructure:"ui"`
+}
+
+// ServerConfig HTTP 服务配置。
+type ServerConfig struct {
+	// Port 监听端口（默认 12358）。被占用时自动 +1 避让（上限 20 次）；
+	// 0 表示随机端口。实际监听端口见 /api/settings 的 server_port 与启动日志。
+	Port int `mapstructure:"port"`
 }
 
 // DeleteConfig 删除安全策略。
@@ -125,6 +133,7 @@ func Load(path string) (*Config, error) {
 	v := viper.New()
 
 	// 默认值
+	v.SetDefault("server.port", 12358)
 	v.SetDefault("database.path", "memable.db")
 	v.SetDefault("thumbnail.image_dir", "")
 	v.SetDefault("thumbnail.video_dir", "")
@@ -149,8 +158,10 @@ func Load(path string) (*Config, error) {
 
 	// 文件不存在时允许用默认值+env 启动；但解析错误（YAML 语法、编码等）必须暴露，
 	// 否则所有配置会静默回退到 SetDefault 默认值，导致 delete.permanent 等关键项与用户预期不符。
+	// 注意：viper v1.21 起 ReadInConfig 对文件不存在返回原始 *os.PathError（不再包装
+	// ConfigFileNotFoundError），os.IsNotExist 判断兼容两种行为。
 	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok || os.IsNotExist(err) {
 			// 找不到默认文件允许忽略；显式路径不同则不进入此分支
 		} else {
 			return nil, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
