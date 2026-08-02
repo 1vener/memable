@@ -772,13 +772,48 @@ func TestGenerateDirCompare(t *testing.T) {
 		t.Fatalf("目录对比不应产生重复报告: %+v", dupRep)
 	}
 
-	// 分页接口
-	page, err := svc.DirGroups(1, 20)
+	// 分页接口（kind 过滤）
+	page, err := svc.DirGroups(1, 20, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].MemberCount != 3 {
 		t.Fatalf("分页结果不符: %+v", page)
+	}
+	// kind=video 过滤后应为空
+	pageVideo, err := svc.DirGroups(1, 20, "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageVideo.Total != 0 {
+		t.Fatalf("kind=video 过滤应无分组: %+v", pageVideo)
+	}
+	// 目录树：目录对比语义下所有含重复成员的目录都计入（即使目录内只有 1 个成员）。
+	// 组内成员分布在 target/sub、other、根目录（d.jpg），对应树节点 target/sub、other 与根。
+	tree, err := svc.DirTree("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findNode func(nodes []*TreeItem, path string) *TreeItem
+	findNode = func(nodes []*TreeItem, path string) *TreeItem {
+		for _, n := range nodes {
+			if n.Path == path {
+				return n
+			}
+			if r := findNode(n.Children, path); r != nil {
+				return r
+			}
+		}
+		return nil
+	}
+	if n := findNode(tree, "target/sub"); n == nil || n.FileCount != 1 {
+		t.Fatalf("目录树应含 target/sub(1): %+v", tree)
+	}
+	if n := findNode(tree, "other"); n == nil || n.FileCount != 1 {
+		t.Fatalf("目录树应含 other(1): %+v", tree)
+	}
+	if n := findNode(tree, ""); n == nil || n.FileCount != 1 {
+		t.Fatalf("目录树应含根节点(1): %+v", tree)
 	}
 
 	// 摘要
@@ -788,6 +823,55 @@ func TestGenerateDirCompare(t *testing.T) {
 	}
 	if summary == nil || summary.Report == nil || summary.Report.Directory != "target" {
 		t.Fatalf("摘要不符: %+v", summary)
+	}
+
+	// 排除重复：移除目标成员 a3，组剩 b/d（2 个）仍有效，统计刷新为 2 文件
+	a3, err := mr.GetByPath(lib1.ID, "target/sub/a3.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := svc.DirExcludeMedia(a3.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("应移除 1 个成员，实际 %d", removed)
+	}
+	summary, err = svc.DirSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Report.TotalFiles != 2 || summary.Report.TotalGroups != 1 {
+		t.Fatalf("排除后统计应 1 组 2 文件: %+v", summary.Report)
+	}
+
+	// 一键清除（page 范围）：组内 b/d 保留最大文件（大小相同保留首个），删除 1 个
+	viewsAfter, err := svc.Dir.DirGroupViews(rep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viewsAfter) != 1 {
+		t.Fatalf("排除后应 1 组: %+v", viewsAfter)
+	}
+	clearRes, err := svc.DirClear(ClearRequest{Scope: "page", Keep: "largest", GroupIDs: []int64{viewsAfter[0].ID}}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clearRes.DeletedFiles != 1 {
+		t.Fatalf("应删除 1 个文件: %+v", clearRes)
+	}
+	// 删除后组只剩 1 成员被 prune，报告无有效组
+	page, err = svc.DirGroups(1, 20, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 {
+		t.Fatalf("清除后应无有效组: %+v", page)
+	}
+
+	// PruneAfterMediaChange 覆盖目录对比报告（不报错即通过）
+	if err := svc.PruneAfterMediaChange(); err != nil {
+		t.Fatalf("PruneAfterMediaChange: %v", err)
 	}
 
 	// 再次生成：替换旧目录对比报告（仍 1 份）

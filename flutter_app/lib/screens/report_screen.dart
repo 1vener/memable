@@ -1,4 +1,4 @@
-// report_screen.dart：重复报告页（目录树视图 + 分组视图）。
+﻿// report_screen.dart：重复报告页（目录树视图 + 分组视图）。
 // 支持生成选项、分页、右键菜单、card_swiper 叠卡效果与一键清除。
 // 代码注释使用中文。
 import 'dart:async';
@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
+import '../widgets/report_common.dart';
 
 enum _ReportView { directory, group }
 
@@ -43,26 +44,16 @@ class _ReportScreenState extends State<ReportScreen> {
 
   Timer? _pollTimer;
 
-  // 目录对比报告（独立，不替换重复报告）
-  DirCompareSummary? _dirSummary;
-  DirCompareGroupPage? _dirPage;
-  int _dirPageNo = 1;
-  int _dirPageSize = 20;
-  bool _dirLoading = false;
-  String? _dirTaskId; // 进行中的目录对比任务
-  Timer? _dirPollTimer;
 
   @override
   void initState() {
     super.initState();
     _refreshAll();
-    _loadDirCompare();
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
-    _dirPollTimer?.cancel();
     super.dispose();
   }
 
@@ -270,315 +261,7 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
-  // ===== 目录对比报告 =====
 
-  /// 打开目录对比对话框：选择收藏库 + 目录（树选择）+ 阈值参数。
-  Future<void> _showDirCompareDialog() async {
-    if (mounted) setState(() => _error = null);
-    final result =
-        await showDialog<
-          ({
-            int libraryId,
-            String directory,
-            String mediaType,
-            int imageThreshold,
-            int videoPhashDistance,
-            int videoDurationDiffMs,
-          })
-        >(context: context, builder: (_) => _DirCompareDialog(api: widget.api));
-    if (result == null || !mounted) return;
-    await _submitDirCompare(
-      result.libraryId,
-      result.directory,
-      mediaType: result.mediaType,
-      imageThreshold: result.imageThreshold,
-      videoPhashDistance: result.videoPhashDistance,
-      videoDurationDiffMs: result.videoDurationDiffMs,
-    );
-  }
-
-  /// 提交目录对比任务并开始轮询。
-  Future<void> _submitDirCompare(
-    int libraryId,
-    String directory, {
-    String mediaType = 'all',
-    int? imageThreshold,
-    int? videoPhashDistance,
-    int? videoDurationDiffMs,
-  }) async {
-    setState(() => _dirLoading = true);
-    try {
-      final resp = await widget.api.generateDirCompare(
-        libraryId: libraryId,
-        directory: directory,
-        mediaType: mediaType,
-        imageThreshold: imageThreshold,
-        videoPhashDistance: videoPhashDistance,
-        videoDurationDiffMs: videoDurationDiffMs,
-      );
-      _dirTaskId = resp['task_id'] as String?;
-      _startDirPolling();
-    } catch (e) {
-      if (mounted) setState(() => _error = '提交目录对比失败: $e');
-    } finally {
-      if (mounted) setState(() => _dirLoading = false);
-    }
-  }
-
-  void _startDirPolling() {
-    _dirPollTimer ??= Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => _pollDirTask(),
-    );
-  }
-
-  Future<void> _pollDirTask() async {
-    final id = _dirTaskId;
-    if (id == null) {
-      _dirPollTimer?.cancel();
-      _dirPollTimer = null;
-      return;
-    }
-    try {
-      final task = await widget.api.getTask(id);
-      if (task.isCompleted || task.isFailed || task.isCancelled) {
-        _dirPollTimer?.cancel();
-        _dirPollTimer = null;
-        _dirTaskId = null;
-        if (task.isFailed && mounted) {
-          setState(() => _error = task.errorMessage ?? '目录对比任务未完成');
-        }
-        await _loadDirCompare();
-      }
-    } catch (_) {
-      // 任务查询失败不阻塞
-    }
-  }
-
-  /// 加载目录对比摘要与第一页分组。
-  Future<void> _loadDirCompare() async {
-    try {
-      final summary = await widget.api.getDirCompareSummary();
-      final page = await widget.api.getDirCompareGroups(
-        page: _dirPageNo,
-        pageSize: _dirPageSize,
-      );
-      if (!mounted) return;
-      setState(() {
-        _dirSummary = summary;
-        _dirPage = page;
-        if (page.totalPages < _dirPageNo) {
-          _dirPageNo = page.totalPages < 1 ? 1 : page.totalPages;
-        }
-      });
-    } catch (e) {
-      if (mounted) setState(() => _error = '读取目录对比结果失败: $e');
-    }
-  }
-
-  Future<void> _loadDirPage(int pageNo) async {
-    setState(() => _dirPageNo = pageNo);
-    try {
-      final page = await widget.api.getDirCompareGroups(
-        page: pageNo,
-        pageSize: _dirPageSize,
-      );
-      if (mounted) setState(() => _dirPage = page);
-    } catch (e) {
-      if (mounted) setState(() => _error = '读取目录对比分组失败: $e');
-    }
-  }
-
-  /// 目录对比结果面板（摘要 + 分组列表）。
-  Widget _buildDirCompareSection(ColorScheme cs) {
-    final summary = _dirSummary;
-    if (summary == null || summary.report == null) {
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Text(
-            '尚未生成目录对比报告，点击工具栏"目录对比"选择目录与存量数据对比',
-            style: TextStyle(fontSize: 13, color: cs.outline),
-          ),
-        ),
-      );
-    }
-    final rep = summary.report!;
-    final page = _dirPage;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.folder_copy_outlined, size: 18, color: cs.primary),
-                const SizedBox(width: 8),
-                Text(
-                  '目录对比',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: cs.onSurface,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(Icons.folder_outlined, size: 16, color: cs.outline),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    '所选目录：${rep.directory}',
-                    style: TextStyle(fontSize: 12, color: cs.onSurface),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '${rep.totalGroups} 组 · ${rep.totalFiles} 个文件'
-              ' · 可释放 ${_formatBytes(summary.freedBytes)}'
-              '（所选目录文件 vs 其余存量数据）',
-              style: TextStyle(fontSize: 12, color: cs.outline),
-            ),
-            const Divider(height: 20),
-            if (_dirLoading && page == null)
-              const Center(child: CircularProgressIndicator())
-            else if (page == null || page.items.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 24),
-                child: Center(
-                  child: Text(
-                    '所选目录与存量数据无重复',
-                    style: TextStyle(fontSize: 13, color: cs.outline),
-                  ),
-                ),
-              )
-            else ...[
-              for (final g in page.items) _buildDirGroupCard(g, cs),
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.chevron_left),
-                    tooltip: '上一页',
-                    onPressed: _dirPageNo > 1
-                        ? () => _loadDirPage(_dirPageNo - 1)
-                        : null,
-                  ),
-                  Text(
-                    '${_dirPageNo} / ${page.totalPages}',
-                    style: TextStyle(fontSize: 12, color: cs.outline),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.chevron_right),
-                    tooltip: '下一页',
-                    onPressed: _dirPageNo < page.totalPages
-                        ? () => _loadDirPage(_dirPageNo + 1)
-                        : null,
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 目录对比分组卡片：目标文件（带标识）+ 存量文件。
-  Widget _buildDirGroupCard(DirCompareGroupItem g, ColorScheme cs) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        border: Border.all(color: cs.outlineVariant),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '${g.memberCount} 个重复文件 · 可释放 ${_formatBytes(g.freedBytes)}',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: cs.onSurface),
-          ),
-          const SizedBox(height: 8),
-          for (final m in g.items)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Row(
-                children: [
-                  if (m.isTarget)
-                    Container(
-                      margin: const EdgeInsets.only(right: 6),
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                      decoration: BoxDecoration(
-                        color: cs.primary.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        '所选目录',
-                        style: TextStyle(fontSize: 10, color: cs.primary),
-                      ),
-                    ),
-                  Icon(
-                    m.kind == 'video' ? Icons.movie_outlined : Icons.image_outlined,
-                    size: 16,
-                    color: cs.outline,
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Tooltip(
-                      message: m.fullPath,
-                      child: Text(
-                        m.fullPath,
-                        style: TextStyle(fontSize: 12, color: cs.onSurface),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ),
-                  GestureDetector(
-                    onSecondaryTapDown: (d) => _showDirMemberMenu(context, d.globalPosition, m),
-                    child: Icon(Icons.more_vert, size: 18, color: cs.outline),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  /// 目录对比成员右键菜单：打开文件路径 / 打开媒体 / 复制路径。
-  void _showDirMemberMenu(BuildContext context, Offset position, DuplicateItem m) {
-    showContextMenu(
-      context: context,
-      position: position,
-      items: [
-        ContextMenuItem(
-          icon: Icons.folder_open,
-          label: '打开文件路径',
-          onTap: () => _openMedia(m.id, true),
-        ),
-        ContextMenuItem(
-          icon: Icons.copy,
-          label: '复制文件路径',
-          onTap: () => Clipboard.setData(ClipboardData(text: m.fullPath)),
-        ),
-        ContextMenuItem(
-          icon: m.kind == 'video' ? Icons.play_circle_outline : Icons.image_outlined,
-          label: m.kind == 'video' ? '打开视频' : '打开图片',
-          onTap: () => _openMedia(m.id, false),
-        ),
-      ],
-    );
-  }
 
   // ===== UI =====
 
@@ -598,14 +281,6 @@ class _ReportScreenState extends State<ReportScreen> {
                 onPressed: () => setState(() => _error = null),
                 child: const Text('关闭'),
               ),            ],
-          ),
-        if (_dirSummary != null || _dirTaskId != null)
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 380),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: _buildDirCompareSection(cs),
-            ),
           ),
         if (_summary == null)
           Expanded(child: _buildEmpty(cs))
@@ -667,7 +342,7 @@ class _ReportScreenState extends State<ReportScreen> {
           if (_summary != null)
             Text(
               '${_summary!.totalGroups} 组 · ${_summary!.totalFiles} 个文件'
-              ' · 可释放 ${_formatBytes(_summary!.freedBytes)}',
+              ' · 可释放 ${formatBytes(_summary!.freedBytes)}',
               style: TextStyle(fontSize: 12, color: cs.outline),
             ),
           _mediaTypeSegmented(cs),
@@ -688,14 +363,6 @@ class _ReportScreenState extends State<ReportScreen> {
                     )
                     : const Icon(Icons.play_arrow, size: 18),
             label: Text(_taskBusy ? '统计中' : '生成报告'),
-          ),
-          OutlinedButton.icon(
-            onPressed:
-                (_taskBusy || _dirTaskId != null)
-                    ? null
-                    : _showDirCompareDialog,
-            icon: const Icon(Icons.folder_copy_outlined, size: 18),
-            label: Text(_dirTaskId != null ? '目录对比中' : '目录对比'),
           ),
         ],
       ),
@@ -788,7 +455,7 @@ class _ReportScreenState extends State<ReportScreen> {
             ? <DuplicateItem>[]
             : _allGroups
                 .expand((g) => g.items)
-                .where((item) => _relDir(item.relativePath) == selected)
+                .where((item) => relDir(item.relativePath) == selected)
                 .toList();
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1068,7 +735,7 @@ class _ReportScreenState extends State<ReportScreen> {
     // 所有成员父路径去重（保持首现顺序），根目录直属文件显示 "/"
     final dirs = <String>[];
     for (final item in group.items) {
-      final dir = _relDir(item.relativePath);
+      final dir = relDir(item.relativePath);
       if (!dirs.contains(dir)) dirs.add(dir);
     }
     return Column(
@@ -1099,7 +766,7 @@ class _ReportScreenState extends State<ReportScreen> {
               ),
             ),
             Text(
-              '可释放 ${_formatBytes(group.freedBytes)}',
+              '可释放 ${formatBytes(group.freedBytes)}',
               style: TextStyle(fontSize: 12, color: cs.outline),
             ),
           ],
@@ -1111,11 +778,11 @@ class _ReportScreenState extends State<ReportScreen> {
             runSpacing: 6,
             children: [
               for (final dir in dirs)
-                _DirChip(
+                DirChip(
                   label: dir.isEmpty ? '/' : dir,
                   onTap: () {
                     final rep = group.items.firstWhere(
-                      (i) => _relDir(i.relativePath) == dir,
+                      (i) => relDir(i.relativePath) == dir,
                     );
                     _openMedia(rep.id, true);
                   },
@@ -1157,7 +824,7 @@ class _ReportScreenState extends State<ReportScreen> {
       itemBuilder: (context, index) {
         final item = items[index];
         final group = _groupOf(item);
-        return _DuplicateMemberCard(
+        return DuplicateMemberCard(
           item: item,
           api: widget.api,
           sameDirMode: _summary?.isSameDir ?? false,
@@ -1214,7 +881,7 @@ class _ReportScreenState extends State<ReportScreen> {
         runSpacing: 20,
         children: [
           for (final entry in clusters.entries)
-            _StackedCluster(
+            StackedCluster(
               items: entry.value,
               api: widget.api,
               width: 300,
@@ -1248,7 +915,7 @@ class _ReportScreenState extends State<ReportScreen> {
     final hasOtherDirMembers =
         group != null &&
         group.items.any(
-          (m) => _relDir(m.relativePath) != _relDir(item.relativePath),
+          (m) => relDir(m.relativePath) != relDir(item.relativePath),
         );
     final deleteLabel =
         directoryScope != null && hasOtherDirMembers
@@ -1311,13 +978,13 @@ class _ReportScreenState extends State<ReportScreen> {
                 .where(
                   (m) =>
                       m.id != item.id &&
-                      _relDir(m.relativePath) != _relDir(item.relativePath),
+                      relDir(m.relativePath) != relDir(item.relativePath),
                 )
                 .toList();
     final otherDirItems = <DuplicateItem>[];
     for (final o in otherPaths) {
-      final dir = _relDir(o.relativePath);
-      if (!otherDirItems.any((e) => _relDir(e.relativePath) == dir)) {
+      final dir = relDir(o.relativePath);
+      if (!otherDirItems.any((e) => relDir(e.relativePath) == dir)) {
         otherDirItems.add(o);
       }
     }
@@ -1353,7 +1020,7 @@ class _ReportScreenState extends State<ReportScreen> {
           for (final other in otherDirItems)
             ContextMenuItem(
               icon: Icons.subdirectory_arrow_right,
-              label: _dirLabel(other),
+              label: dirLabel(other),
               onTap: () => _showPathMenu(position, other),
             ),
         ],
@@ -1453,7 +1120,7 @@ class _ReportScreenState extends State<ReportScreen> {
               .where(
                 (m) =>
                     m.id != exceptId &&
-                    _relDir(m.relativePath) != directoryScope,
+                    relDir(m.relativePath) != directoryScope,
               )
               .map((m) => m.id)
               .toList();
@@ -1464,7 +1131,8 @@ class _ReportScreenState extends State<ReportScreen> {
       title = '删除此文件外本组重复文件';
     }
     if (others.isEmpty) return;
-    final ok = await _confirmClear(
+    final ok = await confirmClearDialog(
+      context,
       title: title,
       keep: 'keep_current',
       count: others.length,
@@ -1478,7 +1146,7 @@ class _ReportScreenState extends State<ReportScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '已删除 ${result.deletedFiles} 个文件，释放 ${_formatBytes(result.freedBytes)}',
+              '已删除 ${result.deletedFiles} 个文件，释放 ${formatBytes(result.freedBytes)}',
             ),
           ),
         );
@@ -1613,14 +1281,16 @@ class _ReportScreenState extends State<ReportScreen> {
       final dirItems =
           _allGroups
               .expand((g) => g.items)
-              .where((m) => _relDir(m.relativePath) == dir)
+              .where((m) => relDir(m.relativePath) == dir)
               .toList();
-      final keep = await _showKeepDialog(
+      final keep = await showKeepDialog(
+        context,
         title: '一键清除此目录重复数据',
         count: dirItems.length,
       );
       if (keep == null || !mounted) return;
-      final ok = await _confirmClear(
+      final ok = await confirmClearDialog(
+        context,
         title: '一键清除此目录重复数据',
         keep: keep,
         count: dirItems.length,
@@ -1650,7 +1320,7 @@ class _ReportScreenState extends State<ReportScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '已删除 $deletedFiles 个文件，释放 ${_formatBytes(freedBytes)}',
+              '已删除 $deletedFiles 个文件，释放 ${formatBytes(freedBytes)}',
             ),
           ),
         );
@@ -1687,39 +1357,12 @@ class _ReportScreenState extends State<ReportScreen> {
     final toDelete = <int>[];
     for (final members in byGroup.values) {
       if (members.length < 2) continue;
-      final keepIdx = _pickKeepIndex(members, keep);
+      final keepIdx = pickKeepIndex(members, keep);
       for (var i = 0; i < members.length; i++) {
         if (i != keepIdx) toDelete.add(members[i].id);
       }
     }
     return toDelete;
-  }
-
-  /// 客户端保留条件选择（与后端一致）：最大/最小文件、最新/最旧修改时间、最长/最短文件名。
-  int _pickKeepIndex(List<DuplicateItem> items, String keep) {
-    if (items.isEmpty) return 0;
-    var best = 0;
-    for (var i = 1; i < items.length; i++) {
-      final a = items[i];
-      final b = items[best];
-      final better = switch (keep) {
-        'largest' => a.fileSize > b.fileSize,
-        'smallest' => a.fileSize < b.fileSize,
-        'newest' =>
-          (a.mtime != null && b.mtime != null && a.mtime!.isAfter(b.mtime!)) ||
-              (a.mtime != null && b.mtime == null),
-        'oldest' =>
-          (a.mtime != null && b.mtime != null && a.mtime!.isBefore(b.mtime!)) ||
-              (b.mtime != null && a.mtime == null),
-        'longest_name' =>
-          _fileName(a.fullPath).length > _fileName(b.fullPath).length,
-        'shortest_name' =>
-          _fileName(a.fullPath).length < _fileName(b.fullPath).length,
-        _ => false,
-      };
-      if (better) best = i;
-    }
-    return best;
   }
 
   Future<void> _clearPage() async {
@@ -1728,9 +1371,10 @@ class _ReportScreenState extends State<ReportScreen> {
       0,
       (sum, g) => sum + g.memberCount,
     );
-    final keep = await _showKeepDialog(title: '一键清除本页重复文件', count: count);
+    final keep = await showKeepDialog(context, title: '一键清除本页重复文件', count: count);
     if (keep == null || !mounted) return;
-    final ok = await _confirmClear(
+    final ok = await confirmClearDialog(
+      context,
       title: '一键清除本页重复文件',
       keep: keep,
       count: count,
@@ -1745,7 +1389,7 @@ class _ReportScreenState extends State<ReportScreen> {
       // 乐观更新：立即从本地状态移除本页被删成员
       final deletedIds = <int>[];
       for (final g in (_page?.items ?? [])) {
-        final keepIdx = _pickKeepIndex(g.items, keep);
+        final keepIdx = pickKeepIndex(g.items, keep);
         for (var i = 0; i < g.items.length; i++) {
           if (i != keepIdx) deletedIds.add(g.items[i].id);
         }
@@ -1755,7 +1399,7 @@ class _ReportScreenState extends State<ReportScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '已删除 ${result.deletedFiles} 个文件，释放 ${_formatBytes(result.freedBytes)}'
+              '已删除 ${result.deletedFiles} 个文件，释放 ${formatBytes(result.freedBytes)}'
               '，剩余 ${result.remainingGroups} 组',
             ),
           ),
@@ -1765,38 +1409,6 @@ class _ReportScreenState extends State<ReportScreen> {
     } catch (e) {
       if (mounted) setState(() => _error = '清除失败: $e');
     }
-  }
-
-  Future<bool> _confirmClear({
-    required String title,
-    required String keep,
-    required int count,
-  }) async {
-    final result = await showDialog<bool>(
-      context: context,
-      builder:
-          (ctx) => AlertDialog(
-            title: Text(title),
-            content: Text(
-              '将删除 $count 个文件（含生成的缩略图、media 表数据、本地文件）\n'
-              '保留条件：${keepLabel(keep)}',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: Theme.of(ctx).colorScheme.error,
-                ),
-                onPressed: () => Navigator.of(ctx).pop(true),
-                child: const Text('确定清除'),
-              ),
-            ],
-          ),
-    );
-    return result ?? false;
   }
 
   // ===== 选项与保留条件对话框 =====
@@ -1977,1075 +1589,6 @@ class _ReportScreenState extends State<ReportScreen> {
     return result == true ? options : null;
   }
 
-  Future<String?> _showKeepDialog({
-    required String title,
-    required int count,
-  }) async {
-    String keep = 'largest';
-    return showDialog<String>(
-      context: context,
-      builder:
-          (ctx) => StatefulBuilder(
-            builder:
-                (ctx, setLocal) => AlertDialog(
-                  title: Text(title),
-                  content: SizedBox(
-                    width: 360,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          '共 $count 个文件，每组按条件保留 1 个',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                        const SizedBox(height: 8),
-                        for (final k in const [
-                          'largest',
-                          'smallest',
-                          'newest',
-                          'oldest',
-                          'longest_name',
-                          'shortest_name',
-                        ])
-                          RadioListTile<String>(
-                            value: k,
-                            groupValue: keep,
-                            dense: true,
-                            title: Text(
-                              keepLabel(k),
-                              style: const TextStyle(fontSize: 13),
-                            ),
-                            onChanged: (v) => setLocal(() => keep = v ?? keep),
-                          ),
-                      ],
-                    ),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(),
-                      child: const Text('取消'),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.of(ctx).pop(keep),
-                      child: const Text('确定清除'),
-                    ),
-                  ],
-                ),
-          ),
-    );
-  }
 }
 
-String keepLabel(String keep) {
-  switch (keep) {
-    case 'largest':
-      return '保留最大文件';
-    case 'smallest':
-      return '保留最小文件';
-    case 'newest':
-      return '保留最大修改时间';
-    case 'oldest':
-      return '保留最小修改时间';
-    case 'longest_name':
-      return '保留最长文件名';
-    case 'shortest_name':
-      return '保留最短文件名';
-    case 'keep_current':
-      return '保留当前文件';
-    default:
-      return keep;
-  }
-}
 
-String _formatBytes(int bytes) {
-  if (bytes < 1024) return '$bytes B';
-  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-  if (bytes < 1024 * 1024 * 1024) {
-    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
-  }
-  return '${(bytes / 1024 / 1024 / 1024).toStringAsFixed(2)} GB';
-}
-
-String _relDir(String rel) {
-  final norm = rel.replaceAll('\\', '/');
-  final idx = norm.lastIndexOf('/');
-  return idx < 0 ? '' : norm.substring(0, idx);
-}
-
-/// 其它目录菜单项标签：显示父路径（根目录直属文件显示 "/"）。
-String _dirLabel(DuplicateItem other) {
-  final dir = _relDir(other.relativePath);
-  return dir.isEmpty ? '/' : dir;
-}
-
-String _fileName(String path) {
-  final norm = path.replaceAll('\\', '/');
-  return norm.substring(norm.lastIndexOf('/') + 1);
-}
-
-String _meta(DuplicateItem item) {
-  final size = _formatBytes(item.fileSize);
-  if (item.kind == 'video' && item.durationMs != null) {
-    final seconds = item.durationMs! ~/ 1000;
-    return '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')} · $size';
-  }
-  if (item.width != null && item.height != null) {
-    return '${item.width}×${item.height} · $size';
-  }
-  return size;
-}
-
-/// 透明胶囊：分组头部的父路径标签，点击打开该目录下代表文件并选中。
-class _DirChip extends StatelessWidget {
-  final String label;
-  final VoidCallback onTap;
-
-  const _DirChip({required this.label, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: cs.primary.withValues(alpha: 0.04),
-          border: Border.all(color: cs.outlineVariant),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
-        ),
-      ),
-    );
-  }
-}
-
-/// 懒加载缩略图：加载中显示占位骨架，完成后淡入，避免大图库一次性请求全部图片。
-class _LazyThumb extends StatelessWidget {
-  final String url;
-  final int cacheWidth;
-
-  const _LazyThumb({required this.url, this.cacheWidth = 400});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Image.network(
-      url,
-      fit: BoxFit.cover,
-      gaplessPlayback: true,
-      cacheWidth: cacheWidth,
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        return ColoredBox(
-          color: cs.surfaceContainerHighest,
-          child: Center(
-            child: SizedBox(
-              width: 22,
-              height: 22,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: cs.outline,
-              ),
-            ),
-          ),
-        );
-      },
-      frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-        if (wasSynchronouslyLoaded) return child;
-        return AnimatedOpacity(
-          opacity: frame == null ? 0 : 1,
-          duration: const Duration(milliseconds: 200),
-          child: child,
-        );
-      },
-      errorBuilder:
-          (_, __, ___) => ColoredBox(
-            color: cs.surfaceContainerHighest,
-            child: Icon(
-              Icons.broken_image_outlined,
-              color: cs.outline,
-              size: 30,
-            ),
-          ),
-    );
-  }
-}
-
-/// card_swiper 叠卡：同一重复组的多张缩略图沿 45° 方向平移堆叠
-/// （每张相对前一张同时向下/向右偏移相同距离），数量徽标显示在图片上方。
-class _StackedCluster extends StatelessWidget {
-  final List<DuplicateItem> items;
-  final ApiService api;
-  final VoidCallback onTap;
-  final ValueChanged<Offset>? onSecondaryTap;
-  final double width;
-
-  const _StackedCluster({
-    required this.items,
-    required this.api,
-    required this.onTap,
-    this.onSecondaryTap,
-    this.width = 300,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    // 叠卡最多展示 3 张，数量只影响内部层数，不改变外框尺寸
-    final preview = items.take(3).toList();
-    final first = items.first;
-
-    const clusterRadius = 16.0;
-    const contentPadding = 10.0;
-    const imageW = 248.0;
-    const imageH = 166.0;
-    const stackStep = 14.0;
-    const imageRadius = 12.0;
-    const imageAreaH = 208.0;
-
-    return Container(
-      width: width,
-      height: 272,
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(clusterRadius),
-        border: Border.all(color: cs.outlineVariant),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: GestureDetector(
-        onSecondaryTapDown:
-            onSecondaryTap == null
-                ? null
-                : (d) => onSecondaryTap!(d.globalPosition),
-        onLongPressStart:
-            onSecondaryTap == null
-                ? null
-                : (d) => onSecondaryTap!(d.globalPosition),
-        child: Material(
-          color: cs.surface,
-          child: InkWell(
-            onTap: onTap,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 图片叠卡区域（固定高度，内部层数不影响布局）
-                SizedBox(
-                  height: imageAreaH,
-                  child: Stack(
-                    clipBehavior: Clip.hardEdge,
-                    children: [
-                      for (var i = preview.length - 1; i >= 0; i--)
-                        Positioned(
-                          left: contentPadding + i * stackStep,
-                          top: contentPadding + i * stackStep,
-                          child: Opacity(
-                            opacity: i == 0 ? 1.0 : 0.94,
-                            child: Container(
-                              width: imageW,
-                              height: imageH,
-                              clipBehavior: Clip.antiAlias,
-                              decoration: BoxDecoration(
-                                color: cs.surfaceContainerHighest,
-                                borderRadius: BorderRadius.circular(
-                                  imageRadius,
-                                ),
-                                border: Border.all(color: cs.outlineVariant),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(
-                                      alpha: i == 0 ? 0.12 : 0.06,
-                                    ),
-                                    blurRadius: i == 0 ? 6 : 3,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: _thumb(preview[i], cs),
-                            ),
-                          ),
-                        ),
-                      // 数量信息胶囊：白色文字 + 极淡深色底，保证在图片上有对比度，
-                      // 深浅主题下均清晰可读
-                      Positioned(
-                        right: 12,
-                        top: 12,
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(
-                              alpha:
-                                  cs.brightness == Brightness.dark
-                                      ? 0.45
-                                      : 0.28,
-                            ),
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                              color: cs.primary.withValues(alpha: 0.35),
-                            ),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 9,
-                              vertical: 5,
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.layers_outlined,
-                                  size: 14,
-                                  color: Colors.white,
-                                ),
-                                const SizedBox(width: 5),
-                                Text(
-                                  '${items.length} 个文件',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                    color: Colors.white,
-                                    shadows: [
-                                      Shadow(
-                                        color: Colors.black.withValues(
-                                          alpha: 0.35,
-                                        ),
-                                        blurRadius: 2,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                // 文件信息区（独立区域，避免内容漂浮）
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          _fileName(first.fullPath),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: cs.onSurface,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          _meta(first),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: cs.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _thumb(DuplicateItem item, ColorScheme cs) {
-    if (item.thumbnailPath == null || item.thumbnailPath!.isEmpty) {
-      return ColoredBox(
-        color: cs.surfaceContainerHighest,
-        child: Icon(
-          item.kind == 'video' ? Icons.videocam_outlined : Icons.image_outlined,
-          color: cs.outline,
-        ),
-      );
-    }
-    return _LazyThumb(
-      url: api.thumbnailUrl(item.kind, item.thumbnailPath!),
-      cacheWidth: 400,
-    );
-  }
-}
-
-/// 单个重复文件卡片（右键菜单按模式区分）。
-class _DuplicateMemberCard extends StatelessWidget {
-  final DuplicateItem item;
-  final ApiService api;
-  final bool sameDirMode;
-  final bool showOtherPaths;
-  final DuplicateGroupItem? group;
-  final VoidCallback? onTap;
-  final ValueChanged<String> onError;
-  final void Function(List<int> deletedIds) onDeleted;
-
-  const _DuplicateMemberCard({
-    required this.item,
-    required this.api,
-    required this.sameDirMode,
-    required this.showOtherPaths,
-    this.group,
-    this.onTap,
-    required this.onError,
-    required this.onDeleted,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return GestureDetector(
-      onTap: onTap,
-      onSecondaryTapDown:
-          (details) => _showMenu(context, details.globalPosition),
-      onLongPressStart: (details) => _showMenu(context, details.globalPosition),
-      child: Card(
-        clipBehavior: Clip.antiAlias,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(child: _thumb(cs)),
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _fileName(item.fullPath),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    _meta(item),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 10, color: cs.outline),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _thumb(ColorScheme cs) {
-    if (item.thumbnailPath == null || item.thumbnailPath!.isEmpty) {
-      return ColoredBox(
-        color: cs.surfaceContainerHighest,
-        child: Icon(
-          item.kind == 'video' ? Icons.videocam_outlined : Icons.image_outlined,
-          color: cs.outline,
-          size: 36,
-        ),
-      );
-    }
-    return _LazyThumb(
-      url: api.thumbnailUrl(item.kind, item.thumbnailPath!),
-      cacheWidth: 400,
-    );
-  }
-
-  void _showMenu(BuildContext context, Offset position) {
-    if (sameDirMode) {
-      // 仅同一目录模式：右键打开文件路径；展开详情后另有删除项
-      showContextMenu(
-        context: context,
-        position: position,
-        items: [
-          ContextMenuItem(
-            icon: Icons.folder_open,
-            label: '打开文件路径',
-            onTap: () => _open(true),
-          ),
-          ContextMenuItem(icon: Icons.copy, label: '复制文件路径', onTap: _copyPath),
-          ContextMenuItem(
-            icon:
-                item.kind == 'video'
-                    ? Icons.play_circle_outline
-                    : Icons.image_outlined,
-            label: item.kind == 'video' ? '打开视频' : '打开图片',
-            onTap: () => _open(false),
-          ),
-          const ContextMenuItem.divider(),
-          ContextMenuItem(
-            icon: Icons.block,
-            label: '排除重复',
-            onTap: () => _exclude(context, item),
-          ),
-          if (group != null && group!.items.length > 1)
-            ContextMenuItem(
-              icon: Icons.delete_forever_outlined,
-              label: '删除此文件外本组重复文件',
-              isDestructive: true,
-              onTap: () => onDeletedExcept(context),
-            ),
-        ],
-      );
-      return;
-    }
-
-    // 全部数据模式
-    // 其它目录菜单项按父路径去重：同一父目录只保留一个代表项，标签显示父路径。
-    final otherPaths =
-        group == null
-            ? <DuplicateItem>[]
-            : group!.items
-                .where(
-                  (m) =>
-                      m.id != item.id &&
-                      _relDir(m.relativePath) != _relDir(item.relativePath),
-                )
-                .toList();
-    final otherDirItems = <DuplicateItem>[];
-    for (final o in otherPaths) {
-      final dir = _relDir(o.relativePath);
-      if (!otherDirItems.any((e) => _relDir(e.relativePath) == dir)) {
-        otherDirItems.add(o);
-      }
-    }
-    showContextMenu(
-      context: context,
-      position: position,
-      items: [
-        ContextMenuItem(
-          icon: Icons.folder_open,
-          label: '打开文件路径',
-          onTap: () => _open(true),
-        ),
-        ContextMenuItem(icon: Icons.copy, label: '复制文件路径', onTap: _copyPath),
-        ContextMenuItem(
-          icon:
-              item.kind == 'video'
-                  ? Icons.play_circle_outline
-                  : Icons.image_outlined,
-          label: item.kind == 'video' ? '打开视频' : '打开图片',
-          onTap: () => _open(false),
-        ),
-        ContextMenuItem(
-          icon: Icons.block,
-          label: '排除重复',
-          onTap: () => _exclude(context, item),
-        ),
-        if (showOtherPaths && otherDirItems.isNotEmpty) ...[
-          const ContextMenuItem.divider(),
-          for (final other in otherDirItems)
-            ContextMenuItem(
-              icon: Icons.subdirectory_arrow_right,
-              label: _dirLabel(other),
-              onTap: () => _showPathSubmenu(context, position, other),
-            ),
-        ],
-      ],
-    );
-  }
-
-  /// 二级菜单：对其它目录中的重复文件执行打开/复制/打开媒体。
-  void _showPathSubmenu(
-    BuildContext context,
-    Offset position,
-    DuplicateItem other,
-  ) {
-    showContextMenu(
-      context: context,
-      position: position,
-      items: [
-        ContextMenuItem(
-          icon: Icons.folder_open,
-          label: '打开文件路径',
-          onTap: () => _openFor(other, true),
-        ),
-        ContextMenuItem(
-          icon: Icons.copy,
-          label: '复制文件路径',
-          onTap: () => _copyPathFor(other),
-        ),
-        ContextMenuItem(
-          icon:
-              other.kind == 'video'
-                  ? Icons.play_circle_outline
-                  : Icons.image_outlined,
-          label: other.kind == 'video' ? '打开视频' : '打开图片',
-          onTap: () => _openFor(other, false),
-        ),
-        ContextMenuItem(
-          icon: Icons.block,
-          label: '排除重复',
-          onTap: () => _exclude(context, other),
-        ),
-      ],
-    );
-  }
-
-  void _copyPath() => _copyPathFor(item);
-
-  void _copyPathFor(DuplicateItem target) async {
-    await Clipboard.setData(ClipboardData(text: target.fullPath));
-  }
-
-  Future<void> _open(bool directory) async {
-    try {
-      directory
-          ? await api.openMediaDirectory(item.id)
-          : await api.openMediaFile(item.id);
-    } catch (e) {
-      onError('打开失败: $e');
-    }
-  }
-
-  Future<void> _openFor(DuplicateItem target, bool directory) async {
-    try {
-      directory
-          ? await api.openMediaDirectory(target.id)
-          : await api.openMediaFile(target.id);
-    } catch (e) {
-      onError('打开失败: $e');
-    }
-  }
-
-  /// 排除重复：人工判定该文件无重复，将其从当前报告中移除。
-  /// 仅对当前报告生效——重新生成报告后该文件重新参与检测。
-  Future<void> _exclude(BuildContext context, DuplicateItem target) async {
-    try {
-      await api.excludeDuplicateMedia(target.id);
-      // 复用父级乐观更新：从本地状态移除该文件（组员 <2 的组自动丢弃）
-      onDeleted([target.id]);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('已排除该文件：不再计入当前报告的重复统计，重新生成报告后恢复参与检测'),
-          ),
-        );
-      }
-    } catch (e) {
-      onError('排除重复失败: $e');
-    }
-  }
-
-  void onDeletedExcept(BuildContext context) {
-    final g = group;
-    if (g == null) return;
-    // 删除此文件外本组重复文件：调用上层确认与删除
-    showDialog<void>(
-      context: context,
-      builder:
-          (ctx) => AlertDialog(
-            title: const Text('删除此文件外本组重复文件'),
-            content: Text(
-              '将删除 ${g.items.length - 1} 个文件（含缩略图、media 记录、本地文件），保留当前文件。',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('取消'),
-              ),
-              FilledButton(
-                style: FilledButton.styleFrom(
-                  backgroundColor: Theme.of(ctx).colorScheme.error,
-                ),
-                onPressed: () {
-                  Navigator.of(ctx).pop();
-                  _deleteExcept(context, g);
-                },
-                child: const Text('确定删除'),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _deleteExcept(BuildContext context, DuplicateGroupItem g) async {
-    final others =
-        g.items.where((m) => m.id != item.id).map((m) => m.id).toList();
-    if (others.isEmpty) return;
-    try {
-      final result = await api.deleteMedia(others);
-      onDeleted(others);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '已删除 ${result.deletedFiles} 个文件，释放 ${_formatBytes(result.freedBytes)}',
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      onError('删除失败: $e');
-    }
-  }
-}
-
-// ===== 目录对比对话框 =====
-
-/// 目录对比对话框：选择收藏库 + 目录（树选择）+ 阈值参数，返回 (libraryId, directory)。
-class _DirCompareDialog extends StatefulWidget {
-  final ApiService api;
-  const _DirCompareDialog({required this.api});
-
-  @override
-  State<_DirCompareDialog> createState() => _DirCompareDialogState();
-}
-
-class _DirCompareDialogState extends State<_DirCompareDialog> {
-  List<Library> _libraries = [];
-  Library? _selectedLib;
-  List<FileTreeNode> _treeNodes = [];
-  final Map<String, List<FileTreeNode>> _childrenCache = {};
-  String? _selectedDir;
-  String _mediaType = 'all';
-  final _imageCtrl = TextEditingController(text: '90');
-  final _videoCtrl = TextEditingController(text: '12');
-  final _durCtrl = TextEditingController(text: '3000');
-  bool _loading = true;
-  bool _submitting = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadLibraries();
-  }
-
-  @override
-  void dispose() {
-    _imageCtrl.dispose();
-    _videoCtrl.dispose();
-    _durCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadLibraries() async {
-    try {
-      final libs = await widget.api.getLibraries();
-      // 仅展示有媒体可比的库
-      if (!mounted) return;
-      setState(() {
-        _libraries = libs;
-        _selectedLib = libs.isNotEmpty ? libs.first : null;
-        _loading = false;
-      });
-      if (_selectedLib != null) {
-        await _loadRoot();
-      }
-    } catch (e) {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  Future<void> _loadRoot() async {
-    final lib = _selectedLib;
-    if (lib == null) return;
-    setState(() {
-      _treeNodes = [];
-      _selectedDir = '.'; // 默认选中库根目录
-    });
-    try {
-      final nodes = await widget.api.getFileTree(lib.id);
-      if (mounted) {
-        setState(() {
-          _treeNodes = nodes.where((n) => n.isDir).toList();
-          _childrenCache[''] = nodes;
-        });
-      }
-    } catch (_) {}
-  }
-
-  /// 展开目录节点：懒加载子目录。
-  Future<void> _expandDir(String path) async {
-    if (_childrenCache.containsKey(path)) return;
-    final lib = _selectedLib;
-    if (lib == null) return;
-    try {
-      final nodes = await widget.api.getFileTree(lib.id, path: path);
-      if (mounted) {
-        setState(() {
-          _childrenCache[path] = nodes;
-        });
-      }
-    } catch (_) {}
-  }
-
-  List<FileTreeNode> _dirsOf(String path) {
-    final cached = _childrenCache[path];
-    if (cached == null) return const [];
-    return cached.where((n) => n.isDir).toList();
-  }
-
-  void _onSubmit() {
-    final lib = _selectedLib;
-    final dir = _selectedDir;
-    if (lib == null || dir == null) return;
-    setState(() => _submitting = true);
-    Navigator.of(context).pop((
-      libraryId: lib.id,
-      directory: dir,
-      mediaType: _mediaType,
-      imageThreshold: int.tryParse(_imageCtrl.text.trim()) ?? 90,
-      videoPhashDistance: int.tryParse(_videoCtrl.text.trim()) ?? 12,
-      videoDurationDiffMs: int.tryParse(_durCtrl.text.trim()) ?? 3000,
-    ));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return AlertDialog(
-      title: const Text('目录对比（所选目录 vs 存量数据）'),
-      content: SizedBox(
-        width: 480,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('收藏库', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 4),
-              DropdownButtonFormField<int>(
-                value: _selectedLib?.id,
-                isExpanded: true,
-                items: [
-                  for (final l in _libraries)
-                    DropdownMenuItem(
-                      value: l.id,
-                      child: Text(
-                        l.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                ],
-                onChanged: (v) {
-                  final lib = _libraries.firstWhere((l) => l.id == v);
-                  setState(() => _selectedLib = lib);
-                  _loadRoot();
-                },
-              ),
-              const SizedBox(height: 12),
-              const Text('选择目录（含子目录）', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 4),
-              Container(
-                height: 220,
-                decoration: BoxDecoration(
-                  border: Border.all(color: cs.outlineVariant),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: _loading
-                    ? const Center(child: CircularProgressIndicator())
-                    : _buildDirTree(cs),
-              ),
-              const SizedBox(height: 8),
-              // 已选目录展示（支持库根目录）
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                  color: cs.primary.withValues(alpha: 0.06),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.check_circle_outline, size: 16, color: cs.primary),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        '已选择：${_selectedLib?.name ?? '-'} / '
-                        '${_selectedDir == null ? '未选择' : (_selectedDir == '.' ? '库根目录' : _selectedDir)}',
-                        style: TextStyle(fontSize: 12, color: cs.onSurface),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text('媒体类型', style: TextStyle(fontSize: 13)),
-              const SizedBox(height: 4),
-              SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(value: 'all', label: Text('全部')),
-                  ButtonSegment(value: 'image', label: Text('图片')),
-                  ButtonSegment(value: 'video', label: Text('视频')),
-                ],
-                selected: {_mediaType},
-                onSelectionChanged: (v) => setState(() => _mediaType = v.first),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _imageCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: '图片相似度阈值 %',
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: _videoCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: '视频 pHash 距离',
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: _durCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        labelText: '时长差 ms',
-                        isDense: true,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: _selectedDir == null || _submitting
-              ? null
-              : () => _onSubmit(),
-          child: const Text('开始对比'),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDirTree(ColorScheme cs) {
-    if (_selectedLib == null) {
-      return Center(
-        child: Text('库中无目录', style: TextStyle(fontSize: 13, color: cs.outline)),
-      );
-    }
-    return ListView(
-      padding: const EdgeInsets.all(4),
-      children: [
-        // 库根目录选项（path='.' 表示整个库）
-        _buildRootTile(cs),
-        for (final n in _treeNodes) _buildDirTile(n.path, n.name, 0),
-      ],
-    );
-  }
-
-  /// 库根目录选项（选择整个收藏库参与对比）。
-  Widget _buildRootTile(ColorScheme cs) {
-    const path = '.';
-    final selected = _selectedDir == path;
-    return InkWell(
-      borderRadius: BorderRadius.circular(6),
-      onTap: () => setState(() => _selectedDir = path),
-      child: Container(
-        padding: const EdgeInsets.only(left: 8, right: 8, top: 6, bottom: 6),
-        decoration: BoxDecoration(
-          color: selected ? cs.primary.withValues(alpha: 0.1) : Colors.transparent,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Row(
-          children: [
-            Icon(
-              selected ? Icons.storage : Icons.storage_outlined,
-              size: 16,
-              color: selected ? cs.primary : cs.outline,
-            ),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Text(
-                '库根目录（全部）',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                  color: cs.onSurface,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDirTile(String path, String name, int depth) {
-    final cs = Theme.of(context).colorScheme;
-    final selected = _selectedDir == path;
-    final children = _dirsOf(path);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        InkWell(
-          borderRadius: BorderRadius.circular(6),
-          onTap: () {
-            setState(() => _selectedDir = path);
-            _expandDir(path);
-          },
-          child: Container(
-            padding: EdgeInsets.only(
-              left: 8.0 + depth * 16,
-              right: 8,
-              top: 6,
-              bottom: 6,
-            ),
-            decoration: BoxDecoration(
-              color: selected
-                  ? cs.primary.withValues(alpha: 0.1)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.folder_outlined, size: 16, color: cs.outline),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    name,
-                    style: TextStyle(fontSize: 13, color: cs.onSurface),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (children.isNotEmpty)
-          for (final c in children) _buildDirTile(c.path, c.name, depth + 1),
-      ],
-    );
-  }
-}

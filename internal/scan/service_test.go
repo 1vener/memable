@@ -38,7 +38,7 @@ func TestScanLibraryImageIncremental(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := &Service{Sessions: sr, Media: mr}
+	svc := &Service{Sessions: sr, Media: mr, ImageThumbBase: t.TempDir()}
 	stats, err := svc.ScanLibrary(context.Background(), *lib, "scan-1", false)
 	if err != nil {
 		t.Fatalf("ScanLibrary: %v", err)

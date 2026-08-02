@@ -421,6 +421,38 @@ func TestDirCompareAPI(t *testing.T) {
 	if !strings.Contains(resp4.Body.String(), `"is_target":true`) {
 		t.Fatalf("分组应含目标标记: %s", resp4.Body.String())
 	}
+
+	// 目录对比目录树接口（kind 过滤）
+	reqTree := httptest.NewRequest(http.MethodGet, "/api/reports/directory-compare/tree", nil)
+	respTree := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(respTree, reqTree)
+	if respTree.Code != http.StatusOK {
+		t.Fatalf("目录树接口失败: code=%d body=%s", respTree.Code, respTree.Body.String())
+	}
+
+	// 目录对比排除接口：移除目标成员 a.jpg
+	targetMedia, err := mr.GetByPath(lib.ID, "target/a.jpg")
+	if err != nil || targetMedia == nil {
+		t.Fatalf("查询目标媒体失败: %v", err)
+	}
+	reqExclude := httptest.NewRequest(http.MethodPost, "/api/reports/directory-compare/exclude",
+		body(`{"media_id":`+formatInt64(targetMedia.ID)+`}`))
+	reqExclude.Header.Set("Content-Type", "application/json")
+	respExclude := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(respExclude, reqExclude)
+	if respExclude.Code != http.StatusOK {
+		t.Fatalf("排除接口失败: code=%d body=%s", respExclude.Code, respExclude.Body.String())
+	}
+	if !strings.Contains(respExclude.Body.String(), `"removed_members":1`) {
+		t.Fatalf("应移除 1 个成员: %s", respExclude.Body.String())
+	}
+	// 排除后组只剩 1 成员被清理，分组应为空
+	req5 := httptest.NewRequest(http.MethodGet, "/api/reports/directory-compare/groups?page=1&page_size=10", nil)
+	resp5 := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp5, req5)
+	if resp5.Code != http.StatusOK || !strings.Contains(resp5.Body.String(), `"total":0`) {
+		t.Fatalf("排除后分组应清空: code=%d body=%s", resp5.Code, resp5.Body.String())
+	}
 }
 
 // TestPromoteLibrary 验证临时库入库：移动文件 + 更新 media.library_id/relative_path；

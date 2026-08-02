@@ -129,6 +129,42 @@ func (r *DirDuplicateRepo) ReplaceDirReport(rep *DirDuplicateReport, groups []Di
 	return reportID, nil
 }
 
+// DeleteMembersByMedia 删除指定媒体在目录对比报告中的全部成员关系，返回删除行数。
+// 用于"排除重复"：人工判定某文件无重复后将其从报告中移除（仅当前报告生效）。
+func (r *DirDuplicateRepo) DeleteMembersByMedia(mediaID int64) (int64, error) {
+	res, err := r.db.Exec(
+		`DELETE FROM dir_duplicate_members WHERE media_id = ?`, mediaID,
+	)
+	if err != nil {
+		return 0, errx.Wrapf(err, "删除媒体 %d 的目录对比组成员关系", mediaID)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PruneGroupsAndUpdateStats 清理成员数 <2 的目录对比组，并刷新最新报告统计。
+// 删除类变更（排除/删除媒体）后调用，保证目录对比报告不残留脏数据。
+func (r *DirDuplicateRepo) PruneGroupsAndUpdateStats() error {
+	if _, err := r.db.Exec(
+		`DELETE FROM dir_duplicate_groups WHERE id NOT IN (
+			SELECT group_id FROM dir_duplicate_members GROUP BY group_id HAVING COUNT(*) >= 2
+		)`,
+	); err != nil {
+		return errx.Wrapf(err, "清理不足 2 个成员的目录对比组")
+	}
+	if _, err := r.db.Exec(
+		`UPDATE dir_duplicate_reports SET
+			total_groups = (SELECT COUNT(*) FROM dir_duplicate_groups WHERE report_id = dir_duplicate_reports.id),
+			total_files = (SELECT COUNT(*) FROM dir_duplicate_members m
+				JOIN dir_duplicate_groups g ON g.id = m.group_id
+				WHERE g.report_id = dir_duplicate_reports.id)
+		 WHERE id = (SELECT id FROM dir_duplicate_reports ORDER BY id DESC LIMIT 1)`,
+	); err != nil {
+		return errx.Wrapf(err, "刷新目录对比报告统计")
+	}
+	return nil
+}
+
 // GetLatestDirReport 返回最新一份目录对比报告；不存在时返回 (nil, nil)。
 func (r *DirDuplicateRepo) GetLatestDirReport() (*DirDuplicateReport, error) {
 	var rep DirDuplicateReport

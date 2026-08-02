@@ -300,8 +300,8 @@ type DirGroupPage struct {
 	Items      []DirGroupItem `json:"items"`
 }
 
-// DirGroups 返回最新目录对比报告的分组分页数据。
-func (s *Service) DirGroups(page, pageSize int) (*DirGroupPage, error) {
+// DirGroups 返回最新目录对比报告的分组分页数据；kind 非空时按媒体类型过滤组。
+func (s *Service) DirGroups(page, pageSize int, kind string) (*DirGroupPage, error) {
 	if s.Dir == nil {
 		return &DirGroupPage{Page: page, PageSize: pageSize, Items: []DirGroupItem{}}, nil
 	}
@@ -319,6 +319,10 @@ func (s *Service) DirGroups(page, pageSize int) (*DirGroupPage, error) {
 	items := make([]DirGroupItem, 0, len(views))
 	for _, v := range views {
 		if len(v.Items) < 2 {
+			continue
+		}
+		// 检测按类型分桶，组内成员类型一致，取首成员判断
+		if kind != "" && kind != "all" && v.Items[0].Kind != kind {
 			continue
 		}
 		mediaItems := make([]repo.MediaView, 0, len(v.Items))
@@ -784,6 +788,150 @@ func (s *Service) DeleteMedia(ids []int64, permanent bool) (*DeleteResult, error
 	return &DeleteResult{DeletedFiles: deleted, FreedBytes: freed}, nil
 }
 
+// DirTree 返回最新目录对比报告中包含重复文件的目录树；kind 非空时按媒体类型过滤。
+// 与重复报告的 Tree() 语义不同：目录对比的组是"目标 vs 存量"，同一目录内通常只有
+// 1 个成员，因此只要目录内存在重复组成员（≥1）即计入，file_count 为该目录内成员数，
+// 展示所有涉及重复的目录；重复报告 Tree() 的"目录内 ≥2 才算"是目录内重复语义。
+func (s *Service) DirTree(kind string) ([]*TreeItem, error) {
+	if s.Dir == nil {
+		return []*TreeItem{}, nil
+	}
+	rep, err := s.Dir.GetLatestDirReport()
+	if err != nil {
+		return nil, err
+	}
+	if rep == nil {
+		return []*TreeItem{}, nil
+	}
+	views, err := s.Dir.DirGroupViews(rep.ID)
+	if err != nil {
+		return nil, err
+	}
+	dirs := map[string]int{}
+	for _, v := range views {
+		if kind != "" && kind != "all" && len(v.Items) > 0 && v.Items[0].Kind != kind {
+			continue
+		}
+		// 按目录统计重复组成员；目录内 1 个成员也计入（目录对比语义）
+		membersByDir := map[string]int{}
+		for _, m := range v.Items {
+			membersByDir[relDir(m.RelativePath)]++
+		}
+		for dir, count := range membersByDir {
+			dirs[dir] += count
+		}
+	}
+	return buildDirTree(dirs), nil
+}
+
+// DirExcludeMedia 从最新目录对比报告中排除指定媒体（人工判定无重复，仅当前报告生效，
+// 重新生成后该文件重新参与检测）。删除其全部组成员关系并清理 <2 的组、刷新统计。
+func (s *Service) DirExcludeMedia(mediaID int64) (int64, error) {
+	if s.Dir == nil {
+		return 0, nil
+	}
+	n, err := s.Dir.DeleteMembersByMedia(mediaID)
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, nil // 文件不在报告中，幂等
+	}
+	if err := s.Dir.PruneGroupsAndUpdateStats(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// DirClear 一键清除目录对比重复文件：每组按保留条件保留 1 个，其余删除
+// （含缩略图/media 记录/本地文件），并刷新目录对比报告统计。
+func (s *Service) DirClear(req ClearRequest, permanent bool) (*ClearResult, error) {
+	if s.Dir == nil {
+		return &ClearResult{}, nil
+	}
+	rep, err := s.Dir.GetLatestDirReport()
+	if err != nil {
+		return nil, err
+	}
+	if rep == nil {
+		return nil, fmt.Errorf("尚无目录对比报告")
+	}
+	views, err := s.Dir.DirGroupViews(rep.ID)
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]repo.DirGroupView, 0, len(views))
+	switch req.Scope {
+	case "directory":
+		targetDir := normalizeDirectory(req.Directory)
+		for _, v := range views {
+			if len(v.Items) == 0 {
+				continue
+			}
+			d := relDir(v.Items[0].RelativePath)
+			allSame := true
+			for _, m := range v.Items {
+				if relDir(m.RelativePath) != d {
+					allSame = false
+					break
+				}
+			}
+			if allSame && d == targetDir {
+				targets = append(targets, v)
+			}
+		}
+	case "page":
+		ids := map[int64]bool{}
+		for _, id := range req.GroupIDs {
+			ids[id] = true
+		}
+		for _, v := range views {
+			if ids[v.ID] {
+				targets = append(targets, v)
+			}
+		}
+	case "group":
+		for _, v := range views {
+			if v.ID == req.GroupID {
+				targets = append(targets, v)
+				break
+			}
+		}
+	default:
+		return nil, fmt.Errorf("无效的清除范围: %s", req.Scope)
+	}
+
+	toDelete := make([]int64, 0)
+	for _, v := range targets {
+		mediaItems := make([]repo.MediaView, 0, len(v.Items))
+		for _, it := range v.Items {
+			mediaItems = append(mediaItems, it.MediaView)
+		}
+		keepIdx := keepIndex(mediaItems, req.Keep)
+		for i, m := range v.Items {
+			if i != keepIdx {
+				toDelete = append(toDelete, m.ID)
+			}
+		}
+	}
+	if len(toDelete) == 0 {
+		remaining := 0
+		if latest, _ := s.Dir.GetLatestDirReport(); latest != nil {
+			remaining = latest.TotalGroups
+		}
+		return &ClearResult{RemainingGroups: remaining}, nil
+	}
+	res, err := s.DeleteMedia(toDelete, permanent)
+	if err != nil {
+		return nil, err
+	}
+	remaining := 0
+	if latest, _ := s.Dir.GetLatestDirReport(); latest != nil {
+		remaining = latest.TotalGroups
+	}
+	return &ClearResult{DeletedFiles: res.DeletedFiles, FreedBytes: res.FreedBytes, RemainingGroups: remaining}, nil
+}
+
 // normalizeDirectory 统一前端根目录空字符串与后端 relDir 的“.”表示。
 func normalizeDirectory(dir string) string {
 	if strings.TrimSpace(dir) == "" {
@@ -818,9 +966,17 @@ func (s *Service) SetStale() error {
 	return s.Dup.SetStaleOnLatest()
 }
 
-// PruneAfterMediaChange 删除类变更后清理重复组并刷新统计。
+// PruneAfterMediaChange 删除类变更后清理重复组并刷新统计（普通报告 + 目录对比报告）。
 func (s *Service) PruneAfterMediaChange() error {
-	return s.Dup.PruneGroupsAndUpdateStats()
+	if err := s.Dup.PruneGroupsAndUpdateStats(); err != nil {
+		return err
+	}
+	if s.Dir != nil {
+		if err := s.Dir.PruneGroupsAndUpdateStats(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // safeFullPath 校验完整路径位于收藏库根目录内。

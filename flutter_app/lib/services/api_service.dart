@@ -479,22 +479,72 @@ class ApiService {
     );
   }
 
-  /// 目录对比分组分页数据。
+  /// 目录对比分组分页数据（kind 为空表示全部）。
   Future<DirCompareGroupPage> getDirCompareGroups({
     int page = 1,
     int pageSize = 20,
+    String kind = '',
   }) async {
     final uri = Uri.parse(
       '$baseUrl/api/reports/directory-compare/groups',
     ).replace(queryParameters: {
       'page': '$page',
       'page_size': '$pageSize',
+      if (kind.isNotEmpty && kind != 'all') 'kind': kind,
     });
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('读取目录对比分组失败: ${res.body}');
     return DirCompareGroupPage.fromJson(
       jsonDecode(res.body) as Map<String, dynamic>,
     );
+  }
+
+  /// 目录对比报告中包含重复文件的目录树（kind 为空表示全部）。
+  Future<List<DuplicateTreeNode>> getDirCompareTree({String kind = ''}) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/reports/directory-compare/tree',
+    ).replace(queryParameters: {
+      if (kind.isNotEmpty && kind != 'all') 'kind': kind,
+    });
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('读取目录对比目录树失败: ${res.body}');
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list
+        .map((e) => DuplicateTreeNode.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// 从当前目录对比报告排除指定媒体（仅当前报告生效，重新生成后恢复参与检测）。
+  Future<void> excludeDirCompareMedia(int mediaId) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/reports/directory-compare/exclude'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'media_id': mediaId}),
+    );
+    if (res.statusCode != 200) throw Exception('排除重复失败: ${res.body}');
+  }
+
+  /// 一键清除目录对比重复文件（scope=directory/page/group + 保留条件）。
+  Future<ClearResult> clearDirCompare({
+    required String scope,
+    required String keep,
+    String? directory,
+    List<int>? groupIds,
+    int? groupId,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/reports/directory-compare/clear'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'scope': scope,
+        'keep': keep,
+        if (directory != null) 'directory': directory,
+        if (groupIds != null) 'group_ids': groupIds,
+        if (groupId != null) 'group_id': groupId,
+      }),
+    );
+    if (res.statusCode != 200) throw Exception('清除目录对比重复文件失败: ${res.body}');
+    return ClearResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   /// 删除媒体（源文件默认移入回收站，可永久删除）。

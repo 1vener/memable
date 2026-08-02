@@ -4,6 +4,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -138,7 +139,7 @@ func (s *Server) handleGetDirCompare(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListDirCompareGroups 返回目录对比分组分页数据。
+// handleListDirCompareGroups 返回目录对比分组分页数据（支持 kind 媒体类型过滤）。
 func (s *Server) handleListDirCompareGroups(w http.ResponseWriter, r *http.Request) {
 	if s.dup == nil {
 		writeError(w, 500, "重复报告服务未初始化")
@@ -146,6 +147,7 @@ func (s *Server) handleListDirCompareGroups(w http.ResponseWriter, r *http.Reque
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	kind := r.URL.Query().Get("kind")
 	if page <= 0 {
 		page = 1
 	}
@@ -155,10 +157,77 @@ func (s *Server) handleListDirCompareGroups(w http.ResponseWriter, r *http.Reque
 	if pageSize <= 0 {
 		pageSize = 20
 	}
-	pageData, err := s.dup.DirGroups(page, pageSize)
+	pageData, err := s.dup.DirGroups(page, pageSize, kind)
 	if err != nil {
 		writeError(w, 500, "查询目录对比分组失败: "+err.Error())
 		return
 	}
 	writeJSON(w, 200, pageData)
+}
+
+// handleDirCompareTree 返回目录对比报告中包含重复文件的目录树（支持 kind 过滤）。
+func (s *Server) handleDirCompareTree(w http.ResponseWriter, r *http.Request) {
+	if s.dup == nil {
+		writeError(w, 500, "重复报告服务未初始化")
+		return
+	}
+	tree, err := s.dup.DirTree(r.URL.Query().Get("kind"))
+	if err != nil {
+		writeError(w, 500, "查询目录对比目录树失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, tree)
+}
+
+// handleExcludeDirCompareMedia 从最新目录对比报告中排除指定媒体（仅当前报告生效）。
+func (s *Server) handleExcludeDirCompareMedia(w http.ResponseWriter, r *http.Request) {
+	if s.dup == nil {
+		writeError(w, 500, "重复报告服务未初始化")
+		return
+	}
+	var req struct {
+		MediaID int64 `json:"media_id"`
+	}
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	if req.MediaID <= 0 {
+		writeError(w, 400, "media_id 必须为正整数")
+		return
+	}
+	removed, err := s.dup.DirExcludeMedia(req.MediaID)
+	if err != nil {
+		writeError(w, 500, "排除重复失败: "+err.Error())
+		return
+	}
+	slog.Info("目录对比排除重复完成", "media_id", req.MediaID, "removed_members", removed)
+	writeJSON(w, 200, map[string]any{"status": "ok", "removed_members": removed})
+}
+
+// handleClearDirCompare 一键清除目录对比重复文件（按目录/整页/单组 + 保留条件）。
+func (s *Server) handleClearDirCompare(w http.ResponseWriter, r *http.Request) {
+	if s.dup == nil {
+		writeError(w, 500, "重复报告服务未初始化")
+		return
+	}
+	var req duplicate.ClearRequest
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	if req.Scope != "directory" && req.Scope != "page" && req.Scope != "group" {
+		writeError(w, 400, "scope 必须是 directory/page/group")
+		return
+	}
+	if req.Keep == "" {
+		req.Keep = "largest"
+	}
+	result, err := s.dup.DirClear(req, s.cfg.Delete.Permanent)
+	if err != nil {
+		writeError(w, 500, "清除目录对比重复文件失败: "+err.Error())
+		return
+	}
+	slog.Info("目录对比清除完成", "deleted", result.DeletedFiles, "freed", result.FreedBytes)
+	writeJSON(w, 200, result)
 }

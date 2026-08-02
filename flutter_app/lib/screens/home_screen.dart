@@ -14,6 +14,7 @@ import 'scan_screen.dart';
 import 'task_screen.dart';
 import 'search_screen.dart';
 import 'report_screen.dart';
+import 'dir_compare_screen.dart';
 import 'settings_screen.dart';
 import 'tool_screen.dart';
 
@@ -71,11 +72,18 @@ const _destinations = [
     shortcut: 'Ctrl+5',
   ),
   _NavDestination(
+    icon: Icons.folder_copy_outlined,
+    selectedIcon: Icons.folder_copy,
+    label: '目录对比',
+    tooltip: '所选目录与存量数据对比',
+    shortcut: 'Ctrl+6',
+  ),
+  _NavDestination(
     icon: Icons.build_outlined,
     selectedIcon: Icons.build,
     label: '工具',
     tooltip: '文件统计等实用工具',
-    shortcut: 'Ctrl+6',
+    shortcut: 'Ctrl+7',
   ),
 ];
 
@@ -194,8 +202,9 @@ class _HomeScreenState extends State<HomeScreen> {
       2 => TaskScreen(api: api),
       3 => SearchScreen(api: api),
       4 => ReportScreen(api: api),
-      5 => ToolScreen(api: api),
-      6 => SettingsScreen(api: api),
+      5 => DirCompareScreen(api: api),
+      6 => ToolScreen(api: api),
+      7 => SettingsScreen(api: api),
       _ => const SizedBox.shrink(),
     };
   }
@@ -354,9 +363,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 _buildBottomItem(
                   icon: Icons.settings_outlined,
                   label: '设置',
-                  selected: _selectedIndex == 6,
+                  selected: _selectedIndex == 7,
                   cs: cs,
-                  onTap: () => _onSelectPage(6),
+                  onTap: () => _onSelectPage(7),
                   collapsed: collapsed,
                 ),
               ],

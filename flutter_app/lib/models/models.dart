@@ -901,6 +901,19 @@ class DirCompareGroupItem {
       items: items,
     );
   }
+
+  String get reasonLabel {
+    switch (groupType) {
+      case 'sha1':
+        return 'SHA1 完全相同';
+      case 'image_similar':
+        return 'pHash 视觉相似';
+      case 'video_similar':
+        return 'sprite pHash 视觉相似';
+      default:
+        return groupType;
+    }
+  }
 }
 
 /// 目录对比分组分页结果。

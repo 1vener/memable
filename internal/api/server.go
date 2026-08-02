@@ -124,6 +124,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/reports/directory-compare", s.handleCreateDirCompare)
 	mux.HandleFunc("GET /api/reports/directory-compare", s.handleGetDirCompare)
 	mux.HandleFunc("GET /api/reports/directory-compare/groups", s.handleListDirCompareGroups)
+	mux.HandleFunc("GET /api/reports/directory-compare/tree", s.handleDirCompareTree)
+	mux.HandleFunc("POST /api/reports/directory-compare/exclude", s.handleExcludeDirCompareMedia)
+	mux.HandleFunc("POST /api/reports/directory-compare/clear", s.handleClearDirCompare)
 
 	// 缩略图静态服务：/api/thumbnails/{kind}/{rel}，kind ∈ image/video
 	mux.HandleFunc("GET /api/thumbnails/{kind}/", s.handleThumbnail)
