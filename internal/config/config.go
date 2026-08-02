@@ -88,7 +88,9 @@ type SimilarityConfig struct {
 }
 
 type WorkerConfig struct {
-	PoolSize int `mapstructure:"pool_size"` // Worker Pool 并发数
+	// PoolSize 并发数。按磁盘类型调整：SSD/NVMe 建议 16-32（高队列深度吃满带宽），
+	// 机械硬盘 4-8（并发过高反而寻道抖动降低吞吐）。
+	PoolSize int `mapstructure:"pool_size"`
 }
 
 // Load 读取 config.yaml；env 前缀 MEMABLE_，如 MEMABLE_DATABASE__PATH。

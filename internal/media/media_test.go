@@ -51,6 +51,39 @@ func TestWalkProbeImageAndSHA1(t *testing.T) {
 	}
 }
 
+// TestDecodeImageWithSHA1 验证解码合并哈希：DecodeImageWithSHA1 返回的 SHA1
+// 与独立 SHA1File 一致（一次读完成，TeeReader 不漏字节）。
+func TestDecodeImageWithSHA1(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "a.png")
+	writeTestPNG(t, imgPath, 32, 24)
+
+	expected, err := SHA1File(imgPath)
+	if err != nil {
+		t.Fatalf("SHA1File: %v", err)
+	}
+
+	decoded, sha1Hex, err := DecodeImageWithSHA1(context.Background(), imgPath, DecoderGo)
+	if err != nil {
+		t.Fatalf("DecodeImageWithSHA1: %v", err)
+	}
+	if decoded == nil || decoded.Format != "png" {
+		t.Fatalf("解码结果异常: %+v", decoded)
+	}
+	if sha1Hex != expected {
+		t.Fatalf("合并哈希 = %q, 独立哈希 = %q，不一致", sha1Hex, expected)
+	}
+
+	// 无哈希参数时行为与 DecodeImage 一致
+	plain, err := DecodeImage(context.Background(), imgPath, DecoderGo)
+	if err != nil {
+		t.Fatalf("DecodeImage: %v", err)
+	}
+	if plain.Format != "png" {
+		t.Fatalf("DecodeImage 结果异常: %+v", plain)
+	}
+}
+
 func TestProbeVideo(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg 未安装，跳过视频 metadata 测试")

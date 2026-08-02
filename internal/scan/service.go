@@ -329,16 +329,9 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 
 func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string, e media.FileEntry) (*repo.Media, error) {
 	slog.Info("处理文件", "dir", filepath.Dir(e.RelativePath), "file", filepath.Base(e.RelativePath))
-	// 图片需要 SHA1（缩略图内容寻址 + sha1_exact 精确去重）；
-	// 视频主扫描不计算 SHA1，避免大文件全量读取，需要时由独立 scan_sha1 任务补齐。
-	var sha1Ptr *string
-	if e.Kind == media.KindImage {
-		sha1, err := media.SHA1File(e.AbsPath)
-		if err != nil {
-			return nil, fmt.Errorf("计算 SHA1 %q: %w", e.AbsPath, err)
-		}
-		sha1Ptr = &sha1
-	}
+	// 图片需要 SHA1（缩略图内容寻址 + sha1_exact 精确去重），在解码时经 TeeReader
+	// 一次读完成（DecodeImageWithSHA1）；视频主扫描不计算 SHA1，避免大文件全量读取，
+	// 需要时由独立 scan_sha1 任务补齐。
 	m := &repo.Media{
 		LibraryID:     libraryID,
 		ScanSessionID: &sessionID,
@@ -346,7 +339,6 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		RelativePath:  e.RelativePath,
 		FileSize:      e.Size,
 		Mtime:         e.Mtime,
-		Sha1:          sha1Ptr,
 	}
 
 	maxEdge := 400
@@ -356,11 +348,19 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 
 	switch e.Kind {
 	case media.KindImage:
-		// 统一解码，仅一次 IO + 解码
-		decoded, err := media.DecodeImage(ctx, e.AbsPath, e.Decoder)
+		// 统一解码，仅一次 IO + 解码，同时流式计算 SHA1
+		decoded, sha1Hex, err := media.DecodeImageWithSHA1(ctx, e.AbsPath, e.Decoder)
 		if err != nil {
 			return nil, fmt.Errorf("解码图片 %q: %w", e.AbsPath, err)
 		}
+		if sha1Hex == "" {
+			// FFmpeg 转码路径（超大图/HEIC/CR2）无法合并哈希，回退单独计算
+			sha1Hex, err = media.SHA1File(e.AbsPath)
+			if err != nil {
+				return nil, fmt.Errorf("计算 SHA1 %q: %w", e.AbsPath, err)
+			}
+		}
+		m.Sha1 = &sha1Hex
 
 		// metadata 直接从解码结果获取
 		b := decoded.Image.Bounds()
@@ -377,7 +377,7 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		m.Ahash = &hashes.AHash
 
 		// 内容寻址缩略图（复用同一次解码）
-		storageKey := media.ThumbnailKey("image", *sha1Ptr, maxEdge)
+		storageKey := media.ThumbnailKey("image", sha1Hex, maxEdge)
 		thumbRel := media.ThumbnailStoragePath(storageKey)
 		thumbAbs := filepath.Join(s.thumbBaseFor(media.KindImage), thumbRel)
 		if err := ensureThumbnail(thumbAbs, func(tmp string) error {

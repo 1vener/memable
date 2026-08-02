@@ -3,8 +3,12 @@
 package media
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
+	"hash"
 	"image"
 	"image/color"
 	"image/draw"
@@ -24,6 +28,11 @@ import (
 // 避免 processSOS 等解码阶段一次性分配数百 MB 内存导致进程 OOM。
 const maxDirectDecodePixels = 24_000_000
 
+// maxDirectDecodeEdge 单边最大像素：x/image 的 CatmullRom 缩放临时缓冲大小
+// = 目标宽 × 源高，细长图（如 800×20000 全景，总像素仅 1600 万）缩放缓冲可达
+// 数百 MB，总像素判据防不住，单边超限也走 FFmpeg 限分辨率转码。
+const maxDirectDecodeEdge = 8000
+
 // maxScaledDecodeEdge FFmpeg 限分辨率解码输出的最大边长（像素）。
 // 感知哈希仅需 32×32、缩略图默认 400px，3000px 边长已足够且内存可控。
 const maxScaledDecodeEdge = 3000
@@ -36,63 +45,98 @@ type DecodedImage struct {
 
 // DecodeImage 统一图片解码入口，根据 decoder 策略调用 Go 原生或 FFmpeg 临时转换。
 func DecodeImage(ctx context.Context, path string, decoder DecoderKind) (*DecodedImage, error) {
+	decoded, _, err := decodeImageWithSHA1(ctx, path, decoder, nil)
+	return decoded, err
+}
+
+// DecodeImageWithSHA1 解码图片并同时流式计算文件 SHA1（一次读完成，避免扫描时
+// 哈希与解码各读一遍文件）。仅 Go 原生解码路径合并；FFmpeg 转码路径（超大图、
+// HEIC/CR2 等）无法合并，返回的 sha1 为空字符串，由调用方回退 SHA1File 单独计算。
+func DecodeImageWithSHA1(ctx context.Context, path string, decoder DecoderKind) (*DecodedImage, string, error) {
+	return decodeImageWithSHA1(ctx, path, decoder, sha1.New())
+}
+
+func decodeImageWithSHA1(ctx context.Context, path string, decoder DecoderKind, h hash.Hash) (*DecodedImage, string, error) {
 	switch decoder {
 	case DecoderGo:
-		decoded, err := decodeGoImage(ctx, path)
+		decoded, sha1Hex, err := decodeGoImage(ctx, path, h)
 		if err == nil {
-			return decoded, nil
+			return decoded, sha1Hex, nil
 		}
 		// 扩展名声明为 Go 原生格式，但内容无法识别（如实际为 WebP/JPEG2000/HEIC
 		// 却使用 .jpg 扩展名，或文件头损坏）。回退 FFmpeg 转码再解码；
 		// FFmpeg 也失败时保留原始错误（该文件记为失败，不中断扫描）。
 		img, format, ferr := decodeImageWithFFmpeg(ctx, path)
 		if ferr != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return &DecodedImage{Image: img, Format: format}, nil
+		return &DecodedImage{Image: img, Format: format}, "", nil
 	case DecoderFFmpeg:
 		img, format, err := decodeImageWithFFmpeg(ctx, path)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return &DecodedImage{Image: img, Format: format}, nil
+		return &DecodedImage{Image: img, Format: format}, "", nil
 	default:
-		return nil, fmt.Errorf("不支持的解码器类型: %q", decoder)
+		return nil, "", fmt.Errorf("不支持的解码器类型: %q", decoder)
 	}
 }
 
 // decodeGoImage 使用 Go 标准/扩展库解码图片（jpg/jpeg/jfif/png/bmp）。
-// 先读取头部尺寸：超过 maxDirectDecodePixels 的图片改走 FFmpeg 限分辨率解码，
-// 防止超大图片全分辨率解码耗尽内存（32 位进程堆上限约 2GB）。
-func decodeGoImage(ctx context.Context, path string) (*DecodedImage, error) {
+// 先读取头部尺寸：超过 maxDirectDecodePixels 或单边过大的图片改走 FFmpeg
+// 限分辨率解码，防止超大图片全分辨率解码耗尽内存（32 位进程堆上限约 2GB）。
+// h 非 nil 时，解码读取的同时把完整文件字节写入哈希（TeeReader）。
+func decodeGoImage(ctx context.Context, path string, h hash.Hash) (*DecodedImage, string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("打开图片 %q: %w", path, err)
+		return nil, "", fmt.Errorf("打开图片 %q: %w", path, err)
 	}
 	defer f.Close()
 
 	cfg, _, err := image.DecodeConfig(f)
 	if err != nil {
-		return nil, fmt.Errorf("解码图片 %q: %w", path, err)
+		return nil, "", fmt.Errorf("解码图片 %q: %w", path, err)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("重置图片读取位置 %q: %w", path, err)
+		return nil, "", fmt.Errorf("重置图片读取位置 %q: %w", path, err)
 	}
 
-	if cfg.Width > 0 && cfg.Height > 0 &&
-		uint64(cfg.Width)*uint64(cfg.Height) > maxDirectDecodePixels {
+	if cfg.Width > 0 && cfg.Height > 0 && needsScaledDecode(cfg.Width, cfg.Height) {
 		img, format, err := decodeImageWithFFmpegScaled(ctx, path, cfg.Width, cfg.Height)
 		if err != nil {
-			return nil, fmt.Errorf("缩放解码超大图片 %q (%dx%d): %w", path, cfg.Width, cfg.Height, err)
+			return nil, "", fmt.Errorf("缩放解码超大图片 %q (%dx%d): %w", path, cfg.Width, cfg.Height, err)
 		}
-		return &DecodedImage{Image: img, Format: format}, nil
+		return &DecodedImage{Image: img, Format: format}, "", nil
 	}
 
-	img, format, err := image.Decode(f)
-	if err != nil {
-		return nil, fmt.Errorf("解码图片 %q: %w", path, err)
+	var reader io.Reader = f
+	if h != nil {
+		// TeeReader 把解码器读取的完整文件流同时写入哈希。
+		// image.Decode 内部用默认 4096 缓冲的 bufio，磁盘 syscall 会变成 4KB 小块；
+		// 在 tee 上层再包一层 1MB 大缓冲 bufio，让文件读取按大块进行（tee 每块
+		// 向哈希写入 4096，写入频率不变，但 syscall 次数显著减少）。
+		// 解码器通常读完整文件，但防御性补读剩余字节保证哈希完整。
+		reader = io.TeeReader(bufio.NewReaderSize(f, sha1ReadBuffer), h)
 	}
-	return &DecodedImage{Image: img, Format: format}, nil
+	img, format, err := image.Decode(reader)
+	if err != nil {
+		return nil, "", fmt.Errorf("解码图片 %q: %w", path, err)
+	}
+	if h != nil {
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			return nil, "", fmt.Errorf("读取图片剩余字节 %q: %w", path, err)
+		}
+		return &DecodedImage{Image: img, Format: format}, hex.EncodeToString(h.Sum(nil)), nil
+	}
+	return &DecodedImage{Image: img, Format: format}, "", nil
+}
+
+// needsScaledDecode 判定是否需走 FFmpeg 限分辨率转码：总像素超限或任一边过长。
+// x/image 的 CatmullRom 缩放临时缓冲大小 = 目标宽 × 源高，细长图（如 800×20000
+// 全景）总像素不高但缩放缓冲可达数百 MB，总像素判据防不住，需单边限制。
+func needsScaledDecode(w, h int) bool {
+	return uint64(w)*uint64(h) > maxDirectDecodePixels ||
+		w > maxDirectDecodeEdge || h > maxDirectDecodeEdge
 }
 
 // decodeImageWithFFmpeg 通过 FFmpeg 将源文件转为临时 PNG 再用 Go 解码。

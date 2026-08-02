@@ -13,7 +13,8 @@
 ## 核心架构速览
 
 - 数据流：Flutter → REST（127.0.0.1:8080）→ `internal/api` → `repo`/服务层 → SQLite；媒体处理走 `internal/media`（ffprobe/ffmpeg 解码、SHA1、pHash/dHash/aHash、OSHASH、sprite pHash、封面、400px JPEG 缩略图）。
-- 图片解码：Go 原生解码，超过 `maxDirectDecodePixels`（2400 万像素）改走 FFmpeg 限分辨率转码（最长边 3000px），防超大图解码 OOM。
+- 图片解码：Go 原生解码，超过 `maxDirectDecodePixels`（2400 万像素）或单边超过 `maxDirectDecodeEdge`（8000px，防细长图 CatmullRom 缩放缓冲爆炸）改走 FFmpeg 限分辨率转码（最长边 3000px），防超大图解码 OOM。
+- SHA1 性能：`media.SHA1File` 用 1MB 缓冲流式计算（`io.CopyBuffer`，默认 32KB 过小）；**主扫描图片分支解码与 SHA1 合并**（`DecodeImageWithSHA1` 用 `io.TeeReader` 一次读完成，仅 Go 原生解码路径；FFmpeg 转码路径返回空 sha1 由 collect 回退 `SHA1File` 单独算）；`worker.pool_size` 默认 16，按磁盘类型调整（SSD/NVMe 16-32、机械硬盘 4-8）。
 - 视频 SHA1：主扫描/修复扫描**不生成**视频 SHA1；独立 `scan_sha1` 后台任务按收藏库补齐 `sha1 IS NULL` 的记录（不强制重算）。视频缩略图内容寻址 key 用 `oshash+file_size+duration_ms`（`VideoThumbnailKey`），图片仍用 SHA1。
 - sprite pHash：5%~95% 区间分 5 段，每段 `-ss` 快速定位只解码 1 秒窗口抽 5 帧（`fps=5,scale=160:-1,tile=5x1`），Go 拼 5×5 后算 pHash；失败依次回退单条 `trim+fps+tile`、逐帧 25 次。封面由 sprite 中帧向两侧选非黑屏/纯色帧（`ComputeVideoSpritePHashAndCover` 同时返回 sprite pHash 与封面帧 pHash，封面帧 pHash 写入 `media.cover_phash`）。视频重复检测中，时长 `<4000ms` 的短视频不比较 sprite pHash，只按 SHA1 或 OSHash 相同合并；`>=4000ms` 的普通视频继续使用 sprite pHash + 时长差。
 - 以图搜图匹配口径：图片对比 `media.phash`（全图，与缩略图等价）；**视频对比 `media.cover_phash`（封面帧 pHash），绝不能用 sprite pHash（25 帧拼贴图与单帧查询图不可比，会导致视频永远匹配不上）**。存量视频 cover_phash 由 `needsSync` 判定（`CoverPHash == nil` 视为需重扫）在下次完整性/修复扫描时自动补齐。
