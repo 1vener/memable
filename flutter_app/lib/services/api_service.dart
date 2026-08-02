@@ -559,6 +559,40 @@ class ApiService {
     return jsonDecode(res.body);
   }
 
+  /// 重命名库内目录（本地改名 + 同步更新数据库，返回结果）
+  Future<Map<String, dynamic>> renameDirectory(
+    int libraryId,
+    String dirPath,
+    String newName,
+  ) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/libraries/$libraryId/directories/rename'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'path': dirPath, 'new_name': newName}),
+    );
+    if (res.statusCode != 200 && res.statusCode != 202) {
+      throw Exception('重命名目录失败: ${res.body}');
+    }
+    return jsonDecode(res.body);
+  }
+
+  /// 移动库内目录到指定目录下（本地移动 + 同步更新数据库，返回结果）
+  Future<Map<String, dynamic>> moveDirectory(
+    int libraryId,
+    String dirPath,
+    String targetDir,
+  ) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/libraries/$libraryId/directories/move'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'path': dirPath, 'target_dir': targetDir}),
+    );
+    if (res.statusCode != 200 && res.statusCode != 202) {
+      throw Exception('移动目录失败: ${res.body}');
+    }
+    return jsonDecode(res.body);
+  }
+
   /// 缩略图 URL（kind: image/video；缩略图根目录按类型区分）
   String thumbnailUrl(String kind, String thumbnailPath) {
     return '$baseUrl/api/thumbnails/$kind/$thumbnailPath';

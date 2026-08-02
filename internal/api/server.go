@@ -94,6 +94,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/libraries/{id}/tree", s.handleFileTree)
 	mux.HandleFunc("GET /api/libraries/{id}/files", s.handleListFiles)
 	mux.HandleFunc("DELETE /api/libraries/{id}/directories", s.handleDeleteDirectory)
+	mux.HandleFunc("POST /api/libraries/{id}/directories/rename", s.handleRenameDirectory)
+	mux.HandleFunc("POST /api/libraries/{id}/directories/move", s.handleMoveDirectory)
 
 	// 扫描
 	mux.HandleFunc("POST /api/libraries/{id}/scan", s.handleScanLibrary)

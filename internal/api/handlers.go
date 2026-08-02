@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"memable/internal/media"
 	"memable/internal/recycle"
@@ -382,6 +383,242 @@ func (s *Server) handleDeleteDirectory(w http.ResponseWriter, r *http.Request) {
 		"deleted_thumbs": deletedThumbs,
 		"local_deleted":  localDeleted,
 		"dir_path":       req.Path,
+	})
+}
+
+// ===== 目录重命名 / 移动 =====
+
+type renameDirReq struct {
+	Path    string `json:"path"`
+	NewName string `json:"new_name"`
+}
+
+// validDirName 校验目录名合法：非空、不含路径分隔与 Windows 非法字符、非 . / ..。
+func validDirName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, `/\:*?"<>|`)
+}
+
+// splitRelPath 将相对路径拆分为父目录与末级名（如 "a/b/c" → ("a/b", "c")）。
+func splitRelPath(rel string) (parent, base string) {
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	idx := strings.LastIndex(rel, "/")
+	if idx < 0 {
+		return "", rel
+	}
+	return rel[:idx], rel[idx+1:]
+}
+
+// handleRenameDirectory 重命名库内目录：本地改名 + 批量更新 media.relative_path 前缀。
+// 顺序：先改盘（原子 rename），成功后改库；库更新失败时回滚移回。
+func (s *Server) handleRenameDirectory(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的库 ID")
+		return
+	}
+	lib, err := s.libraries.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+
+	var req renameDirReq
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	oldPath := normalizePath(req.Path)
+	if oldPath == "" {
+		writeError(w, 400, "不能重命名根目录")
+		return
+	}
+	if isUnsafePath(oldPath) {
+		writeError(w, 400, "路径非法")
+		return
+	}
+	newName := strings.TrimSpace(req.NewName)
+	if !validDirName(newName) {
+		writeError(w, 400, "目录名非法（不能包含 /\\:*?\"<>| 等字符）")
+		return
+	}
+	parent, base := splitRelPath(oldPath)
+	if base == "" {
+		writeError(w, 400, "不能重命名根目录")
+		return
+	}
+	if base == newName {
+		writeError(w, 400, "目录名未变化")
+		return
+	}
+	newPath := joinRel(parent, newName)
+	// Windows/大小写不敏感文件系统：仅改大小写时新路径与源在文件系统上等价，
+	// os.Stat 必然命中自身，不能做"目标已存在"检查。
+	caseOnly := strings.EqualFold(base, newName) && base != newName
+
+	// 检查该库是否有活跃任务
+	if active, _ := s.tasks.HasActiveForLibrary(id); active {
+		writeError(w, 409, "该库有正在运行的任务，请稍后再试")
+		return
+	}
+
+	absOld := filepath.Join(lib.Path, oldPath)
+	info, err := os.Stat(absOld)
+	if err != nil || !info.IsDir() {
+		writeError(w, 404, "目录不存在")
+		return
+	}
+	absNew := filepath.Join(lib.Path, newPath)
+	if !caseOnly {
+		if _, err := os.Stat(absNew); err == nil {
+			writeError(w, 409, "目标目录「"+newName+"」已存在")
+			return
+		}
+	}
+
+	// 磁盘改名。Windows 大小写改名（A → a）时目标路径与源文件系统等价，
+	// 直接 rename 会失败或无效果：先改到临时名再改最终名。
+	if caseOnly {
+		tmpName := fmt.Sprintf(".%s.ren-%d", base, time.Now().UnixNano())
+		tmpAbs := filepath.Join(filepath.Dir(absOld), tmpName)
+		if err := os.Rename(absOld, tmpAbs); err != nil {
+			writeError(w, 500, "改名失败: "+err.Error())
+			return
+		}
+		if err := os.Rename(tmpAbs, absNew); err != nil {
+			_ = os.Rename(tmpAbs, absOld) // 回滚临时名
+			writeError(w, 500, "改名失败: "+err.Error())
+			return
+		}
+	} else {
+		if err := os.Rename(absOld, absNew); err != nil {
+			writeError(w, 500, "改名失败: "+err.Error())
+			return
+		}
+	}
+
+	// 批量更新数据库相对路径前缀；失败时回滚磁盘
+	n, err := s.media.RenameDirectoryPrefix(id, oldPath, newPath)
+	if err != nil {
+		slog.Error("重命名目录后更新数据库失败，回滚磁盘", "old", oldPath, "new", newPath, "err", err)
+		if rbErr := os.Rename(absNew, absOld); rbErr != nil {
+			slog.Error("回滚磁盘改名失败，请手动检查", "path", absNew, "err", rbErr)
+		}
+		writeError(w, 500, "更新数据库失败: "+err.Error())
+		return
+	}
+
+	slog.Info("重命名目录完成", "library", lib.Name, "old", oldPath, "new", newPath, "media", n)
+	writeJSON(w, 200, map[string]any{
+		"status":        "renamed",
+		"renamed_media": n,
+		"old_path":      oldPath,
+		"new_path":      newPath,
+		"old_abs":       absOld,
+		"new_abs":       absNew,
+	})
+}
+
+type moveDirReq struct {
+	Path      string `json:"path"`
+	TargetDir string `json:"target_dir"`
+}
+
+// handleMoveDirectory 移动库内目录到指定目录下（结果 target_dir/末级名）：
+// 本地移动 + 批量更新 media.relative_path 前缀。
+// 仅支持同卷移动（os.Rename）；跨卷/失败直接报错，不做递归复制。
+func (s *Server) handleMoveDirectory(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的库 ID")
+		return
+	}
+	lib, err := s.libraries.GetByID(id)
+	if err != nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+
+	var req moveDirReq
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	srcPath := normalizePath(req.Path)
+	if srcPath == "" {
+		writeError(w, 400, "不能移动根目录")
+		return
+	}
+	if isUnsafePath(srcPath) {
+		writeError(w, 400, "路径非法")
+		return
+	}
+	targetDir := normalizeRelDir(req.TargetDir)
+	if isUnsafePath(targetDir) {
+		writeError(w, 400, "目标目录非法")
+		return
+	}
+	// 禁止移动到自身或其子孙目录
+	if targetDir == srcPath || strings.HasPrefix(targetDir, srcPath+"/") {
+		writeError(w, 400, "不能移动到自身或其子目录")
+		return
+	}
+	_, base := splitRelPath(srcPath)
+	newPath := joinRel(targetDir, base)
+	if newPath == srcPath {
+		writeError(w, 400, "目录已在目标位置")
+		return
+	}
+
+	// 检查该库是否有活跃任务
+	if active, _ := s.tasks.HasActiveForLibrary(id); active {
+		writeError(w, 409, "该库有正在运行的任务，请稍后再试")
+		return
+	}
+
+	absOld := filepath.Join(lib.Path, srcPath)
+	info, err := os.Stat(absOld)
+	if err != nil || !info.IsDir() {
+		writeError(w, 404, "目录不存在")
+		return
+	}
+	absNew := filepath.Join(lib.Path, newPath)
+	if _, err := os.Stat(absNew); err == nil {
+		writeError(w, 409, "目标目录「"+base+"」已存在")
+		return
+	}
+
+	// 本地移动（先确保目标父目录存在）
+	if err := os.MkdirAll(filepath.Dir(absNew), 0o755); err != nil {
+		writeError(w, 500, "创建目标目录失败: "+err.Error())
+		return
+	}
+	if err := os.Rename(absOld, absNew); err != nil {
+		writeError(w, 500, "移动目录失败（同卷移动，跨卷或占用时无法完成）: "+err.Error())
+		return
+	}
+
+	// 批量更新数据库相对路径前缀；失败时回滚磁盘
+	n, err := s.media.RenameDirectoryPrefix(id, srcPath, newPath)
+	if err != nil {
+		slog.Error("移动目录后更新数据库失败，回滚磁盘", "old", srcPath, "new", newPath, "err", err)
+		if rbErr := os.Rename(absNew, absOld); rbErr != nil {
+			slog.Error("回滚磁盘移动失败，请手动检查", "path", absNew, "err", rbErr)
+		}
+		writeError(w, 500, "更新数据库失败: "+err.Error())
+		return
+	}
+
+	slog.Info("移动目录完成", "library", lib.Name, "old", srcPath, "new", newPath, "media", n)
+	writeJSON(w, 200, map[string]any{
+		"status":      "moved",
+		"moved_media": n,
+		"old_path":    srcPath,
+		"new_path":    newPath,
+		"old_abs":     absOld,
+		"new_abs":     absNew,
 	})
 }
 

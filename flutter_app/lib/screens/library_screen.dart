@@ -775,6 +775,136 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     return idx < 0 ? null : norm.substring(0, idx);
   }
 
+  /// 目录重命名对话框：输入新名称，校验非法字符后调用接口。
+  Future<void> _showRenameDialog(String dirPath, String dirName) async {
+    final ctrl = TextEditingController(text: dirName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('重命名目录'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '新名称',
+            hintText: '不能包含 / \\ : * ? " < > | 字符',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('重命名'),
+          ),
+        ],
+      ),
+    );
+    if (newName == null || newName.isEmpty || newName == dirName) return;
+    final invalid = RegExp(r'[\\/:*?"<>|]').hasMatch(newName);
+    if (invalid) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('名称非法：不能包含 / \\ : * ? " < > | 字符'),
+            backgroundColor: Color(0xFFEF4444),
+          ),
+        );
+      }
+      return;
+    }
+    await _renameDir(dirPath, newName);
+  }
+
+  Future<void> _renameDir(String dirPath, String newName) async {
+    try {
+      final result = await widget.api.renameDirectory(
+        widget.library.id,
+        dirPath,
+        newName,
+      );
+      if (mounted) {
+        final mediaCount = result['renamed_media'] ?? 0;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已重命名「$dirPath」→「${result['new_path']}」（$mediaCount 条记录）'),
+            backgroundColor: const Color(0xFF22C55E),
+          ),
+        );
+        await _afterDirOp(dirPath);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('重命名失败: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
+  }
+
+  /// 目录移动对话框：目录树选择目标目录（懒加载），禁选自身及其子孙目录。
+  Future<void> _showMoveDialog(String dirPath, String dirName) async {
+    final target = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _MoveDirDialog(
+        api: widget.api,
+        libraryId: widget.library.id,
+        srcPath: dirPath,
+      ),
+    );
+    if (target == null) return;
+    await _moveDir(dirPath, target, dirName);
+  }
+
+  Future<void> _moveDir(String dirPath, String targetDir, String dirName) async {
+    try {
+      final result = await widget.api.moveDirectory(
+        widget.library.id,
+        dirPath,
+        targetDir,
+      );
+      if (mounted) {
+        final mediaCount = result['moved_media'] ?? 0;
+        final newPath = result['new_path'];
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '已移动「$dirName」到「${_parentOf(newPath) ?? ''}」（$mediaCount 条记录）',
+            ),
+            backgroundColor: const Color(0xFF22C55E),
+          ),
+        );
+        await _afterDirOp(dirPath);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('移动目录失败: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
+  }
+
+  /// 目录重命名/移动后的统一刷新：失效旧路径展开/选中缓存 → 刷新树 → 刷新右侧列表。
+  Future<void> _afterDirOp(String oldPath) async {
+    setState(() => _purgeDeletedDir(oldPath));
+    await _loadRootChildren();
+    if (_selectedDir == oldPath || _selectedDir.startsWith('$oldPath/')) {
+      _selectedDir = '';
+      _files = [];
+    }
+    await _selectDir(_selectedDir);
+  }
+
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -948,6 +1078,17 @@ class _FileTreePanelState extends State<_FileTreePanel> {
               context: context,
               position: globalPosition,
               items: [
+                ContextMenuItem(
+                  icon: Icons.drive_file_move_outline,
+                  label: '移动到…',
+                  onTap: () => _showMoveDialog(node.path, node.name),
+                ),
+                ContextMenuItem(
+                  icon: Icons.edit_outlined,
+                  label: '重命名',
+                  onTap: () => _showRenameDialog(node.path, node.name),
+                ),
+                const ContextMenuItem.divider(),
                 ContextMenuItem(
                   icon: Icons.delete_outline,
                   label: '删除目录',
@@ -1341,6 +1482,204 @@ class _TreeDirTile extends StatelessWidget {
                   ),
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 目录移动目标选择对话框：懒加载目录树，禁选被移动目录自身及其子孙。
+class _MoveDirDialog extends StatefulWidget {
+  final ApiService api;
+  final int libraryId;
+  final String srcPath;
+
+  const _MoveDirDialog({
+    required this.api,
+    required this.libraryId,
+    required this.srcPath,
+  });
+
+  @override
+  State<_MoveDirDialog> createState() => _MoveDirDialogState();
+}
+
+class _MoveDirDialogState extends State<_MoveDirDialog> {
+  final Map<String, List<FileTreeNode>> _children = {};
+  final Set<String> _expanded = {};
+  String _selected = ''; // '' = 库根目录
+
+  @override
+  void initState() {
+    super.initState();
+    _loadChildren('');
+  }
+
+  Future<void> _loadChildren(String path) async {
+    try {
+      final children = await widget.api.getFileTree(widget.libraryId, path: path);
+      if (mounted) setState(() => _children[path] = children);
+    } catch (_) {
+      // 读取失败保持空态，用户可重试展开
+    }
+  }
+
+  /// 该路径是否被禁选（自身或其子孙）
+  bool _disabled(String path) {
+    return path == widget.srcPath || path.startsWith('${widget.srcPath}/');
+  }
+
+  void _toggle(String path) {
+    if (_expanded.contains(path)) {
+      setState(() => _expanded.remove(path));
+      return;
+    }
+    if (!_children.containsKey(path)) _loadChildren(path);
+    setState(() => _expanded.add(path));
+  }
+
+  List<FileTreeNode> _childrenOf(String path) => _children[path] ?? const [];
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('移动到…'),
+      content: SizedBox(
+        width: 420,
+        height: 420,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '选择目标目录（将移动到所选目录下，目录名保持不变）',
+              style: TextStyle(fontSize: 12, color: cs.outline),
+            ),
+            const SizedBox(height: 12),
+            // 库根目录
+            _targetRow(
+              path: '',
+              name: '库根目录',
+            ),
+            const SizedBox(height: 4),
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    ..._buildLevels(_childrenOf(''), 0),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _selected),
+          child: const Text('移动到此处'),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildLevels(List<FileTreeNode> nodes, int depth) {
+    final tiles = <Widget>[];
+    for (final n in nodes) {
+      if (!n.isDir) continue;
+      final isExpanded = _expanded.contains(n.path);
+      tiles.add(_targetRow(
+        path: n.path,
+        name: n.name,
+        depth: depth,
+        isExpanded: isExpanded,
+        hasChildren: n.hasChildren,
+      ));
+      if (isExpanded) {
+        tiles.addAll(_buildLevels(_childrenOf(n.path), depth + 1));
+      }
+    }
+    return tiles;
+  }
+
+  Widget _targetRow({
+    required String path,
+    required String name,
+    int depth = 0,
+    bool isExpanded = false,
+    bool hasChildren = false,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final disabled = _disabled(path);
+    final selected = _selected == path && !disabled;
+    return Padding(
+      padding: EdgeInsets.only(left: 8.0 + depth * 16),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: disabled
+              ? null
+              : () => setState(() {
+                    _selected = path;
+                    if (path.isNotEmpty && !_children.containsKey(path)) {
+                      _loadChildren(path);
+                    }
+                  }),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            child: Row(
+              children: [
+                if (hasChildren || isExpanded)
+                  GestureDetector(
+                    onTap: () => _toggle(path),
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 2),
+                      child: Icon(
+                        isExpanded
+                            ? Icons.keyboard_arrow_down
+                            : Icons.keyboard_arrow_right,
+                        size: 16,
+                        color: cs.outline,
+                      ),
+                    ),
+                  )
+                else
+                  const SizedBox(width: 18),
+                Icon(
+                  isExpanded ? Icons.folder_open : Icons.folder,
+                  size: 17,
+                  color: disabled
+                      ? cs.outlineVariant
+                      : selected
+                      ? cs.primary
+                      : cs.outline,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    name,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: disabled ? cs.outlineVariant : cs.onSurface,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (disabled)
+                  Icon(Icons.block, size: 14, color: cs.outlineVariant)
+                else if (selected)
+                  Icon(Icons.radio_button_checked, size: 16, color: cs.primary)
+                else
+                  Icon(Icons.radio_button_off, size: 16, color: cs.outlineVariant),
+              ],
             ),
           ),
         ),

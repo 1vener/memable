@@ -165,6 +165,33 @@ func (r *MediaRepo) ListAllFormal() ([]Media, error) {
 		WHERE COALESCE(s.is_temporary, 0) = 0 ORDER BY m.library_id, m.relative_path`)
 }
 
+// RenameDirectoryPrefix 批量更新库下指定目录及其子目录下所有媒体的相对路径前缀
+// （目录重命名/移动时使用），返回受影响行数。
+// 匹配用 substr 精确目录边界：relative_path 等于 oldPrefix，或以其 + "/" 开头；
+// 不使用 LIKE，避免 %/_ 通配符转义与 oldPrefix 为另一目录前缀（如 a/bc）时的误伤。
+func (r *MediaRepo) RenameDirectoryPrefix(libraryID int64, oldPrefix, newPrefix string) (int, error) {
+	oldPrefix = strings.ReplaceAll(oldPrefix, "\\", "/")
+	newPrefix = strings.ReplaceAll(newPrefix, "\\", "/")
+	oldPrefix = strings.Trim(oldPrefix, "/")
+	newPrefix = strings.Trim(newPrefix, "/")
+	if oldPrefix == "" {
+		return 0, fmt.Errorf("旧目录前缀不能为空")
+	}
+	res, err := r.db.Exec(
+		`UPDATE media SET relative_path = ? || substr(relative_path, ?)
+		 WHERE library_id = ? AND substr(relative_path, 1, ?) = ?
+		   AND (length(relative_path) = ? OR substr(relative_path, ? + 1, 1) = '/')`,
+		newPrefix, len(oldPrefix)+1,
+		libraryID, len(oldPrefix), oldPrefix,
+		len(oldPrefix), len(oldPrefix),
+	)
+	if err != nil {
+		return 0, errx.Wrapf(err, "更新目录前缀 %q -> %q", oldPrefix, newPrefix)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // ListByDirectory 列出库下指定目录内的全部媒体。
 func (r *MediaRepo) ListByDirectory(libraryID int64, relDir string) ([]Media, error) {
 	prefix := strings.TrimPrefix(strings.TrimPrefix(relDir, "/"), "\\")
