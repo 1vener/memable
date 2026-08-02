@@ -74,6 +74,25 @@ func (r *SessionRepo) Promote(id string) error {
 	return nil
 }
 
+// GetLatestTemporaryByLibrary 返回指定库最新的临时扫描会话；无则返回 (nil, nil)。
+func (r *SessionRepo) GetLatestTemporaryByLibrary(libraryID int64) (*ScanSession, error) {
+	var s ScanSession
+	var tmp int
+	err := r.db.QueryRow(
+		`SELECT id, library_id, is_temporary, status, started_at, finished_at
+		 FROM scan_sessions WHERE library_id = ? AND is_temporary = 1
+		 ORDER BY started_at DESC LIMIT 1`, libraryID,
+	).Scan(&s.ID, &s.LibraryID, &tmp, &s.Status, &s.StartedAt, &s.FinishedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, errx.Wrapf(err, "查询库 %d 的最新临时会话", libraryID)
+	}
+	s.IsTemporary = tmp == 1
+	return &s, nil
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

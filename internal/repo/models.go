@@ -29,6 +29,8 @@ type Library struct {
 	Kind      string    `json:"kind"` // image/video/mixed
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// IsTemporary 是否存在 is_temporary=1 的扫描会话（临时扫描库），动态判定。
+	IsTemporary bool `json:"is_temporary"`
 }
 
 // ScanSession 扫描会话；IsTemporary=1 表示临时扫描。
@@ -64,6 +66,7 @@ type Media struct {
 	Oshash        *string   `json:"oshash"`
 	Sha1          *string   `json:"sha1"`
 	ThumbnailPath *string   `json:"thumbnail_path"`
+	CoverPHash    *string   `json:"cover_phash"` // 视频封面帧 pHash（以图搜图对比缩略图用）
 	CreatedAt     time.Time `json:"created_at"`
 }
 

@@ -97,6 +97,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// 扫描
 	mux.HandleFunc("POST /api/libraries/{id}/scan", s.handleScanLibrary)
+	mux.HandleFunc("POST /api/libraries/{id}/promote", s.handlePromoteLibrary)
 	mux.HandleFunc("POST /api/libraries/{id}/scan-sha1", s.handleScanSha1)
 	mux.HandleFunc("POST /api/scan/temporary", s.handleScanTemporary)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)

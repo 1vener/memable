@@ -13,16 +13,16 @@ thumbnail:
 #  image_dir: ""
   # 视频封面根目录：规则同上，video 子目录。
 #  video_dir: ""
-  max_edge: 300                 # 缩略图最大边（像素）
+  max_edge: 400                 # 缩略图最大边（像素）
 
 video:
   sprite_frames: 25             # 5%-95% 区间临时截图数量，计算后清理
 
 similarity:
-  image_phash_distance: 10      # 图片 pHash 最大 Hamming 距离
+  image_phash_distance: 6      # 图片 pHash 最大 Hamming 距离
   image_dhash_distance: 10      # 图片 dHash 最大 Hamming 距离
   image_ahash_distance: 10      # 图片 aHash 最大 Hamming 距离
-  video_phash_distance: 12      # 视频 sprite pHash 最大 Hamming 距离
+  video_phash_distance: 10      # 视频 sprite pHash 最大 Hamming 距离
   video_duration_diff_ms: 3000  # 视频允许时长差（毫秒）
 
 worker:

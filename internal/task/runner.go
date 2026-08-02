@@ -328,8 +328,6 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 		execErr = r.execDuplicateReport(taskCtx, task, progress)
 	case repo.TaskKindReportDirectory:
 		execErr = r.execDirCompareReport(taskCtx, task, progress)
-	case repo.TaskKindPromote:
-		execErr = r.execPromote(taskCtx, task, progress)
 	case repo.TaskKindDirectoryDelete:
 		execErr = r.execDirectoryDelete(taskCtx, task, progress)
 	case repo.TaskKindScanSha1:
@@ -650,81 +648,6 @@ func (r *Runner) execDirCompareReport(ctx context.Context, task *repo.Background
 		"media_type":   rep.MediaType,
 	})
 	progress("done", rep.TotalGroups, rep.TotalGroups, rep.TotalGroups, 0, 0, 0, 0, 0, (*int64)(nil))
-	_ = r.Tasks.Complete(task.ID, string(result))
-	return nil
-}
-
-type PromotePayload struct {
-	SessionID string `json:"session_id"`
-	LibraryID int64  `json:"library_id"`
-}
-
-// execPromote 执行临时扫描入库任务。
-func (r *Runner) execPromote(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
-	var payload PromotePayload
-	if task.PayloadJSON != nil {
-		if err := json.Unmarshal([]byte(*task.PayloadJSON), &payload); err != nil {
-			return fmt.Errorf("解析入库参数: %w", err)
-		}
-	}
-
-	session, err := r.Sessions.GetByID(payload.SessionID)
-	if err != nil {
-		return fmt.Errorf("查询扫描会话: %w", err)
-	}
-	if !session.IsTemporary {
-		return fmt.Errorf("会话 %s 不是临时扫描", payload.SessionID)
-	}
-
-	targetLib, err := r.Libraries.GetByID(payload.LibraryID)
-	if err != nil {
-		return fmt.Errorf("查询目标收藏库: %w", err)
-	}
-
-	// 获取源库路径
-	var srcBasePath string
-	if session.LibraryID != nil {
-		srcLib, err := r.Libraries.GetByID(*session.LibraryID)
-		if err == nil {
-			srcBasePath = srcLib.Path
-		}
-	}
-
-	medias, err := r.Media.ListBySession(payload.SessionID)
-	if err != nil {
-		return err
-	}
-
-	total := len(medias)
-	moved := 0
-	for i, m := range medias {
-		if srcBasePath != "" {
-			if err := moveFile(
-				srcBasePath+m.RelativePath,
-				targetLib.Path+m.RelativePath,
-			); err != nil {
-				slog.Warn("移动文件失败", "src", m.RelativePath, "err", err)
-			} else {
-				moved++
-			}
-		}
-		if err := r.Media.UpdateLibrary(m.ID, payload.LibraryID); err != nil {
-			slog.Error("更新媒体库归属失败", "media_id", m.ID, "err", err)
-		}
-		if (i+1)%50 == 0 || i+1 == total {
-			progress("promoting", total, i+1, moved, 0, 0, 0, 0, 0, (*int64)(nil))
-		}
-	}
-
-	_ = r.Sessions.Promote(payload.SessionID)
-	if session.LibraryID != nil {
-		_ = r.Libraries.Delete(*session.LibraryID)
-	}
-
-	result, _ := json.Marshal(map[string]any{
-		"moved":   moved,
-		"library": targetLib.Name,
-	})
 	_ = r.Tasks.Complete(task.ID, string(result))
 	return nil
 }

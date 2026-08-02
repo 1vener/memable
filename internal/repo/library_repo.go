@@ -29,18 +29,25 @@ func (r *LibraryRepo) Create(l *Library) error {
 // GetByID 按主键查询。
 func (r *LibraryRepo) GetByID(id int64) (*Library, error) {
 	var l Library
+	var tmp int
 	err := r.db.QueryRow(
-		`SELECT id, name, path, kind, created_at, updated_at FROM libraries WHERE id = ?`, id,
-	).Scan(&l.ID, &l.Name, &l.Path, &l.Kind, &l.CreatedAt, &l.UpdatedAt)
+		`SELECT l.id, l.name, l.path, l.kind, l.created_at, l.updated_at,
+			EXISTS(SELECT 1 FROM scan_sessions s WHERE s.library_id = l.id AND s.is_temporary = 1)
+		 FROM libraries l WHERE l.id = ?`, id,
+	).Scan(&l.ID, &l.Name, &l.Path, &l.Kind, &l.CreatedAt, &l.UpdatedAt, &tmp)
 	if err != nil {
 		return nil, errx.Wrapf(err, "查询收藏库 id=%d", id)
 	}
+	l.IsTemporary = tmp == 1
 	return &l, nil
 }
 
-// List 查询全部收藏库。
+// List 查询全部收藏库（含临时扫描库标识）。
 func (r *LibraryRepo) List() ([]Library, error) {
-	rows, err := r.db.Query(`SELECT id, name, path, kind, created_at, updated_at FROM libraries ORDER BY id`)
+	rows, err := r.db.Query(
+		`SELECT l.id, l.name, l.path, l.kind, l.created_at, l.updated_at,
+			EXISTS(SELECT 1 FROM scan_sessions s WHERE s.library_id = l.id AND s.is_temporary = 1)
+		 FROM libraries l ORDER BY l.id`)
 	if err != nil {
 		return nil, errx.Wrapf(err, "列出收藏库")
 	}
@@ -49,9 +56,11 @@ func (r *LibraryRepo) List() ([]Library, error) {
 	out := make([]Library, 0)
 	for rows.Next() {
 		var l Library
-		if err := rows.Scan(&l.ID, &l.Name, &l.Path, &l.Kind, &l.CreatedAt, &l.UpdatedAt); err != nil {
+		var tmp int
+		if err := rows.Scan(&l.ID, &l.Name, &l.Path, &l.Kind, &l.CreatedAt, &l.UpdatedAt, &tmp); err != nil {
 			return nil, errx.Wrapf(err, "扫描收藏库行")
 		}
+		l.IsTemporary = tmp == 1
 		out = append(out, l)
 	}
 	return out, rows.Err()

@@ -65,6 +65,24 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('更新路径失败: ${res.body}');
   }
 
+  /// 临时扫描库入库：移动到正式收藏库的指定目录（本地文件 + media 表同步更新）。
+  Future<Map<String, dynamic>> promoteLibrary(
+    int libraryId, {
+    required int targetLibraryId,
+    String targetDir = '',
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/libraries/$libraryId/promote'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'target_library_id': targetLibraryId,
+        'target_dir': targetDir,
+      }),
+    );
+    if (res.statusCode != 200) throw Exception('入库失败: ${res.body}');
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   // ===== 扫描 =====
 
   /// 启动同步扫描；force 仅适用于正式收藏库。
@@ -215,7 +233,7 @@ class ApiService {
     );
     if (res.statusCode != 200) throw Exception('搜索失败: ${res.body}');
     final data = jsonDecode(res.body);
-    final results = data['results'] as List<dynamic>;
+    final results = (data['results'] as List<dynamic>?) ?? <dynamic>[];
     return results
         .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -235,7 +253,7 @@ class ApiService {
     final res = await http.Response.fromStream(streamed);
     if (res.statusCode != 200) throw Exception('以图搜图失败: ${res.body}');
     final data = jsonDecode(res.body);
-    final results = data['results'] as List<dynamic>;
+    final results = (data['results'] as List<dynamic>?) ?? <dynamic>[];
     return results
         .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -253,7 +271,7 @@ class ApiService {
     );
     if (res.statusCode != 200) throw Exception('以图搜图失败: ${res.body}');
     final data = jsonDecode(res.body);
-    final results = data['results'] as List<dynamic>;
+    final results = (data['results'] as List<dynamic>?) ?? <dynamic>[];
     return results
         .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
         .toList();

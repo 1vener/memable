@@ -562,25 +562,21 @@ class _TaskCard extends StatelessWidget {
               ),
             ],
 
-            // 任务元信息（ID、创建/开始/完成时间）
+            // 任务元信息（开始/耗时/完成时间）
             const SizedBox(height: 10),
             Wrap(
               spacing: 16,
               runSpacing: 6,
               children: [
-                _MetaItem(
-                  icon: Icons.tag,
-                  text:
-                      'ID ${task.id.length > 8 ? task.id.substring(0, 8) : task.id}',
-                ),
-                _MetaItem(
-                  icon: Icons.schedule,
-                  text: '创建 ${_fmtTime(task.queuedAt)}',
-                ),
                 if (task.startedAt != null)
                   _MetaItem(
                     icon: Icons.play_arrow,
                     text: '开始 ${_fmtTime(task.startedAt!)}',
+                  ),
+                if (task.startedAt != null && _durationText(task) != null)
+                  _MetaItem(
+                    icon: Icons.timer_outlined,
+                    text: '耗时 ${_durationText(task)}',
                   ),
                 if (task.finishedAt != null)
                   _MetaItem(
@@ -817,6 +813,37 @@ class _BottomRunningBar extends StatelessWidget {
 
 /// 格式化后端时间（UTC → 本地）：yyyy-MM-dd HH:mm。
 String _fmtTime(String raw) => formatLocalTime(raw);
+
+/// 解析后端 UTC 时间字符串为 DateTime（无时区信息时按 UTC 解析）。
+DateTime? _parseUtc(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  final t = raw.trim().replaceFirst(' ', 'T');
+  final hasZone = RegExp(r'[zZ]$|[+-]\d{2}:\d{2}$').hasMatch(t);
+  return DateTime.tryParse(hasZone ? t : '${t}Z');
+}
+
+/// 任务耗时文本：已完成取结束-开始，运行中取当前-开始；无开始时间返回 null。
+String? _durationText(BackgroundTask task) {
+  if (task.startedAt == null) return null;
+  final start = _parseUtc(task.startedAt);
+  final end =
+      task.finishedAt != null
+          ? _parseUtc(task.finishedAt)
+          : DateTime.now().toUtc();
+  if (start == null || end == null || !end.isAfter(start)) return null;
+  return _fmtDuration(start, end);
+}
+
+/// 格式化任务耗时：Xh Ym Zs / Ym Zs / Xs。
+String _fmtDuration(DateTime start, DateTime end) {
+  final d = end.difference(start);
+  if (d.inSeconds < 1) return '1s';
+  if (d.inHours > 0) {
+    return '${d.inHours}h ${d.inMinutes % 60}m ${d.inSeconds % 60}s';
+  }
+  if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds % 60}s';
+  return '${d.inSeconds}s';
+}
 
 /// 从任务 result_json 提取可读摘要。
 String _formatResult(String raw) {

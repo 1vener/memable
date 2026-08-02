@@ -99,7 +99,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("database.path", "memable.db")
 	v.SetDefault("thumbnail.image_dir", "")
 	v.SetDefault("thumbnail.video_dir", "")
-	v.SetDefault("thumbnail.max_edge", 300)
+	v.SetDefault("thumbnail.max_edge", 400)
 	v.SetDefault("video.sprite_frames", 25)
 	v.SetDefault("similarity.image_phash_distance", 10)
 	v.SetDefault("similarity.image_dhash_distance", 10)

@@ -11,6 +11,7 @@ class Library {
   final String? thumbnailDir;
   final String? createdAt;
   final String? updatedAt;
+  final bool isTemporary; // 临时扫描库
 
   Library({
     required this.id,
@@ -20,6 +21,7 @@ class Library {
     this.thumbnailDir,
     this.createdAt,
     this.updatedAt,
+    this.isTemporary = false,
   });
 
   factory Library.fromJson(Map<String, dynamic> json) {
@@ -31,6 +33,7 @@ class Library {
       thumbnailDir: json['thumbnail_dir'] as String?,
       createdAt: json['created_at'] as String?,
       updatedAt: json['updated_at'] as String?,
+      isTemporary: json['is_temporary'] == 1 || json['is_temporary'] == true,
     );
   }
 }

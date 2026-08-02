@@ -29,7 +29,7 @@ type CoverResult struct {
 //   - 临时抽帧文件使用 os.CreateTemp 避免多 worker 冲突
 func ExtractVideoCover(ctx context.Context, videoPath, outputPath string, maxEdge int, durationMs int64) (*CoverResult, error) {
 	if maxEdge <= 0 {
-		maxEdge = 300
+		maxEdge = 400
 	}
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return nil, fmt.Errorf("创建封面目录: %w", err)

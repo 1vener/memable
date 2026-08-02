@@ -520,6 +520,162 @@ func (s *Server) handleCancelSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "cancelled"})
 }
 
+// promoteLibraryReq 库维度入库请求。
+type promoteLibraryReq struct {
+	TargetLibraryID int64  `json:"target_library_id"`
+	TargetDir       string `json:"target_dir"` // 目标库下子目录（相对，空=库根）
+}
+
+// handlePromoteLibrary 将临时扫描库的媒体移动到正式收藏库的指定目录下：
+// 移动本地文件 + 同步更新 media.library_id/relative_path。
+// 目标库存在相同相对路径时，以"临时库最后一级目录名(1)"作为子目录段递增避让。
+func (s *Server) handlePromoteLibrary(w http.ResponseWriter, r *http.Request) {
+	srcID, err := parseInt64(r.PathValue("id"))
+	if err != nil {
+		writeError(w, 400, "无效的库 ID")
+		return
+	}
+	srcLib, err := s.libraries.GetByID(srcID)
+	if err != nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+	if !srcLib.IsTemporary {
+		writeError(w, 400, "该库不是临时扫描库")
+		return
+	}
+	session, err := s.sessions.GetLatestTemporaryByLibrary(srcID)
+	if err != nil {
+		writeError(w, 500, "查询临时会话失败: "+err.Error())
+		return
+	}
+	if session == nil {
+		writeError(w, 400, "该临时库没有可入库的扫描会话")
+		return
+	}
+
+	var req promoteLibraryReq
+	if err := parseJSON(r, &req); err != nil {
+		writeError(w, 400, "请求体格式错误")
+		return
+	}
+	if req.TargetLibraryID <= 0 || req.TargetLibraryID == srcID {
+		writeError(w, 400, "目标收藏库无效")
+		return
+	}
+	targetLib, err := s.libraries.GetByID(req.TargetLibraryID)
+	if err != nil {
+		writeError(w, 404, "目标收藏库不存在")
+		return
+	}
+	if targetLib.IsTemporary {
+		writeError(w, 400, "目标收藏库不能是临时扫描库")
+		return
+	}
+	targetDir := normalizeRelDir(req.TargetDir)
+	if targetDir == "" {
+		targetDir = ""
+	}
+
+	medias, err := s.media.ListBySession(session.ID)
+	if err != nil {
+		writeError(w, 500, "查询媒体失败: "+err.Error())
+		return
+	}
+	if len(medias) == 0 {
+		writeError(w, 400, "临时扫描无媒体可入库")
+		return
+	}
+
+	// 计算目标相对路径前缀：目标目录下以"临时库最后一级目录名"作为子目录段
+	// （如 D:\tmp\test → 目标 D:\本地\2026 → D:\本地\2026\test\...）。
+	// 与目标库已有路径冲突时递增避让为 名(1)、名(2)…
+	baseName := filepath.Base(filepath.Clean(srcLib.Path))
+	if baseName == "" || baseName == "." || baseName == string(filepath.Separator) {
+		baseName = srcLib.Name
+	}
+	prefix := joinRel(targetDir, baseName)
+	relPaths := make([]string, 0, len(medias))
+	for _, m := range medias {
+		relPaths = append(relPaths, joinRel(prefix, m.RelativePath))
+	}
+	for attempt := 1; ; attempt++ {
+		conflict, err := s.media.HasAnyRelativePath(targetLib.ID, relPaths)
+		if err != nil {
+			writeError(w, 500, "检查路径冲突失败: "+err.Error())
+			return
+		}
+		if !conflict {
+			break
+		}
+		if attempt > 99 {
+			writeError(w, 500, "路径冲突无法避让（已达上限）")
+			return
+		}
+		prefix = joinRel(targetDir, fmt.Sprintf("%s(%d)", baseName, attempt))
+		for i, m := range medias {
+			relPaths[i] = joinRel(prefix, m.RelativePath)
+		}
+	}
+
+	// 移动本地文件 + 更新媒体归属与相对路径
+	moved := 0
+	failed := 0
+	for i, m := range medias {
+		srcPath := filepath.Join(srcLib.Path, filepath.FromSlash(m.RelativePath))
+		dstPath := filepath.Join(targetLib.Path, filepath.FromSlash(relPaths[i]))
+		if err := moveFile(srcPath, dstPath); err != nil {
+			slog.Warn("移动文件失败", "src", srcPath, "dst", dstPath, "err", err)
+			failed++
+			continue
+		}
+		if err := s.media.UpdateLibraryAndPath(m.ID, targetLib.ID, relPaths[i]); err != nil {
+			slog.Error("更新媒体归属与路径失败", "media_id", m.ID, "err", err)
+			failed++
+			continue
+		}
+		moved++
+	}
+
+	// 标记会话已入库并删除临时库记录
+	_ = s.sessions.Promote(session.ID)
+	_ = s.libraries.Delete(srcID)
+
+	slog.Info("临时库入库完成", "src_library", srcLib.Name, "target", targetLib.Name,
+		"target_dir", prefix, "moved", moved, "failed", failed)
+	writeJSON(w, 200, map[string]any{
+		"moved":            moved,
+		"failed":           failed,
+		"library":          targetLib.Name,
+		"target_dir":       prefix,
+		"conflict_renamed": prefix != targetDir,
+	})
+}
+
+// normalizeRelDir 归一化相对目录（正斜杠、去首尾斜杠）；非法路径（绝对/越界）返回空。
+func normalizeRelDir(dir string) string {
+	dir = strings.ReplaceAll(strings.TrimSpace(dir), "\\", "/")
+	dir = strings.Trim(dir, "/")
+	if dir == "" || dir == "." {
+		return ""
+	}
+	for _, part := range strings.Split(dir, "/") {
+		if part == ".." || part == "." || part == "" {
+			return ""
+		}
+	}
+	return dir
+}
+
+// joinRel 拼接相对路径前缀与文件相对路径（正斜杠；prefix 空时返回 rel）。
+func joinRel(prefix, rel string) string {
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	if prefix == "" {
+		return rel
+	}
+	return prefix + "/" + rel
+}
+
 // handlePromoteSession 临时扫描入库：移动文件 + UPDATE is_temporary=0 + 迁移缩略图。
 func (s *Server) handlePromoteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")

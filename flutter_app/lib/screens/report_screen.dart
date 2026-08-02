@@ -1065,6 +1065,12 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Widget _buildGroupHeader(ColorScheme cs, DuplicateGroupItem group) {
+    // 所有成员父路径去重（保持首现顺序），根目录直属文件显示 "/"
+    final dirs = <String>[];
+    for (final item in group.items) {
+      final dir = _relDir(item.relativePath);
+      if (!dirs.contains(dir)) dirs.add(dir);
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1098,13 +1104,23 @@ class _ReportScreenState extends State<ReportScreen> {
             ),
           ],
         ),
-        if (group.directory != null) ...[
+        if (dirs.isNotEmpty) ...[
           const SizedBox(height: 7),
-          Text(
-            group.directory!,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final dir in dirs)
+                _DirChip(
+                  label: dir.isEmpty ? '/' : dir,
+                  onTap: () {
+                    final rep = group.items.firstWhere(
+                      (i) => _relDir(i.relativePath) == dir,
+                    );
+                    _openMedia(rep.id, true);
+                  },
+                ),
+            ],
           ),
         ],
       ],
@@ -2079,12 +2095,41 @@ String _meta(DuplicateItem item) {
   return size;
 }
 
+/// 透明胶囊：分组头部的父路径标签，点击打开该目录下代表文件并选中。
+class _DirChip extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _DirChip({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: cs.primary.withValues(alpha: 0.04),
+          border: Border.all(color: cs.outlineVariant),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+        ),
+      ),
+    );
+  }
+}
+
 /// 懒加载缩略图：加载中显示占位骨架，完成后淡入，避免大图库一次性请求全部图片。
 class _LazyThumb extends StatelessWidget {
   final String url;
   final int cacheWidth;
 
-  const _LazyThumb({required this.url, this.cacheWidth = 300});
+  const _LazyThumb({required this.url, this.cacheWidth = 400});
 
   @override
   Widget build(BuildContext context) {
@@ -2338,7 +2383,7 @@ class _StackedCluster extends StatelessWidget {
     }
     return _LazyThumb(
       url: api.thumbnailUrl(item.kind, item.thumbnailPath!),
-      cacheWidth: 240,
+      cacheWidth: 400,
     );
   }
 }
@@ -2419,7 +2464,7 @@ class _DuplicateMemberCard extends StatelessWidget {
     }
     return _LazyThumb(
       url: api.thumbnailUrl(item.kind, item.thumbnailPath!),
-      cacheWidth: 300,
+      cacheWidth: 400,
     );
   }
 

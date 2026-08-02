@@ -21,6 +21,8 @@ class _SearchScreenState extends State<SearchScreen> {
   List<SearchResult> _results = [];
   String? _error;
   bool _isGridView = true;
+  // 是否已发起过搜索（用于区分"还没搜索"与"搜索无结果"两种空状态）
+  bool _hasSearched = false;
 
   // 以图搜图
   String? _imagePath;
@@ -41,6 +43,7 @@ class _SearchScreenState extends State<SearchScreen> {
       _error = null;
       _results = [];
       _isImageSearch = false;
+      _hasSearched = true;
     });
 
     try {
@@ -77,6 +80,7 @@ class _SearchScreenState extends State<SearchScreen> {
       _searching = true;
       _error = null;
       _results = [];
+      _hasSearched = true;
     });
 
     try {
@@ -257,9 +261,18 @@ class _SearchScreenState extends State<SearchScreen> {
                             ),
                             const SizedBox(height: 16),
                             Text(
-                              _isImageSearch ? '选择图片开始以图搜图' : '输入关键词开始搜索',
+                              _hasSearched
+                                  ? '查询结果为空'
+                                  : (_isImageSearch ? '选择图片开始以图搜图' : '输入关键词开始搜索'),
                               style: TextStyle(fontSize: 15, color: cs.outline),
                             ),
+                            if (_hasSearched) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                _isImageSearch ? '没有找到相似的图片' : '没有找到匹配的媒体，换个关键词试试',
+                                style: TextStyle(fontSize: 13, color: cs.outline.withValues(alpha: 0.7)),
+                              ),
+                            ],
                           ],
                         ),
                       )

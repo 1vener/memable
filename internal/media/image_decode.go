@@ -7,7 +7,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	_ "image/jpeg"
+	"image/draw"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"os"
@@ -24,7 +25,7 @@ import (
 const maxDirectDecodePixels = 24_000_000
 
 // maxScaledDecodeEdge FFmpeg 限分辨率解码输出的最大边长（像素）。
-// 感知哈希仅需 32×32、缩略图默认 300px，3000px 边长已足够且内存可控。
+// 感知哈希仅需 32×32、缩略图默认 400px，3000px 边长已足够且内存可控。
 const maxScaledDecodeEdge = 3000
 
 // DecodedImage 解码后的图片。
@@ -168,9 +169,10 @@ func ImagePerceptualHashesFromImage(img image.Image) *ImageHashes {
 }
 
 // GenerateThumbnailFromImage 从已解码的 image.Image 生成缩略图，避免重复解码。
+// 输出 JPEG（quality 90）：文件体积远小于 PNG 无损编码（约 1/6~1/8），视觉接近无损。
 func GenerateThumbnailFromImage(img image.Image, outPath string, maxEdge int) error {
 	if maxEdge <= 0 {
-		maxEdge = 300
+		maxEdge = 400
 	}
 	thumb := resizeImage(img, maxEdge)
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
@@ -181,10 +183,34 @@ func GenerateThumbnailFromImage(img image.Image, outPath string, maxEdge int) er
 		return fmt.Errorf("创建缩略图文件 %q: %w", outPath, err)
 	}
 	defer f.Close()
-	if err := png.Encode(f, thumb); err != nil {
+	// JPEG 无透明通道：含透明像素的图先合成到白底，避免透明区域编码后变黑。
+	if err := jpeg.Encode(f, compositeWhiteBackground(thumb), &jpeg.Options{Quality: 90}); err != nil {
 		return fmt.Errorf("编码缩略图: %w", err)
 	}
 	return nil
+}
+
+// compositeWhiteBackground 把含透明像素的图片合成到白底后返回。
+// 完全不透明的图片原样返回（不额外分配拷贝）。
+func compositeWhiteBackground(img image.Image) image.Image {
+	b := img.Bounds()
+	opaque := true
+check:
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if _, _, _, a := img.At(x, y).RGBA(); a < 0xFFFF {
+				opaque = false
+				break check
+			}
+		}
+	}
+	if opaque {
+		return img
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(dst, dst.Bounds(), image.White, image.Point{}, draw.Src)
+	draw.Draw(dst, dst.Bounds(), img, b.Min, draw.Over)
+	return dst
 }
 
 // exifInfo 用于后续阶段读取 EXIF Orientation。

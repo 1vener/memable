@@ -23,19 +23,22 @@ const spriteSegments = 5     // 分段快速抽帧段数；每段抽 5 帧，共
 // ComputeVideoSpritePHash 生成视频 sprite pHash。
 // 临时截图和 sprite 图仅在计算过程中存在，完成后立即删除。
 func ComputeVideoSpritePHash(ctx context.Context, videoPath string, durationMs int64) (string, error) {
-	return ComputeVideoSpritePHashAndCover(ctx, videoPath, durationMs, "", 0)
+	spritePHash, _, err := ComputeVideoSpritePHashAndCover(ctx, videoPath, durationMs, "", 0)
+	return spritePHash, err
 }
 
 // ComputeVideoSpritePHashAndCover 一次生成 sprite pHash 和视频封面。
 // 封面从 sprite 中间帧开始向两侧选择最近的非黑屏/非纯色帧，避免再次读取视频。
-func ComputeVideoSpritePHashAndCover(ctx context.Context, videoPath string, durationMs int64, coverPath string, maxEdge int) (string, error) {
+// 返回值：spritePHash（25 帧拼贴图的 pHash，用于视频重复检测）、
+// coverPHash（封面帧的 pHash，用于以图搜图对比视频缩略图；coverPath 为空时为 ""）。
+func ComputeVideoSpritePHashAndCover(ctx context.Context, videoPath string, durationMs int64, coverPath string, maxEdge int) (string, string, error) {
 	if durationMs <= 0 {
-		return "", fmt.Errorf("视频时长无效: %d", durationMs)
+		return "", "", fmt.Errorf("视频时长无效: %d", durationMs)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "memable-sprite-*")
 	if err != nil {
-		return "", fmt.Errorf("创建临时目录: %w", err)
+		return "", "", fmt.Errorf("创建临时目录: %w", err)
 	}
 	defer os.RemoveAll(tmpDir) // 确保临时文件全部清理
 
@@ -44,7 +47,7 @@ func ComputeVideoSpritePHashAndCover(ctx context.Context, videoPath string, dura
 	// 主路径：分段快速抽帧（5 段 × 每段 1 秒窗口抽 5 帧），避免解码整段视频。
 	if strips, serr := extractSpriteSegments(ctx, videoPath, durationMs, tmpDir); serr == nil && len(strips) == spriteSegments {
 		if err := buildSpriteFromStrips(strips, spritePath); err != nil {
-			return "", fmt.Errorf("拼接分段 sprite: %w", err)
+			return "", "", fmt.Errorf("拼接分段 sprite: %w", err)
 		}
 		built = true
 	}
@@ -53,35 +56,40 @@ func ComputeVideoSpritePHashAndCover(ctx context.Context, videoPath string, dura
 		if err := extractSpriteTile(ctx, videoPath, durationMs, spritePath); err != nil {
 			frames, ferr := extractSpriteFrames(ctx, videoPath, durationMs, tmpDir)
 			if ferr != nil || len(frames) != spriteCount {
-				return "", fmt.Errorf("抽取 sprite 截图: %w", err)
+				return "", "", fmt.Errorf("抽取 sprite 截图: %w", err)
 			}
 			if err := buildSprite(frames, spritePath); err != nil {
-				return "", fmt.Errorf("拼接 sprite: %w", err)
+				return "", "", fmt.Errorf("拼接 sprite: %w", err)
 			}
 		}
 	}
 
 	f, err := os.Open(spritePath)
 	if err != nil {
-		return "", fmt.Errorf("打开 sprite: %w", err)
+		return "", "", fmt.Errorf("打开 sprite: %w", err)
 	}
 	sprite, _, err := image.Decode(f)
 	f.Close()
 	if err != nil {
-		return "", fmt.Errorf("解码 sprite: %w", err)
+		return "", "", fmt.Errorf("解码 sprite: %w", err)
 	}
 	phash := pHash(sprite)
 
+	// 封面 pHash 与 coverPath 无关：即使封面文件已存在（回退路径），
+	// 也始终从 sprite 计算封面帧 pHash 供以图搜图使用。
+	cover, err := selectSpriteCover(sprite)
+	if err != nil {
+		return "", "", err
+	}
+	// 封面帧 pHash：与以图搜图查询侧同算法（pHash），可直接比较
+	coverPHash := pHash(cover)
+
 	if coverPath != "" {
-		cover, err := selectSpriteCover(sprite)
-		if err != nil {
-			return "", err
-		}
 		if err := GenerateThumbnailFromImage(cover, coverPath, maxEdge); err != nil {
-			return "", fmt.Errorf("生成 sprite 封面: %w", err)
+			return "", "", fmt.Errorf("生成 sprite 封面: %w", err)
 		}
 	}
-	return phash, nil
+	return phash, coverPHash, nil
 }
 
 // extractSpriteSegments 分段快速抽帧（主路径）：

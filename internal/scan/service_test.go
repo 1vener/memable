@@ -251,12 +251,20 @@ func TestMediaSnapshotDecisions(t *testing.T) {
 	mt := time.Now()
 	ph := "0123456789abcdef"
 	w, h := 10, 10
-	thumb := "ab/key.png"
+	thumb := "ab/key.jpg"
+	thumbLegacy := "ab/legacy.png"
 	format := "png"
 	if err := mr.Upsert(&repo.Media{
 		LibraryID: lib.ID, Kind: "image", RelativePath: "ok.png",
 		FileSize: 100, Mtime: mt, Format: &format, Width: &w, Height: &h,
 		Phash: &ph, ThumbnailPath: &thumb,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mr.Upsert(&repo.Media{
+		LibraryID: lib.ID, Kind: "image", RelativePath: "oldformat.png",
+		FileSize: 150, Mtime: mt, Format: &format, Width: &w, Height: &h,
+		Phash: &ph, ThumbnailPath: &thumbLegacy,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +280,7 @@ func TestMediaSnapshotDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snap.byPath) != 2 {
+	if len(snap.byPath) != 3 {
 		t.Fatalf("快照记录数错误: %d", len(snap.byPath))
 	}
 	okEntry := media.FileEntry{RelativePath: "ok.png", Size: 100, Mtime: mt}
@@ -289,6 +297,9 @@ func TestMediaSnapshotDecisions(t *testing.T) {
 	}
 	if svc.needRepairFromSnapshot(snap, okEntry) {
 		t.Fatal("字段完整应跳过修补")
+	}
+	if !svc.needRepairFromSnapshot(snap, media.FileEntry{RelativePath: "oldformat.png", Kind: media.KindImage}) {
+		t.Fatal("旧格式 .png 缩略图应修补重生")
 	}
 	if !svc.needRepairFromSnapshot(snap, media.FileEntry{RelativePath: "broken.png", Kind: media.KindImage}) {
 		t.Fatal("缺失 phash/缩略图应修补")

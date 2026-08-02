@@ -102,6 +102,7 @@ func (s *Service) needScanFromSnapshot(snap *mediaSnapshot, entry media.FileEntr
 }
 
 // needRepairFromSnapshot 完整性判定：记录缺失或必要字段/缩略图缺失时需修补。
+// 旧版本缩略图为 .png 后缀（现为 .jpg），以 .png 结尾视为旧格式，需要重新生成。
 func (s *Service) needRepairFromSnapshot(snap *mediaSnapshot, entry media.FileEntry) bool {
 	stored, ok := snap.byPath[entry.RelativePath]
 	if !ok {
@@ -117,7 +118,7 @@ func (s *Service) needRepairFromSnapshot(snap *mediaSnapshot, entry media.FileEn
 			return true
 		}
 	}
-	return stored.ThumbnailPath == nil
+	return stored.ThumbnailPath == nil || strings.HasSuffix(*stored.ThumbnailPath, ".png")
 }
 
 // runScan 实际执行扫描（在 goroutine 中运行）。
@@ -162,6 +163,7 @@ func (s *Service) runScan(ctx context.Context, lib repo.Library, sessionID strin
 					st.mu.Unlock()
 					return err
 				}
+				s.cleanupReplacedThumbnail(snap, entry.RelativePath, m)
 				st.mu.Lock()
 				st.imported++
 				st.mu.Unlock()
@@ -243,6 +245,7 @@ func (s *Service) runRepair(ctx context.Context, lib repo.Library, sessionID str
 					st.mu.Unlock()
 					return err
 				}
+				s.cleanupReplacedThumbnail(snap, entry.RelativePath, m)
 				st.mu.Lock()
 				st.imported++
 				st.mu.Unlock()
@@ -346,7 +349,7 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		Sha1:          sha1Ptr,
 	}
 
-	maxEdge := 300
+	maxEdge := 400
 	if s.Config != nil && s.Config.Thumbnail.MaxEdge > 0 {
 		maxEdge = s.Config.Thumbnail.MaxEdge
 	}
@@ -404,14 +407,14 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		m.BitRate = &meta.BitRate
 		m.Oshash = &oshash
 
-		// 一次抽取 sprite，同时生成 pHash 和封面，避免重复读取视频。
+		// 一次抽取 sprite，同时生成 pHash、封面 pHash 和封面，避免重复读取视频。
 		storageKey := media.VideoThumbnailKey(oshash, e.Size, meta.DurationMs, maxEdge)
 		thumbRel := media.ThumbnailStoragePath(storageKey)
 		thumbAbs := filepath.Join(s.thumbBaseFor(media.KindVideo), thumbRel)
-		var spritePhash string
+		var spritePhash, coverPHash string
 		if err := ensureThumbnail(thumbAbs, func(tmp string) error {
 			var err error
-			spritePhash, err = media.ComputeVideoSpritePHashAndCover(ctx, e.AbsPath, meta.DurationMs, tmp, maxEdge)
+			spritePhash, coverPHash, err = media.ComputeVideoSpritePHashAndCover(ctx, e.AbsPath, meta.DurationMs, tmp, maxEdge)
 			return err
 		}); err != nil {
 			return nil, fmt.Errorf("生成视频 sprite 与封面 %q: %w", e.AbsPath, err)
@@ -419,14 +422,16 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 			m.ThumbnailPath = &thumbRel
 		}
 
-		// 缩略图已存在时仍需计算缺失/强制更新的 sprite pHash。
+		// 缩略图已存在时仍需计算缺失/强制更新的 sprite pHash 与封面 pHash。
 		if spritePhash == "" {
-			spritePhash, err = media.ComputeVideoSpritePHash(ctx, e.AbsPath, meta.DurationMs)
+			var err error
+			spritePhash, coverPHash, err = media.ComputeVideoSpritePHashAndCover(ctx, e.AbsPath, meta.DurationMs, "", 0)
 			if err != nil {
 				return nil, fmt.Errorf("计算视频 sprite pHash %q: %w", e.AbsPath, err)
 			}
 		}
 		m.Phash = &spritePhash
+		m.CoverPHash = &coverPHash
 	}
 	return m, nil
 }
@@ -623,6 +628,10 @@ func (s *Service) needsSync(snap *mediaSnapshot, entry media.FileEntry, force bo
 	if entry.Kind == media.KindVideo && (stored.DurationMs == nil || stored.Oshash == nil) {
 		return true, nil
 	}
+	// 视频封面 pHash 缺失（v7 前入库的存量视频）时需重扫补齐，供以图搜图匹配视频缩略图。
+	if entry.Kind == media.KindVideo && stored.CoverPHash == nil {
+		return true, nil
+	}
 	_, err := os.Stat(filepath.Join(s.thumbBaseFor(entry.Kind), filepath.FromSlash(*stored.ThumbnailPath)))
 	if err == nil {
 		return false, nil
@@ -690,6 +699,34 @@ func (s *Service) thumbBaseFor(kind media.Kind) string {
 		}
 	}
 	return "thumbnail"
+}
+
+// cleanupReplacedThumbnail 清理被替换的旧格式缩略图（png → jpg 升级场景）：
+// Upsert 成功后旧路径不再被任何媒体引用时删除旧文件，避免格式升级后残留。
+// 多个媒体共享同一缩略图时由 CountThumbnailReferences 保护：直到最后一个
+// 引用它的媒体完成升级才真正删除。
+func (s *Service) cleanupReplacedThumbnail(snap *mediaSnapshot, rel string, m *repo.Media) {
+	if m.ThumbnailPath == nil {
+		return
+	}
+	stored, ok := snap.byPath[rel]
+	if !ok || stored.ThumbnailPath == nil || *stored.ThumbnailPath == *m.ThumbnailPath {
+		return
+	}
+	refs, err := s.Media.CountThumbnailReferences(*stored.ThumbnailPath)
+	if err != nil || refs > 0 {
+		return
+	}
+	thumbAbs, ok := safeThumbnailPath(s.thumbBaseFor(media.Kind(stored.Kind)), *stored.ThumbnailPath)
+	if !ok {
+		slog.Warn("忽略不安全的缩略图路径", "path", *stored.ThumbnailPath)
+		return
+	}
+	if err := os.Remove(thumbAbs); err != nil && !os.IsNotExist(err) {
+		slog.Warn("删除旧格式缩略图失败", "path", thumbAbs, "err", err)
+		return
+	}
+	_ = os.Remove(filepath.Dir(thumbAbs))
 }
 
 func safeThumbnailPath(base, rel string) (string, bool) {

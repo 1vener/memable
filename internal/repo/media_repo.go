@@ -18,7 +18,7 @@ func NewMediaRepo(db *sql.DB) *MediaRepo { return &MediaRepo{db: db} }
 
 const mediaCols = `id, library_id, scan_session_id, kind, relative_path, file_size, mtime,
 	format, width, height, phash, dhash, ahash, duration_ms, video_codec, audio_codec,
-	frame_rate, bit_rate, oshash, sha1, thumbnail_path, created_at`
+	frame_rate, bit_rate, oshash, sha1, thumbnail_path, cover_phash, created_at`
 
 // Upsert 按 (library_id, relative_path) 插入或更新媒体记录。
 // 使用 RETURNING id 一步拿到目标行 ID，避免 INSERT 后再查一次全行。
@@ -26,8 +26,8 @@ func (r *MediaRepo) Upsert(m *Media) error {
 	err := r.db.QueryRow(
 		`INSERT INTO media (library_id, scan_session_id, kind, relative_path, file_size, mtime,
 			format, width, height, phash, dhash, ahash, duration_ms, video_codec, audio_codec,
-			frame_rate, bit_rate, oshash, sha1, thumbnail_path)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			frame_rate, bit_rate, oshash, sha1, thumbnail_path, cover_phash)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(library_id, relative_path) DO UPDATE SET
 			scan_session_id=excluded.scan_session_id, kind=excluded.kind,
 			file_size=excluded.file_size, mtime=excluded.mtime, format=excluded.format,
@@ -36,11 +36,13 @@ func (r *MediaRepo) Upsert(m *Media) error {
 			video_codec=excluded.video_codec, audio_codec=excluded.audio_codec,
 			frame_rate=excluded.frame_rate, bit_rate=excluded.bit_rate,
 			oshash=excluded.oshash, sha1=excluded.sha1, thumbnail_path=excluded.thumbnail_path,
+			cover_phash=excluded.cover_phash,
 			created_at=datetime('now')
 		 RETURNING id`,
 		m.LibraryID, m.ScanSessionID, m.Kind, m.RelativePath, m.FileSize, m.Mtime,
 		m.Format, m.Width, m.Height, m.Phash, m.Dhash, m.Ahash, m.DurationMs,
 		m.VideoCodec, m.AudioCodec, m.FrameRate, m.BitRate, m.Oshash, m.Sha1, m.ThumbnailPath,
+		m.CoverPHash,
 	).Scan(&m.ID)
 	if err != nil {
 		return errx.Wrapf(err, "写入媒体 %q", m.RelativePath)
@@ -57,7 +59,7 @@ func (r *MediaRepo) GetByID(id int64) (*Media, error) {
 	).Scan(&m.ID, &m.LibraryID, &m.ScanSessionID, &m.Kind, &m.RelativePath, &m.FileSize,
 		&m.Mtime, &m.Format, &m.Width, &m.Height, &m.Phash, &m.Dhash, &m.Ahash,
 		&m.DurationMs, &m.VideoCodec, &m.AudioCodec, &m.FrameRate, &m.BitRate,
-		&m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CreatedAt)
+		&m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CoverPHash, &m.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -76,7 +78,7 @@ func (r *MediaRepo) GetByPath(libraryID int64, relPath string) (*Media, error) {
 	).Scan(&m.ID, &m.LibraryID, &m.ScanSessionID, &m.Kind, &m.RelativePath, &m.FileSize,
 		&m.Mtime, &m.Format, &m.Width, &m.Height, &m.Phash, &m.Dhash, &m.Ahash,
 		&m.DurationMs, &m.VideoCodec, &m.AudioCodec, &m.FrameRate, &m.BitRate,
-		&m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CreatedAt)
+		&m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CoverPHash, &m.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -344,6 +346,38 @@ func (r *MediaRepo) UpdateLibrary(id int64, libraryID int64) error {
 	return errx.Wrapf(err, "更新媒体库归属 id=%d", id)
 }
 
+// UpdateLibraryAndPath 更新媒体归属库与相对路径（移动到目标库指定目录时使用）。
+func (r *MediaRepo) UpdateLibraryAndPath(id int64, libraryID int64, newRelPath string) error {
+	_, err := r.db.Exec(
+		`UPDATE media SET library_id = ?, relative_path = ? WHERE id = ?`,
+		libraryID, newRelPath, id,
+	)
+	return errx.Wrapf(err, "更新媒体归属与路径 id=%d", id)
+}
+
+// HasAnyRelativePath 判断目标库是否已存在任一相对路径（冲突检测用）。
+func (r *MediaRepo) HasAnyRelativePath(libraryID int64, relPaths []string) (bool, error) {
+	if len(relPaths) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(relPaths))
+	args := make([]any, 0, len(relPaths)+1)
+	args = append(args, libraryID)
+	for i, p := range relPaths {
+		placeholders[i] = "?"
+		args = append(args, p)
+	}
+	var n int
+	err := r.db.QueryRow(
+		`SELECT COUNT(*) FROM media WHERE library_id = ? AND relative_path IN (`+
+			strings.Join(placeholders, ",")+`)`, args...,
+	).Scan(&n)
+	if err != nil {
+		return false, errx.Wrapf(err, "检查相对路径冲突")
+	}
+	return n > 0, nil
+}
+
 // query 通用多行查询。
 func (r *MediaRepo) query(q string, args ...any) ([]Media, error) {
 	rows, err := r.db.Query(q, args...)
@@ -358,7 +392,7 @@ func (r *MediaRepo) query(q string, args ...any) ([]Media, error) {
 		if err := rows.Scan(&m.ID, &m.LibraryID, &m.ScanSessionID, &m.Kind, &m.RelativePath,
 			&m.FileSize, &m.Mtime, &m.Format, &m.Width, &m.Height, &m.Phash, &m.Dhash,
 			&m.Ahash, &m.DurationMs, &m.VideoCodec, &m.AudioCodec, &m.FrameRate,
-			&m.BitRate, &m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CreatedAt); err != nil {
+			&m.BitRate, &m.Oshash, &m.Sha1, &m.ThumbnailPath, &m.CoverPHash, &m.CreatedAt); err != nil {
 			return nil, errx.Wrapf(err, "扫描媒体行")
 		}
 		out = append(out, m)

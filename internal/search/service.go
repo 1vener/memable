@@ -47,9 +47,9 @@ func (s *Service) SearchByText(query string) ([]SearchResult, error) {
 		return nil, fmt.Errorf("路径搜索: %w", err)
 	}
 
-	// 合并去重
+	// 合并去重（空切片必须初始化为非 nil，否则 JSON 序列化为 null，客户端强转 List 会崩）
 	seen := make(map[int64]bool)
-	var results []SearchResult
+	results := make([]SearchResult, 0)
 	for _, m := range sha1Results {
 		if !seen[m.ID] {
 			results = append(results, s.toResult(m, 0))
@@ -65,8 +65,10 @@ func (s *Service) SearchByText(query string) ([]SearchResult, error) {
 	return results, nil
 }
 
-// SearchByImage 以图搜图：对比图片 pHash 与视频 sprite pHash。
+// SearchByImage 以图搜图：对比图片 pHash 与视频封面（缩略图）pHash。
 // queryPHash 是查询图片的 pHash（16 位十六进制）。
+// 注意：图片用 phash（全图，与缩略图内容等价）；视频不能用 sprite pHash
+// （25 帧拼贴图，与单帧查询图不可比），必须用 cover_phash（封面帧 pHash）。
 func (s *Service) SearchByImage(queryPHash string, maxDistance int) ([]SearchResult, error) {
 	if maxDistance <= 0 {
 		maxDistance = 12
@@ -82,12 +84,19 @@ func (s *Service) SearchByImage(queryPHash string, maxDistance int) ([]SearchRes
 	}
 	all = append(all, videos...)
 
-	var results []SearchResult
+	results := make([]SearchResult, 0)
 	for _, m := range all {
-		if m.Phash == nil {
+		var target *string
+		if m.Kind == "video" {
+			// 视频：对比封面帧（缩略图）pHash；v7 前存量未补齐 cover_phash 的跳过
+			target = m.CoverPHash
+		} else {
+			target = m.Phash
+		}
+		if target == nil {
 			continue
 		}
-		dist, err := media.HammingHex64(queryPHash, *m.Phash)
+		dist, err := media.HammingHex64(queryPHash, *target)
 		if err != nil {
 			continue
 		}

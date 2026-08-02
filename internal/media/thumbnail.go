@@ -1,4 +1,4 @@
-// thumbnail.go：图片缩略图生成（最大边 300px，仅用 Go 标准库）。
+// thumbnail.go：图片缩略图生成（最大边 400px，Go 标准库 + x/image 高质量缩放）。
 // 代码注释使用中文
 package media
 
@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"image"
 	"path/filepath"
+
+	"golang.org/x/image/draw"
 )
 
 // ThumbnailKey 生成内容寻址缩略图存储键。
@@ -32,18 +34,19 @@ func VideoThumbnailKey(oshash string, fileSize, durationMs int64, maxEdge int) s
 }
 
 // ThumbnailStoragePath 返回缩略图相对"该类型缩略图根目录"的存储路径。
-// 格式：{storageKey[:2]}/{storageKey}.png
+// 格式：{storageKey[:2]}/{storageKey}.jpg
 // 说明：路径不含类型前缀，类型由根目录区分（image/video 各自根目录）；
 // 数据库只存该相对路径，根目录移动/更换配置后无需改库。
+// 旧版本缩略图为 .png 后缀，scan 服务按后缀识别旧格式并在修补扫描时重新生成。
 func ThumbnailStoragePath(storageKey string) string {
 	dir := storageKey[:2]
-	return filepath.ToSlash(filepath.Join(dir, storageKey+".png"))
+	return filepath.ToSlash(filepath.Join(dir, storageKey+".jpg"))
 }
 
 // GenerateImageThumbnail 生成图片缩略图并保存到 outPath（薄封装，内部走统一解码）。
 func GenerateImageThumbnail(srcPath, outPath string, maxEdge int) error {
 	if maxEdge <= 0 {
-		maxEdge = 300
+		maxEdge = 400
 	}
 	decoded, err := DecodeImage(context.Background(), srcPath, DecoderGo)
 	if err != nil {
@@ -53,6 +56,7 @@ func GenerateImageThumbnail(srcPath, outPath string, maxEdge int) error {
 }
 
 // resizeImage 按最大边等比缩放；小于 maxEdge 则保持原尺寸。
+// 使用 CatmullRom 高质量滤波（x/image/draw），大图缩小明显比最近邻清晰、无锯齿。
 func resizeImage(img image.Image, maxEdge int) image.Image {
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
@@ -68,12 +72,6 @@ func resizeImage(img image.Image, maxEdge int) image.Image {
 		nw = w * maxEdge / h
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
-	for y := 0; y < nh; y++ {
-		sy := b.Min.Y + y*b.Dy()/nh
-		for x := 0; x < nw; x++ {
-			sx := b.Min.X + x*b.Dx()/nw
-			dst.Set(x, y, img.At(sx, sy))
-		}
-	}
+	draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Over, nil)
 	return dst
 }

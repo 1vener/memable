@@ -61,6 +61,38 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
+  /// 临时扫描库入库：选择目标正式库与子目录后移动文件并更新 media 表。
+  Future<void> _promoteLibrary(Library srcLib) async {
+    if (mounted) setState(() => _error = null);
+    final result =
+        await showDialog<({int targetLibraryId, String targetDir})>(
+          context: context,
+          builder: (_) => _PromoteDialog(api: widget.api, srcLibrary: srcLib),
+        );
+    if (result == null || !mounted) return;
+    try {
+      final resp = await widget.api.promoteLibrary(
+        srcLib.id,
+        targetLibraryId: result.targetLibraryId,
+        targetDir: result.targetDir,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '已移动 ${resp['moved']} 个文件到 ${resp['library']}'
+              '${(resp['conflict_renamed'] == true) ? '（目录冲突已自动避让）' : ''}',
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+      await _loadLibraries();
+    } catch (e) {
+      if (mounted) setState(() => _error = '入库失败: $e');
+    }
+  }
+
   Future<void> _addLibrary() async {
     String? dir;
 
@@ -306,6 +338,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
                           onTap: () => _onLibraryTap(lib),
                           onDelete: () => _deleteLibrary(lib),
                           onSync: () => _syncLibrary(lib),
+                          onPromote: lib.isTemporary
+                              ? () => _promoteLibrary(lib)
+                              : null,
                         );
                       },
                     ),
@@ -343,6 +378,7 @@ class _LibraryCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback onSync;
+  final VoidCallback? onPromote; // 临时库的"移动到收藏库"入口
 
   const _LibraryCard({
     required this.library,
@@ -350,6 +386,7 @@ class _LibraryCard extends StatelessWidget {
     required this.onTap,
     required this.onDelete,
     required this.onSync,
+    this.onPromote,
   });
 
   @override
@@ -370,6 +407,13 @@ class _LibraryCard extends StatelessWidget {
                 context: context,
                 position: details.globalPosition,
                 items: [
+                  if (library.isTemporary && onPromote != null)
+                    ContextMenuItem(
+                      icon: Icons.drive_file_move_outlined,
+                      label: '移动到收藏库…',
+                      onTap: onPromote,
+                    ),
+                  if (library.isTemporary) const ContextMenuItem.divider(),
                   ContextMenuItem(
                     icon: Icons.sync,
                     label: '同步扫描',
@@ -419,14 +463,40 @@ class _LibraryCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          library.name,
-                          style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: cs.onSurface,
-                          ),
-                          overflow: TextOverflow.ellipsis,
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                library.name,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: cs.onSurface,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (library.isTemporary) ...[
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 5,
+                                  vertical: 1,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: cs.tertiaryContainer,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  '临时',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: cs.onTertiaryContainer,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
                         ),
                         const SizedBox(height: 2),
                         Text(
@@ -1599,6 +1669,278 @@ class _NameDialogState extends State<_NameDialog> {
           onPressed: () => Navigator.pop(context, _ctrl.text.trim()),
           child: const Text('确认'),
         ),
+      ],
+    );
+  }
+}
+
+// ===== 临时库入库对话框 =====
+
+/// 临时扫描库入库对话框：选择目标正式库 + 目标子目录（目录树选择，空=库根）。
+class _PromoteDialog extends StatefulWidget {
+  final ApiService api;
+  final Library srcLibrary;
+
+  const _PromoteDialog({required this.api, required this.srcLibrary});
+
+  @override
+  State<_PromoteDialog> createState() => _PromoteDialogState();
+}
+
+class _PromoteDialogState extends State<_PromoteDialog> {
+  List<Library> _targets = [];
+  Library? _selectedLib;
+  List<FileTreeNode> _treeNodes = [];
+  final Map<String, List<FileTreeNode>> _childrenCache = {};
+  String? _selectedDir; // null=库根
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTargets();
+  }
+
+  Future<void> _loadTargets() async {
+    try {
+      final libs = await widget.api.getLibraries();
+      if (!mounted) return;
+      final targets =
+          libs.where((l) => !l.isTemporary && l.id != widget.srcLibrary.id).toList();
+      setState(() {
+        _targets = targets;
+        _selectedLib = targets.isNotEmpty ? targets.first : null;
+        _loading = false;
+      });
+      if (_selectedLib != null) {
+        await _loadRoot();
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadRoot() async {
+    final lib = _selectedLib;
+    if (lib == null) return;
+    setState(() {
+      _treeNodes = [];
+      _selectedDir = null;
+    });
+    try {
+      final nodes = await widget.api.getFileTree(lib.id);
+      if (mounted) {
+        setState(() {
+          _treeNodes = nodes.where((n) => n.isDir).toList();
+          _childrenCache[''] = nodes;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _expandDir(String path) async {
+    if (_childrenCache.containsKey(path)) return;
+    final lib = _selectedLib;
+    if (lib == null) return;
+    try {
+      final nodes = await widget.api.getFileTree(lib.id, path: path);
+      if (mounted) setState(() => _childrenCache[path] = nodes);
+    } catch (_) {}
+  }
+
+  List<FileTreeNode> _dirsOf(String path) {
+    final cached = _childrenCache[path];
+    if (cached == null) return const [];
+    return cached.where((n) => n.isDir).toList();
+  }
+
+  void _onSubmit() {
+    final lib = _selectedLib;
+    if (lib == null) return;
+    Navigator.of(context).pop((
+      targetLibraryId: lib.id,
+      targetDir: _selectedDir ?? '',
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: Text('移动「${widget.srcLibrary.name}」到收藏库'),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('目标收藏库', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 4),
+              DropdownButtonFormField<int>(
+                value: _selectedLib?.id,
+                isExpanded: true,
+                items: [
+                  for (final l in _targets)
+                    DropdownMenuItem(
+                      value: l.id,
+                      child: Text(
+                        l.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                onChanged: (v) {
+                  final lib = _targets.firstWhere((l) => l.id == v);
+                  setState(() => _selectedLib = lib);
+                  _loadRoot();
+                },
+              ),
+              const SizedBox(height: 12),
+              const Text('目标目录（可选，空=库根）', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 4),
+              Container(
+                height: 200,
+                decoration: BoxDecoration(
+                  border: Border.all(color: cs.outlineVariant),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: _loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : _buildDirTree(cs),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: cs.primary.withValues(alpha: 0.06),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle_outline, size: 16, color: cs.primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        '已选择：${_selectedLib?.name ?? '-'} / '
+                        '${_selectedDir == null ? '库根目录' : _selectedDir}',
+                        style: TextStyle(fontSize: 12, color: cs.onSurface),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _selectedLib == null ? null : _onSubmit,
+          child: const Text('移动'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDirTree(ColorScheme cs) {
+    if (_selectedLib == null) {
+      return Center(
+        child: Text('没有可移动到的正式收藏库', style: TextStyle(fontSize: 13, color: cs.outline)),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.all(4),
+      children: [
+        // 库根目录选项（null = 库根）
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => setState(() => _selectedDir = null),
+          child: Container(
+            padding: const EdgeInsets.only(left: 8, right: 8, top: 6, bottom: 6),
+            decoration: BoxDecoration(
+              color: _selectedDir == null
+                  ? cs.primary.withValues(alpha: 0.1)
+                  : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  _selectedDir == null ? Icons.storage : Icons.storage_outlined,
+                  size: 16,
+                  color: _selectedDir == null ? cs.primary : cs.outline,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '库根目录',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: _selectedDir == null ? FontWeight.w600 : FontWeight.w400,
+                      color: cs.onSurface,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        for (final n in _treeNodes) _buildDirTile(n.path, n.name, 0),
+      ],
+    );
+  }
+
+  Widget _buildDirTile(String path, String name, int depth) {
+    final cs = Theme.of(context).colorScheme;
+    final selected = _selectedDir == path;
+    final children = _dirsOf(path);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () {
+            setState(() => _selectedDir = path);
+            _expandDir(path);
+          },
+          child: Container(
+            padding: EdgeInsets.only(
+              left: 8.0 + depth * 16,
+              right: 8,
+              top: 6,
+              bottom: 6,
+            ),
+            decoration: BoxDecoration(
+              color: selected ? cs.primary.withValues(alpha: 0.1) : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.folder_outlined, size: 16, color: cs.outline),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    name,
+                    style: TextStyle(fontSize: 13, color: cs.onSurface),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (children.isNotEmpty)
+          for (final c in children) _buildDirTile(c.path, c.name, depth + 1),
       ],
     );
   }

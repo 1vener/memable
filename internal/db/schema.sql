@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS media (
     -- 去重与精确匹配
     sha1            TEXT,                                              -- 完整文件 SHA1
     thumbnail_path  TEXT,                                              -- 缩略图相对存储路径
+    cover_phash     TEXT,                                              -- 视频封面帧 pHash（以图搜图对比缩略图用）
     created_at      TIMESTAMP NOT NULL DEFAULT (datetime('now')),
     UNIQUE (library_id, relative_path)
 );

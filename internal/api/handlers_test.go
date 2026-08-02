@@ -422,3 +422,167 @@ func TestDirCompareAPI(t *testing.T) {
 		t.Fatalf("分组应含目标标记: %s", resp4.Body.String())
 	}
 }
+
+// TestPromoteLibrary 验证临时库入库：移动文件 + 更新 media.library_id/relative_path；
+// 目标库路径冲突时以"临时库名(1)"子目录避让。
+func TestPromoteLibrary(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
+
+	// 临时库（源）：路径 last level = "tempdir"
+	srcDir := filepath.Join(t.TempDir(), "tempdir")
+	if err := os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(srcDir, "a.jpg"), "a")
+	writeFile(t, filepath.Join(srcDir, "sub", "b.jpg"), "b")
+	srcLib := &repo.Library{Name: "临时扫描-tempdir", Path: srcDir, Kind: "mixed"}
+	if err := lr.Create(srcLib); err != nil {
+		t.Fatal(err)
+	}
+	// 临时会话
+	if err := sr.Create(&repo.ScanSession{ID: "temp-sess-1", LibraryID: &srcLib.ID, IsTemporary: true, Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now().UTC()
+	if err := mr.Upsert(&repo.Media{LibraryID: srcLib.ID, ScanSessionID: strp("temp-sess-1"), Kind: "image", RelativePath: "a.jpg", FileSize: 1, Mtime: mt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mr.Upsert(&repo.Media{LibraryID: srcLib.ID, ScanSessionID: strp("temp-sess-1"), Kind: "image", RelativePath: "sub/b.jpg", FileSize: 1, Mtime: mt}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 正式目标库：目标目录 photos 下已有 tempdir/a.jpg（制造冲突 → 应避让为 tempdir(1)）
+	targetDir := filepath.Join(t.TempDir(), "target")
+	if err := os.MkdirAll(filepath.Join(targetDir, "photos", "tempdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(targetDir, "photos", "tempdir", "a.jpg"), "existing")
+	targetLib := &repo.Library{Name: "正式库", Path: targetDir, Kind: "mixed"}
+	if err := lr.Create(targetLib); err != nil {
+		t.Fatal(err)
+	}
+	if err := mr.Upsert(&repo.Media{LibraryID: targetLib.ID, Kind: "image", RelativePath: "photos/tempdir/a.jpg", FileSize: 8, Mtime: mt}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/libraries/"+formatInt64(srcLib.ID)+"/promote",
+		body(`{"target_library_id":`+formatInt64(targetLib.ID)+`,"target_dir":"photos"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("入库失败: code=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), `"conflict_renamed":true`) {
+		t.Fatalf("应发生冲突避让: %s", resp.Body.String())
+	}
+
+	// 源库与临时会话应被清理
+	if _, err := lr.GetByID(srcLib.ID); err == nil {
+		t.Fatalf("临时库应被删除")
+	}
+	// 媒体应迁移到目标库且 relative_path 带 tempdir(1) 前缀
+	medias, err := mr.ListByLibrary(targetLib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(medias) != 3 {
+		t.Fatalf("目标库应有 3 条媒体: %+v", medias)
+	}
+	var movedPaths []string
+	for _, m := range medias {
+		movedPaths = append(movedPaths, m.RelativePath)
+	}
+	if !containsStr(movedPaths, "photos/tempdir(1)/a.jpg") || !containsStr(movedPaths, "photos/tempdir(1)/sub/b.jpg") {
+		t.Fatalf("媒体路径应带 tempdir(1) 前缀: %v", movedPaths)
+	}
+	// 本地文件实际移动
+	if _, err := os.Stat(filepath.Join(targetDir, "photos", "tempdir(1)", "a.jpg")); err != nil {
+		t.Fatalf("本地文件未移动: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "photos", "tempdir(1)", "sub", "b.jpg")); err != nil {
+		t.Fatalf("子目录文件未移动: %v", err)
+	}
+}
+
+// TestPromoteLibraryToRoot 验证目标目录为空（库根）时，文件落在"库根/临时库名"下。
+func TestPromoteLibraryToRoot(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
+
+	srcDir := filepath.Join(t.TempDir(), "mytemp")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(srcDir, "x.jpg"), "x")
+	srcLib := &repo.Library{Name: "临时扫描-mytemp", Path: srcDir, Kind: "mixed"}
+	if err := lr.Create(srcLib); err != nil {
+		t.Fatal(err)
+	}
+	if err := sr.Create(&repo.ScanSession{ID: "temp-sess-2", LibraryID: &srcLib.ID, IsTemporary: true, Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now().UTC()
+	if err := mr.Upsert(&repo.Media{LibraryID: srcLib.ID, ScanSessionID: strp("temp-sess-2"), Kind: "image", RelativePath: "x.jpg", FileSize: 1, Mtime: mt}); err != nil {
+		t.Fatal(err)
+	}
+
+	targetDir := t.TempDir()
+	targetLib := &repo.Library{Name: "正式库", Path: targetDir, Kind: "mixed"}
+	if err := lr.Create(targetLib); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/libraries/"+formatInt64(srcLib.ID)+"/promote",
+		body(`{"target_library_id":`+formatInt64(targetLib.ID)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("入库失败: code=%d body=%s", resp.Code, resp.Body.String())
+	}
+	medias, err := mr.ListByLibrary(targetLib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(medias) != 1 || medias[0].RelativePath != "mytemp/x.jpg" {
+		t.Fatalf("库根入库应落在 库根/mytemp 下: %+v", medias)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "mytemp", "x.jpg")); err != nil {
+		t.Fatalf("本地文件未移动到 库根/mytemp: %v", err)
+	}
+}
+
+func containsStr(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func strp(s string) *string { return &s }

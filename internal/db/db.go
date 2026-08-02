@@ -31,8 +31,11 @@ var migrationV5SQL string
 //go:embed migrations/006_directory_compare.sql
 var migrationV6SQL string
 
+//go:embed migrations/007_cover_phash.sql
+var migrationV7SQL string
+
 // schemaVersion 当前数据库结构版本。
-const schemaVersion = 6
+const schemaVersion = 7
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
 // synchronous=NORMAL 在 WAL 模式下兼顾安全与写入性能；cache_size/mmap_size 提高大批量扫描时的读缓存。
@@ -74,12 +77,16 @@ func Migrate(db *sql.DB) error {
 	steps := []struct {
 		version int
 		sql     string
+		// skip 返回 true 时跳过 SQL 执行（幂等保护）：
+		// 新库的 schema.sql 已包含最新结构，ALTER TABLE 类迁移对存量库才需要真正执行。
+		skip func(*sql.DB) (bool, error)
 	}{
 		{version: 2, sql: migrationV2SQL},
 		{version: 3, sql: migrationV3SQL},
 		{version: 4, sql: migrationV4SQL},
 		{version: 5, sql: migrationV5SQL},
 		{version: 6, sql: migrationV6SQL},
+		{version: 7, sql: migrationV7SQL, skip: columnExists("media", "cover_phash")},
 	}
 	cur, err := SchemaVersion(db)
 	if err != nil {
@@ -89,6 +96,18 @@ func Migrate(db *sql.DB) error {
 		if cur >= st.version {
 			continue
 		}
+		if st.skip != nil {
+			skip, err := st.skip(db)
+			if err != nil {
+				return fmt.Errorf("检查迁移 v%d 前置条件: %w", st.version, err)
+			}
+			if skip {
+				if _, err := db.Exec(`INSERT INTO schema_version(version) VALUES (?)`, st.version); err != nil {
+					return fmt.Errorf("写入 schema_version v%d: %w", st.version, err)
+				}
+				continue
+			}
+		}
 		if _, err := db.Exec(st.sql); err != nil {
 			return fmt.Errorf("执行迁移 v%d: %w", st.version, err)
 		}
@@ -97,6 +116,17 @@ func Migrate(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// columnExists 构造列存在性检查（幂等跳过条件）。
+func columnExists(table, column string) func(*sql.DB) (bool, error) {
+	return func(db *sql.DB) (bool, error) {
+		var n int
+		err := db.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name = ?`, column,
+		).Scan(&n)
+		return n > 0, err
+	}
 }
 
 // SchemaVersion 返回当前数据库版本，供调试/healthcheck 使用。

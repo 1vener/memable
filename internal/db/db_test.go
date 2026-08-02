@@ -92,6 +92,48 @@ func TestMigrateV4AcceptsScanSha1Kind(t *testing.T) {
 	}
 }
 
+func TestMigrateV7AddsCoverPHashColumn(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dbh.Close()
+
+	if err := Migrate(dbh); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	// media.cover_phash 列必须存在（v7 迁移）
+	var n int
+	if err := dbh.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('media') WHERE name='cover_phash'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("查询 media 列: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("media.cover_phash 列缺失")
+	}
+	// 列可正常写入读取（需先建库满足外键）
+	if _, err := dbh.Exec(
+		`INSERT INTO libraries (name, path, kind) VALUES ('t', 'C:/t', 'mixed')`,
+	); err != nil {
+		t.Fatalf("创建测试库失败: %v", err)
+	}
+	if _, err := dbh.Exec(
+		`INSERT INTO media (library_id, relative_path, kind, file_size, mtime, cover_phash)
+		 VALUES (1, 'v.mp4', 'video', 10, datetime('now'), 'abcd')`,
+	); err != nil {
+		t.Fatalf("写入 cover_phash 失败: %v", err)
+	}
+	var ph string
+	if err := dbh.QueryRow(`SELECT cover_phash FROM media WHERE relative_path='v.mp4'`).Scan(&ph); err != nil {
+		t.Fatalf("读取 cover_phash 失败: %v", err)
+	}
+	if ph != "abcd" {
+		t.Fatalf("cover_phash 内容异常: %q", ph)
+	}
+}
+
 func TestOpenAppliesWritePragmas(t *testing.T) {
 	// WAL 只对文件数据库生效，内存库恒为 memory
 	cfg := &config.Config{Database: config.DatabaseConfig{Path: filepath.Join(t.TempDir(), "pragmas.db")}}
