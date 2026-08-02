@@ -3,6 +3,7 @@
 package db
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -131,6 +132,20 @@ func TestMigrateV7AddsCoverPHashColumn(t *testing.T) {
 	}
 	if ph != "abcd" {
 		t.Fatalf("cover_phash 内容异常: %q", ph)
+	}
+}
+
+func TestOpenCreatesParentDirectory(t *testing.T) {
+	// 数据库默认可能落在系统数据目录（父目录尚不存在），Open 应自动创建
+	deep := filepath.Join(t.TempDir(), "nested", "dir", "memable.db")
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: deep}}
+	dbh, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open 应自动创建父目录: %v", err)
+	}
+	defer dbh.Close()
+	if _, err := os.Stat(deep); err != nil {
+		t.Fatalf("数据库文件应已创建: %v", err)
 	}
 }
 

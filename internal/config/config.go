@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -52,8 +53,8 @@ type ThumbnailConfig struct {
 }
 
 // ImageThumbDir 返回图片缩略图根目录：配置了 image_dir 则用配置值，
-// 否则使用系统推荐目录（Windows %LOCALAPPDATA%、macOS ~/Library/Caches、
-// Linux $XDG_CACHE_HOME 或 ~/.cache 下的 memable/thumbnails/image）。
+// 否则使用系统数据目录（Windows %LOCALAPPDATA%、macOS ~/Library/Application Support、
+// Linux $XDG_DATA_HOME 或 ~/.local/share 下的 memable/thumbnails/image）。
 func (c *Config) ImageThumbDir() string {
 	return thumbRootDir(c.Thumbnail.ImageDir, "image")
 }
@@ -63,16 +64,42 @@ func (c *Config) VideoThumbDir() string {
 	return thumbRootDir(c.Thumbnail.VideoDir, "video")
 }
 
-// thumbRootDir 解析缩略图根目录：配置优先，否则用系统缓存目录。
+// dataRootDir 返回系统数据目录（数据库、缩略图等持久数据的推荐位置）：
+// Windows %LOCALAPPDATA%、macOS ~/Library/Application Support、
+// Linux $XDG_DATA_HOME（未设则 ~/.local/share）；全部不可用时回退临时目录。
+func dataRootDir() string {
+	var root string
+	switch runtime.GOOS {
+	case "windows":
+		root = os.Getenv("LOCALAPPDATA")
+	case "darwin":
+		if home, err := os.UserHomeDir(); err == nil {
+			root = filepath.Join(home, "Library", "Application Support")
+		}
+	default:
+		if d := os.Getenv("XDG_DATA_HOME"); d != "" {
+			root = d
+		} else if home, err := os.UserHomeDir(); err == nil {
+			root = filepath.Join(home, ".local", "share")
+		}
+	}
+	if root == "" {
+		root = os.TempDir()
+	}
+	return root
+}
+
+// defaultDataDBPath 返回数据库默认路径（系统数据目录下的 memable/memable.db）。
+func defaultDataDBPath() string {
+	return filepath.Join(dataRootDir(), "memable", "memable.db")
+}
+
+// thumbRootDir 解析缩略图根目录：配置优先，否则用系统数据目录。
 func thumbRootDir(configured, kind string) string {
 	if strings.TrimSpace(configured) != "" {
 		return filepath.Clean(configured)
 	}
-	root, err := os.UserCacheDir()
-	if err != nil || root == "" {
-		root = os.TempDir()
-	}
-	return filepath.Join(root, "memable", "thumbnails", kind)
+	return filepath.Join(dataRootDir(), "memable", "thumbnails", kind)
 }
 
 type VideoConfig struct {
@@ -128,6 +155,17 @@ func Load(path string) (*Config, error) {
 		} else {
 			return nil, fmt.Errorf("解析配置文件 %s 失败: %w", path, err)
 		}
+	}
+
+	// database.path 默认两态：
+	// 1) 显式配置（yaml 写了 database.path 或 env MEMABLE_DATABASE__PATH，非空）→ 按配置；
+	// 2) 否则 → 系统数据目录（dataRootDir()/memable/memable.db）。
+	// 注意：viper 的 IsSet 会把 SetDefault 的默认值也算作已设置，不能用于显式判定；
+	// 不再做"工作目录存量 memable.db 沿用"兼容——注释掉配置即迁移到系统目录，
+	// 存量文件由用户手动迁移。
+	explicit := v.InConfig("database.path") || os.Getenv("MEMABLE_DATABASE__PATH") != ""
+	if !explicit || strings.TrimSpace(v.GetString("database.path")) == "" {
+		v.Set("database.path", defaultDataDBPath())
 	}
 
 	var c Config

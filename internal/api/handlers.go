@@ -1268,6 +1268,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleSettings 返回服务端存储位置（设置页展示用）。
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	dbPath, _ := filepath.Abs(s.cfg.Database.Path)
 	imageDir, _ := filepath.Abs(s.cfg.ImageThumbDir())
 	videoDir, _ := filepath.Abs(s.cfg.VideoThumbDir())
 	logFile := ""
@@ -1275,6 +1276,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		logFile, _ = filepath.Abs(s.cfg.Log.File)
 	}
 	writeJSON(w, 200, map[string]any{
+		"database_path":       dbPath,   // 数据库文件路径
 		"thumbnail_image_dir": imageDir, // 图片缩略图保存目录
 		"thumbnail_video_dir": videoDir, // 视频封面保存目录
 		"log_file":            logFile,  // 日志文件路径；空=输出到控制台

@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	_ "embed"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"memable/internal/config"
@@ -41,9 +43,18 @@ const schemaVersion = 7
 // synchronous=NORMAL 在 WAL 模式下兼顾安全与写入性能；cache_size/mmap_size 提高大批量扫描时的读缓存。
 // 注意：modernc 驱动只认 _pragma 参数（_journal_mode/_foreign_keys 等裸参数会被静默忽略）。
 func Open(cfg *config.Config) (*sql.DB, error) {
+	path := cfg.Database.Path
+	// 数据库默认可能落在系统数据目录（父目录尚未创建），SQLite 不会自动建目录
+	if path != ":memory:" {
+		if dir := filepath.Dir(path); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("创建数据库目录: %w", err)
+			}
+		}
+	}
 	dsn := fmt.Sprintf("file:%s?_time_format=sqlite"+
 		"&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"+
-		"&_pragma=synchronous(NORMAL)&_pragma=cache_size(-20000)&_pragma=mmap_size(268435456)", cfg.Database.Path)
+		"&_pragma=synchronous(NORMAL)&_pragma=cache_size(-20000)&_pragma=mmap_size(268435456)", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("打开连接: %w", err)

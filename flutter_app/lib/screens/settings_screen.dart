@@ -23,6 +23,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _imageDir;
   String? _videoDir;
   String _logFile = '';
+  String _dbPath = '';
 
   @override
   void initState() {
@@ -115,6 +116,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _imageDir = s['thumbnail_image_dir'] as String?;
           _videoDir = s['thumbnail_video_dir'] as String?;
           _logFile = (s['log_file'] as String?) ?? '';
+          _dbPath = (s['database_path'] as String?) ?? '';
           _pathsLoaded = true;
         });
       }
@@ -396,6 +398,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       const SizedBox(height: 8),
                     ],
                     if (_pathsLoaded) ...[
+                      _PathRow(
+                        icon: Icons.storage_outlined,
+                        label: '数据库',
+                        value: _dbPath.isEmpty ? '未知' : _dbPath,
+                      ),
                       _PathRow(
                         icon: Icons.image_outlined,
                         label: '图片缩略图',

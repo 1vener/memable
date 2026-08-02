@@ -1,15 +1,24 @@
 # 默认 config.yaml；可用 -config 指定其他路径，也可用 MEMABLE_* 环境变量覆盖。
 # 所有路径均支持相对路径（相对于工作目录）。
 
-database:
-  path: memable.db          # SQLite 数据库文件路径；":memory:" 为内存库
+#database:
+#  path: memable.db          # SQLite 数据库文件路径；":memory:" 为内存库。
+                            # 注释掉/留空时默认系统数据目录：
+                            #   Windows: %LOCALAPPDATA%\memable\memable.db
+                            #   macOS:   ~/Library/Application Support/memable/memable.db
+                            #   Linux:   $XDG_DATA_HOME（默认 ~/.local/share）/memable/memable.db
+                            # 切换后原位置的存量 memable.db 需手动迁移。
 
 thumbnail:
-  # 图片缩略图根目录：留空使用系统推荐目录
+  # 图片缩略图根目录：留空使用系统数据目录
   #   Windows: %LOCALAPPDATA%\memable\thumbnails\image
-  #   macOS:   ~/Library/Caches/memable/thumbnails/image
-  #   Linux:   $XDG_CACHE_HOME（默认 ~/.cache）/memable/thumbnails/image
+  #   macOS:   ~/Library/Application Support/memable/thumbnails/image
+  #   Linux:   $XDG_DATA_HOME（默认 ~/.local/share）/memable/thumbnails/image
   # 配置后则使用配置值（相对路径相对于工作目录）。
+  # 旧版默认在系统缓存目录，升级后请手动迁移：
+  #   Windows %LOCALAPPDATA%\memable\thumbnails、macOS ~/Library/Caches/memable/thumbnails、
+  #   Linux $XDG_CACHE_HOME（默认 ~/.cache）/memable/thumbnails
+  #   整体移到上述数据目录（或直接配置 image_dir/video_dir 指向旧位置）。
 #  image_dir: ""
   # 视频封面根目录：规则同上，video 子目录。
 #  video_dir: ""
