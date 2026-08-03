@@ -84,16 +84,18 @@ func main() {
 	dupSvc := duplicate.NewService(dupRepo, repo.NewDirDuplicateRepo(dbh), mediaRepo, libRepo, cfg, imageThumbBase, videoThumbBase)
 
 	// 初始化任务调度器
-	runner := task.NewRunner(taskRepo, sessionRepo, mediaRepo, libRepo, scanSvc, task.RunnerConfig{
-		PoolSize:        cfg.Worker.PoolSize,
-		ImageThumbBase:  imageThumbBase,
-		VideoThumbBase:  videoThumbBase,
-		PermanentDelete: cfg.Delete.Permanent,
+	settingsRepo := repo.NewSettingsRepo(dbh)
+	runner := task.NewRunner(taskRepo, sessionRepo, mediaRepo, libRepo, settingsRepo, scanSvc, task.RunnerConfig{
+		PoolSize:                  cfg.Worker.PoolSize,
+		ImageThumbBase:            imageThumbBase,
+		VideoThumbBase:            videoThumbBase,
+		PermanentDelete:           cfg.Delete.Permanent,
+		NetdriveRequestIntervalMs: cfg.Netdrive.RequestIntervalMs,
 	}, dupSvc)
 	runner.Start(context.Background())
 
 	// 启动 HTTP API 服务器
-	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, taskRepo, fileStatsRepo, scanSvc, searchSvc, runner, imageThumbBase, videoThumbBase, dupSvc)
+	srv := api.NewServer(cfg, libRepo, sessionRepo, mediaRepo, taskRepo, fileStatsRepo, settingsRepo, scanSvc, searchSvc, runner, imageThumbBase, videoThumbBase, dupSvc)
 
 	// 优雅关闭
 	go func() {

@@ -364,7 +364,41 @@ func (r *MediaRepo) ListMissingSha1(libraryID int64) ([]Media, error) {
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, errx.Wrapf(err, "遍历缺失 sha1 媒体 lib=%d", libraryID)
+	}
+	return out, nil
+}
+
+// ListMissingSha1ByDirectory 返回收藏库指定目录（含子目录）下 sha1 缺失的媒体记录。
+// 供 115 网盘补齐 SHA1 任务使用：仅匹配目录内记录，避免全库扫描；
+// 需带 file_size（大小一致性校验）。
+func (r *MediaRepo) ListMissingSha1ByDirectory(libraryID int64, relDir string) ([]Media, error) {
+	prefix := strings.TrimPrefix(strings.TrimPrefix(relDir, "/"), "\\")
+	if prefix != "" {
+		prefix = strings.ReplaceAll(prefix, "\\", "/") + "/"
+	}
+	rows, err := r.db.Query(
+		`SELECT id, relative_path, file_size FROM media
+		 WHERE library_id = ? AND sha1 IS NULL AND relative_path LIKE ? ORDER BY relative_path`,
+		libraryID, prefix+"%",
+	)
+	if err != nil {
+		return nil, errx.Wrapf(err, "查询目录缺失 sha1 媒体 lib=%d dir=%q", libraryID, relDir)
+	}
+	defer rows.Close()
+	var out []Media
+	for rows.Next() {
+		var m Media
+		if err := rows.Scan(&m.ID, &m.RelativePath, &m.FileSize); err != nil {
+			return nil, errx.Wrapf(err, "读取目录缺失 sha1 媒体 lib=%d", libraryID)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errx.Wrapf(err, "遍历目录缺失 sha1 媒体 lib=%d", libraryID)
+	}
+	return out, nil
 }
 
 // UpdateLibrary 更新媒体的归属库（临时扫描入库时使用）。

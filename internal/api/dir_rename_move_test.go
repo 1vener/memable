@@ -56,7 +56,7 @@ func setupDirOpServer(t *testing.T) (*Server, *repo.MediaRepo, int64, string) {
 		t.Fatalf("写入媒体记录: %v", err)
 	}
 
-	server := NewServer(cfg, lr, sr, mr, tr, nil, nil, nil, nil, "", "", nil)
+	server := NewServer(cfg, lr, sr, mr, tr, nil, nil, nil, nil, nil, "", "", nil)
 	return server, mr, lib.ID, root
 }
 

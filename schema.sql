@@ -1,4 +1,4 @@
--- 本地媒体相似度/重复检测管理系统 - SQLite 表结构脚本
+﻿-- 本地媒体相似度/重复检测管理系统 - SQLite 表结构脚本
 -- 适用 SQLite 3.35+
 -- 代码注释使用中文
 PRAGMA foreign_keys = ON;
@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_media_kind_created ON media(kind, created_at);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS background_tasks (
     id                  TEXT    PRIMARY KEY,                             -- UUID
-    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','report_duplicate','report_directory','promote','directory_delete','scan_sha1')),
+    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','report_duplicate','report_directory','promote','directory_delete','scan_sha1','netdrive_sha1')),
     status              TEXT    NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued','running','completed','failed','cancelled')),
     title               TEXT    NOT NULL,                               -- 任务显示名称

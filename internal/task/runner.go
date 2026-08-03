@@ -6,10 +6,12 @@ package task
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,35 +19,41 @@ import (
 
 	"memable/internal/duplicate"
 	"memable/internal/media"
+	"memable/internal/pan115"
 	"memable/internal/recycle"
 	"memable/internal/repo"
 	"memable/internal/worker"
 )
 
-// Runner 任务调度器。维护两条独立队列：
-// 主队列（扫描等）与报告队列（生成报告类任务），各自串行消费、互不阻塞。
+// Runner 任务调度器。维护三条独立队列：
+// 主队列（扫描等）、报告队列（生成报告类任务）、网盘队列（115 等慢速外部 API 任务），
+// 各自串行消费、互不阻塞。
 type Runner struct {
-	Tasks       *repo.TaskRepo
-	Sessions    *repo.SessionRepo
-	Media       *repo.MediaRepo
-	Libraries   *repo.LibraryRepo
-	ScanSvc     ScanExecutor
-	Dup         *duplicate.Service
-	Config      RunnerConfig
-	cancelFuncs sync.Map // taskID -> context.CancelFunc
-	running     bool
-	mu          sync.Mutex
-	wakeCh      chan struct{} // 主队列唤醒信号
-	reportWake  chan struct{} // 报告队列唤醒信号
-	stopCh      chan struct{}
+	Tasks        *repo.TaskRepo
+	Sessions     *repo.SessionRepo
+	Media        *repo.MediaRepo
+	Libraries    *repo.LibraryRepo
+	Settings     *repo.SettingsRepo // 杂项参数（115 Cookie 等）
+	ScanSvc      ScanExecutor
+	Dup          *duplicate.Service
+	Config       RunnerConfig
+	cancelFuncs  sync.Map // taskID -> context.CancelFunc
+	running      bool
+	mu           sync.Mutex
+	wakeCh       chan struct{} // 主队列唤醒信号
+	reportWake   chan struct{} // 报告队列唤醒信号
+	netdriveWake chan struct{} // 网盘队列唤醒信号
+	stopCh       chan struct{}
 }
 
 // RunnerConfig 调度器配置。
 type RunnerConfig struct {
-	PoolSize        int
-	ImageThumbBase  string
-	VideoThumbBase  string
-	PermanentDelete bool // true=永久删除源文件；false=移入系统回收站
+	PoolSize                  int
+	ImageThumbBase            string
+	VideoThumbBase            string
+	PermanentDelete           bool   // true=永久删除源文件；false=移入系统回收站
+	NetdriveRequestIntervalMs int    // 115 网盘请求间隔（毫秒，风控）；0=默认 300
+	NetdriveBaseURL           string // 115 API 基地址覆盖（测试用；空=生产地址）
 }
 
 // ScanExecutor 扫描执行器接口。
@@ -55,21 +63,23 @@ type ScanExecutor interface {
 
 // NewRunner 创建任务调度器。
 func NewRunner(tasks *repo.TaskRepo, sessions *repo.SessionRepo, media *repo.MediaRepo,
-	libraries *repo.LibraryRepo, scanSvc ScanExecutor, cfg RunnerConfig, dup *duplicate.Service) *Runner {
+	libraries *repo.LibraryRepo, settings *repo.SettingsRepo, scanSvc ScanExecutor, cfg RunnerConfig, dup *duplicate.Service) *Runner {
 	if cfg.PoolSize <= 0 {
 		cfg.PoolSize = 4
 	}
 	return &Runner{
-		Tasks:      tasks,
-		Sessions:   sessions,
-		Media:      media,
-		Libraries:  libraries,
-		ScanSvc:    scanSvc,
-		Dup:        dup,
-		Config:     cfg,
-		wakeCh:     make(chan struct{}, 1),
-		reportWake: make(chan struct{}, 1),
-		stopCh:     make(chan struct{}),
+		Tasks:        tasks,
+		Sessions:     sessions,
+		Media:        media,
+		Libraries:    libraries,
+		Settings:     settings,
+		ScanSvc:      scanSvc,
+		Dup:          dup,
+		Config:       cfg,
+		wakeCh:       make(chan struct{}, 1),
+		reportWake:   make(chan struct{}, 1),
+		netdriveWake: make(chan struct{}, 1),
+		stopCh:       make(chan struct{}),
 	}
 }
 
@@ -92,6 +102,7 @@ func (r *Runner) Start(ctx context.Context) {
 
 	go r.loop(ctx)
 	go r.reportLoop(ctx)
+	go r.netdriveLoop(ctx)
 	slog.Info("任务调度器已启动")
 }
 
@@ -168,6 +179,9 @@ func (r *Runner) Enqueue(kind repo.TaskKind, title string, dedupeKey *string, li
 	if repo.IsReportKind(kind) {
 		wake = r.reportWake
 	}
+	if repo.IsNetdriveKind(kind) {
+		wake = r.netdriveWake
+	}
 	select {
 	case wake <- struct{}{}:
 	default:
@@ -183,6 +197,12 @@ func (r *Runner) loop(ctx context.Context) {
 // reportLoop 报告队列循环：串行消费报告类任务，与其他任务互不影响。
 func (r *Runner) reportLoop(ctx context.Context) {
 	r.consume(ctx, r.reportWake, r.Tasks.DequeueNextReport)
+}
+
+// netdriveLoop 网盘队列循环：串行消费网盘任务（慢速外部 API + 风控节奏），
+// 与主队列/报告队列互不影响。
+func (r *Runner) netdriveLoop(ctx context.Context) {
+	r.consume(ctx, r.netdriveWake, r.Tasks.DequeueNextNetdrive)
 }
 
 // consume 消费指定队列：循环取出最早的 queued 任务并执行，队列为空时等待唤醒或定时轮询。
@@ -332,6 +352,8 @@ func (r *Runner) executeTask(ctx context.Context, task *repo.BackgroundTask) {
 		execErr = r.execDirectoryDelete(taskCtx, task, progress)
 	case repo.TaskKindScanSha1:
 		execErr = r.execScanSha1(taskCtx, task, progress)
+	case repo.TaskKindNetdriveSha1:
+		execErr = r.execNetdriveSha1(taskCtx, task, progress)
 	default:
 		execErr = fmt.Errorf("未知任务类型: %s", task.Kind)
 	}
@@ -549,6 +571,145 @@ func (r *Runner) execScanSha1(ctx context.Context, task *repo.BackgroundTask, pr
 	if s > 0 && r.Dup != nil {
 		_ = r.Dup.SetStale()
 	}
+	return nil
+}
+
+// execNetdriveSha1 执行 115 网盘补齐 SHA1 任务：
+// 从网盘递归拉取所选目录的文件 sha1 映射（含风控节奏），与本地目录下
+// sha1 为空的媒体按相对路径（+ 大小校验）匹配，命中直接写库；
+// 未命中不自动本地计算（需要本地算仍走原 scan_sha1 任务）。
+func (r *Runner) execNetdriveSha1(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
+	if r.Settings == nil {
+		return fmt.Errorf("杂项参数仓库未初始化")
+	}
+	var payload repo.NetdriveSyncPayload
+	if task.PayloadJSON != nil && *task.PayloadJSON != "" {
+		if err := json.Unmarshal([]byte(*task.PayloadJSON), &payload); err != nil {
+			return fmt.Errorf("解析任务参数: %w", err)
+		}
+	}
+	if payload.RemoteCID == "" {
+		return fmt.Errorf("任务缺少 remote_cid")
+	}
+	lib, err := r.Libraries.GetByID(payload.LibraryID)
+	if err != nil || lib == nil {
+		return fmt.Errorf("收藏库不存在: %d", payload.LibraryID)
+	}
+
+	// 读取 115 Cookie（设置页填写，存 settings 表）
+	cookie, err := r.Settings.Get(repo.SettingsKeyNetdriveCookie)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(cookie) == "" {
+		return fmt.Errorf("未配置 115 Cookie，请在设置页填写")
+	}
+
+	interval := r.Config.NetdriveRequestIntervalMs
+	client := pan115.NewClient(strings.TrimSpace(cookie), interval)
+	if r.Config.NetdriveBaseURL != "" {
+		client.SetBaseURL(r.Config.NetdriveBaseURL)
+	}
+	// 1. 登录校验
+	progress("verify", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	if err := client.LoginCheck(ctx); err != nil {
+		return fmt.Errorf("115 登录校验失败: %w", err)
+	}
+
+	// 2. 递归遍历网盘目录拉 sha1 映射
+	progress("walking", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	remoteFiles, err := client.WalkDir(ctx, payload.RemoteCID)
+	if err != nil {
+		var rk *pan115.ErrRiskControl
+		if errors.As(err, &rk) {
+			return err // 风控：终止任务，提示稍后再试
+		}
+		return fmt.Errorf("遍历 115 目录失败: %w", err)
+	}
+
+	// 3. 本地待补记录
+	missing, err := r.Media.ListMissingSha1ByDirectory(lib.ID, payload.LocalDir)
+	if err != nil {
+		return err
+	}
+	total := len(missing)
+	if total == 0 {
+		resJSON, _ := json.Marshal(map[string]any{
+			"library_id": lib.ID, "local_dir": payload.LocalDir,
+			"remote_cid": payload.RemoteCID, "checked": 0, "matched": 0,
+			"mismatched": 0, "not_found": 0, "failed": 0,
+		})
+		_ = r.Tasks.Complete(task.ID, string(resJSON))
+		return nil
+	}
+
+	// 4. 相对路径对齐匹配：本地去掉 local_dir 前缀后的路径 == 网盘相对路径
+	localPrefix := strings.Trim(strings.ReplaceAll(payload.LocalDir, "\\", "/"), "/")
+	var matched, mismatched, notFound, failed int
+	var mu sync.Mutex
+	report := func() {
+		mu.Lock()
+		m, mm, nf, f := matched, mismatched, notFound, failed
+		mu.Unlock()
+		progress("matching", total, m+mm+nf+f, m, 0, f, 0, 0, 0, (*int64)(nil))
+	}
+	for _, item := range missing {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		rel := strings.ReplaceAll(item.RelativePath, "\\", "/")
+		if localPrefix != "" {
+			rel = strings.TrimPrefix(rel, localPrefix+"/")
+		}
+		info, ok := remoteFiles[rel]
+		if !ok {
+			mu.Lock()
+			notFound++
+			mu.Unlock()
+			report()
+			continue
+		}
+		// 大小一致性校验（防同名异内容误配）
+		if payload.MatchSize && info.Size != item.FileSize {
+			mu.Lock()
+			mismatched++
+			mu.Unlock()
+			report()
+			continue
+		}
+		if err := r.Media.UpdateSha1(item.ID, info.Sha1); err != nil {
+			mu.Lock()
+			failed++
+			mu.Unlock()
+			report()
+			continue
+		}
+		mu.Lock()
+		matched++
+		mu.Unlock()
+		report()
+	}
+
+	// 5. 完成
+	resJSON, _ := json.Marshal(map[string]any{
+		"library_id": lib.ID, "local_dir": payload.LocalDir,
+		"remote_cid": payload.RemoteCID, "checked": total,
+		"matched": matched, "mismatched": mismatched,
+		"not_found": notFound, "failed": failed,
+	})
+	_ = r.Tasks.UpdateProgress(task.ID, repo.TaskProgress{
+		Phase: "done", Total: total,
+		Processed: matched + mismatched + notFound + failed,
+		Succeeded: matched, Skipped: mismatched + notFound, Failed: failed,
+	})
+	_ = r.Tasks.Complete(task.ID, string(resJSON))
+
+	// 补齐 sha1 后重复报告可能产生新的 sha1_exact 分组，标记旧报告失效
+	if matched > 0 && r.Dup != nil {
+		_ = r.Dup.SetStale()
+	}
+	slog.Info("115 补齐 SHA1 完成", "library", lib.Name, "local_dir", payload.LocalDir,
+		"matched", matched, "mismatched", mismatched, "not_found", notFound, "failed", failed)
 	return nil
 }
 

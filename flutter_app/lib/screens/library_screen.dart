@@ -1,5 +1,8 @@
 // library_screen.dart：收藏库管理页面（左列表 + 右文件树 + 右键菜单）
 // 代码注释使用中文
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -554,6 +557,12 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     _loadRootChildren();
   }
 
+  @override
+  void dispose() {
+    _netdriveTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loadRootChildren() async {
     setState(() {
       _loadingTree = true;
@@ -847,9 +856,86 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     }
   }
 
+  // ===== 115 网盘补齐 SHA1 =====
+
+  Timer? _netdriveTimer;
+
+  /// 从 115 补齐 SHA1：弹窗选择网盘目录（与当前本地目录对齐）→ 提交任务 → 轮询。
+  Future<void> _showNetdriveDialog(String localDir) async {
+    if (mounted) setState(() => _error = null);
+    final remoteCid = await showDialog<String>(
+      context: context,
+      builder: (_) => _NetdriveDirDialog(api: widget.api),
+    );
+    if (remoteCid == null || !mounted) return;
+    try {
+      final resp = await widget.api.syncNetdrive115Sha1(
+        libraryId: widget.library.id,
+        localDir: localDir,
+        remoteCid: remoteCid,
+      );
+      final taskId = resp['task_id'] as String?;
+      final dirLabel = localDir.isEmpty ? '根目录' : localDir;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('115 补齐 SHA1 任务已提交，完成后提示结果'),
+            backgroundColor: Color(0xFF2563EB),
+          ),
+        );
+      }
+      if (taskId != null) _pollNetdriveTask(taskId, dirLabel);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('提交 115 补齐 SHA1 失败: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
+  }
+
+  /// 轮询 115 补齐 SHA1 任务，完成后提示结果。
+  void _pollNetdriveTask(String taskId, String dirLabel) {
+    _netdriveTimer?.cancel();
+    _netdriveTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
+      try {
+        final task = await widget.api.getTask(taskId);
+        if (!(task.isCompleted || task.isFailed || task.isCancelled)) return;
+        t.cancel();
+        if (!mounted) return;
+        if (task.isFailed) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('115 补齐 SHA1 失败（$dirLabel）：${task.errorMessage ?? '未知错误'}'),
+              backgroundColor: const Color(0xFFEF4444),
+            ),
+          );
+          return;
+        }
+        // 完成：解析结果统计
+        String msg = '115 补齐 SHA1 完成（$dirLabel）';
+        final result = task.resultJson;
+        if (result != null && result.isNotEmpty) {
+          try {
+            final data = jsonDecode(result) as Map<String, dynamic>;
+            msg = '115 补齐 SHA1 完成（$dirLabel）：匹配 ${data['matched']} 个'
+                '，大小不符 ${data['mismatched']} 个，未找到 ${data['not_found']} 个';
+          } catch (_) {}
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg), backgroundColor: const Color(0xFF22C55E)),
+        );
+      } catch (_) {
+        // 查询失败不中断轮询
+      }
+    });
+  }
+
   /// 目录移动对话框：目录树选择目标目录（懒加载），禁选自身及其子孙目录。
-  Future<void> _showMoveDialog(String dirPath, String dirName) async {
-    final target = await showDialog<String>(
+  Future<void> _showMoveDialog(String dirPath, String dirName) async {    final target = await showDialog<String>(
       context: context,
       builder: (ctx) => _MoveDirDialog(
         api: widget.api,
@@ -1078,6 +1164,11 @@ class _FileTreePanelState extends State<_FileTreePanel> {
               context: context,
               position: globalPosition,
               items: [
+                ContextMenuItem(
+                  icon: Icons.cloud_sync_outlined,
+                  label: '从 115 补齐 SHA1',
+                  onTap: () => _showNetdriveDialog(node.path),
+                ),
                 ContextMenuItem(
                   icon: Icons.drive_file_move_outline,
                   label: '移动到…',
@@ -1482,6 +1573,177 @@ class _TreeDirTile extends StatelessWidget {
                   ),
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 115 网盘目录选择对话框：懒加载目录树，选中与本地目录对齐的网盘目录。
+class _NetdriveDirDialog extends StatefulWidget {
+  final ApiService api;
+  const _NetdriveDirDialog({required this.api});
+
+  @override
+  State<_NetdriveDirDialog> createState() => _NetdriveDirDialogState();
+}
+
+class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
+  final Map<String, List<NetdriveDirEntry>> _children = {};
+  final Set<String> _expanded = {};
+  String _selectedCid = '0';
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load('0');
+  }
+
+  Future<void> _load(String cid) async {
+    try {
+      final children = await widget.api.getNetdrive115Tree(cid);
+      if (mounted) setState(() => _children[cid] = children);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _toggle(String cid) {
+    if (_expanded.contains(cid)) {
+      setState(() => _expanded.remove(cid));
+      return;
+    }
+    if (!_children.containsKey(cid)) _load(cid);
+    setState(() => _expanded.add(cid));
+  }
+
+  List<NetdriveDirEntry> _childrenOf(String cid) =>
+      _children[cid] ?? const [];
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('选择网盘目录'),
+      content: SizedBox(
+        width: 840,
+        height: 500,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '将网盘所选目录与本地目录对齐，为本地该目录下 SHA1 为空的媒体补齐 SHA1（匹配不上的自动跳过）。',
+              style: TextStyle(fontSize: 12, color: cs.outline),
+            ),
+            const SizedBox(height: 12),
+            if (_error != null) ...[
+              Text('读取失败: $_error', style: TextStyle(fontSize: 12, color: cs.error)),
+              const SizedBox(height: 8),
+            ],
+            if (_loading)
+              const Expanded(
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else
+              Expanded(
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _row(cid: '0', name: '网盘根目录', depth: 0),
+                      ..._buildLevels(_childrenOf('0'), 0),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _loading ? null : () => Navigator.pop(context, _selectedCid),
+          child: const Text('选择此目录并补齐'),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _buildLevels(List<NetdriveDirEntry> nodes, int depth) {
+    final tiles = <Widget>[];
+    for (final n in nodes) {
+      final isExpanded = _expanded.contains(n.cid);
+      tiles.add(_row(cid: n.cid, name: n.name, depth: depth, isExpanded: isExpanded, hasChildren: n.hasChildren));
+      if (isExpanded) {
+        tiles.addAll(_buildLevels(_childrenOf(n.cid), depth + 1));
+      }
+    }
+    return tiles;
+  }
+
+  Widget _row({
+    required String cid,
+    required String name,
+    int depth = 0,
+    bool isExpanded = false,
+    bool hasChildren = false,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final selected = _selectedCid == cid;
+    return Padding(
+      padding: EdgeInsets.only(left: 8.0 + depth * 16),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () => setState(() {
+            _selectedCid = cid;
+          }),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            child: Row(
+              children: [
+                if (hasChildren || isExpanded)
+                  GestureDetector(
+                    onTap: () => _toggle(cid),
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 2),
+                      child: Icon(
+                        isExpanded ? Icons.keyboard_arrow_down : Icons.keyboard_arrow_right,
+                        size: 16,
+                        color: cs.outline,
+                      ),
+                    ),
+                  )
+                else
+                  const SizedBox(width: 18),
+                Icon(
+                  isExpanded ? Icons.folder_open : Icons.folder,
+                  size: 17,
+                  color: selected ? cs.primary : cs.outline,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    name,
+                    style: TextStyle(fontSize: 13, color: cs.onSurface),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (selected)
+                  Icon(Icons.radio_button_checked, size: 16, color: cs.primary)
+                else
+                  Icon(Icons.radio_button_off, size: 16, color: cs.outlineVariant),
+              ],
             ),
           ),
         ),

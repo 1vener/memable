@@ -16,9 +16,10 @@ import (
 	"image/png"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
+
+	"memable/internal/cmdx"
 
 	_ "golang.org/x/image/bmp"
 )
@@ -185,7 +186,7 @@ func decodeImageWithFFmpegFilter(ctx context.Context, srcPath, vf string) (image
 		args = append(args, "-vf", vf)
 	}
 	args = append(args, "-frames:v", "1", tmpPNG)
-	ffCmd := exec.CommandContext(ffCtx, "ffmpeg", args...)
+	ffCmd := cmdx.Command(ffCtx, "ffmpeg", args...)
 	if out, err := ffCmd.CombinedOutput(); err != nil {
 		return nil, "", fmt.Errorf("FFmpeg 转换 %q: %w\n%s", srcPath, err, string(out))
 	}

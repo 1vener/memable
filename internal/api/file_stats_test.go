@@ -31,7 +31,7 @@ func setupFileStatsServer(t *testing.T, root string) (*Server, *repo.FileStatsRe
 		t.Fatal(err)
 	}
 	fsr := repo.NewFileStatsRepo(dbh)
-	server := NewServer(cfg, nil, nil, nil, nil, fsr, nil, nil, nil, "", "", nil)
+	server := NewServer(cfg, nil, nil, nil, nil, fsr, nil, nil, nil, nil, "", "", nil)
 	return server, fsr
 }
 

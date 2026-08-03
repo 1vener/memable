@@ -39,8 +39,10 @@ Write-Host "==> 构建后端 server.exe ..."
 $prevGoarch = $env:GOARCH
 try {
     $env:GOARCH = "amd64"
+    # -H windowsgui：编译为 GUI 子系统，前端拉起时无黑色控制台窗口；
+    # 日志自动回退到系统数据目录 server.log（logx 检测 stdout 不可用）。
     # 输出到 dist/server.exe（顶层），避免与 dist/memable 合并目录的清理互相干扰
-    go build -trimpath -ldflags "-s -w -X main.version=$Version" -o dist/server.exe ./cmd/server
+    go build -trimpath -ldflags "-s -w -H windowsgui -X main.version=$Version" -o dist/server.exe ./cmd/server
     if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
 } finally {
     $env:GOARCH = $prevGoarch

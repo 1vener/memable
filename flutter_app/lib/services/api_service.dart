@@ -26,6 +26,89 @@ class ApiService {
     return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
+  // ===== 杂项参数（settings 表，115 Cookie 等）=====
+
+  /// 列出全部杂项参数。
+  Future<Map<String, String>> getSettingsKV() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/settings/kv'));
+    if (res.statusCode != 200) throw Exception('读取杂项参数失败: ${res.body}');
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return {
+      for (final e in list)
+        (e as Map<String, dynamic>)['key'] as String:
+            (e['value'] as String?) ?? '',
+    };
+  }
+
+  /// 写入杂项参数。
+  Future<void> setSettingsKV(String key, String value) async {
+    final res = await http.put(
+      Uri.parse('$baseUrl/api/settings/kv'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'key': key, 'value': value}),
+    );
+    if (res.statusCode != 200) throw Exception('保存参数失败: ${res.body}');
+  }
+
+  /// 删除杂项参数。
+  Future<void> deleteSettingsKV(String key) async {
+    final res = await http.delete(
+      Uri.parse('$baseUrl/api/settings/kv'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'key': key}),
+    );
+    if (res.statusCode != 200) throw Exception('删除参数失败: ${res.body}');
+  }
+
+  // ===== 115 网盘 =====
+
+  /// 验证 115 Cookie 有效性，返回 (valid, error)。
+  Future<(bool, String)> verifyNetdrive115(String cookie) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/netdrive/115/verify'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'cookie': cookie}),
+    );
+    if (res.statusCode != 200) throw Exception('验证失败: ${res.body}');
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return (
+      data['valid'] == true,
+      (data['error'] as String?) ?? '',
+    );
+  }
+
+  /// 网盘目录树懒加载：返回指定 cid 的直属子目录。
+  Future<List<NetdriveDirEntry>> getNetdrive115Tree(String cid) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/netdrive/115/tree',
+    ).replace(queryParameters: {'cid': cid});
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('读取网盘目录失败: ${res.body}');
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list
+        .map((e) => NetdriveDirEntry.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// 提交 115 补齐 SHA1 任务（本地目录 ↔ 网盘目录对齐）。
+  Future<Map<String, dynamic>> syncNetdrive115Sha1({
+    required int libraryId,
+    required String localDir,
+    required String remoteCid,
+  }) async {
+    final res = await http.post(
+      Uri.parse('$baseUrl/api/netdrive/115/sync-sha1'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'library_id': libraryId,
+        'local_dir': localDir,
+        'remote_cid': remoteCid,
+      }),
+    );
+    if (res.statusCode != 202) throw Exception('提交任务失败: ${res.body}');
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   // ===== 收藏库管理 =====
 
   Future<List<Library>> getLibraries() async {

@@ -15,6 +15,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _apiUrlCtrl;
   late TextEditingController _hexCtrl;
+  late TextEditingController _netdriveCookieCtrl;
   bool _testLoading = false;
   String? _testResult;
   bool _pathsLoading = false;
@@ -24,21 +25,119 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _videoDir;
   String _logFile = '';
   String _dbPath = '';
+  // 115 网盘
+  bool _netdriveLoading = false;
+  String? _netdriveVerifyResult; // 'ok' 或错误信息
+  bool _netdriveCookieSet = false;
+
+  static const _netdriveCookieKey = 'netdrive.115.cookie';
 
   @override
   void initState() {
     super.initState();
     _apiUrlCtrl = TextEditingController(text: widget.api.baseUrl);
     _hexCtrl = TextEditingController();
+    _netdriveCookieCtrl = TextEditingController();
     _syncHex();
     _loadPaths();
+    _loadNetdriveCookie();
   }
 
   @override
   void dispose() {
     _apiUrlCtrl.dispose();
     _hexCtrl.dispose();
+    _netdriveCookieCtrl.dispose();
     super.dispose();
+  }
+
+  // ===== 115 网盘 =====
+
+  /// 读取已保存的 115 Cookie（回显）。
+  Future<void> _loadNetdriveCookie() async {
+    try {
+      final kv = await widget.api.getSettingsKV();
+      final saved = kv[_netdriveCookieKey] ?? '';
+      if (mounted) {
+        setState(() {
+          _netdriveCookieSet = saved.isNotEmpty;
+          _netdriveCookieCtrl.text = saved;
+        });
+      }
+    } catch (_) {
+      // 读取失败不阻塞设置页
+    }
+  }
+
+  /// 验证 Cookie 有效性（验证输入框当前内容）。
+  Future<void> _verifyNetdrive() async {
+    final cookie = _netdriveCookieCtrl.text.trim();
+    if (cookie.isEmpty) {
+      setState(() => _netdriveVerifyResult = 'Cookie 不能为空');
+      return;
+    }
+    setState(() {
+      _netdriveLoading = true;
+      _netdriveVerifyResult = null;
+    });
+    try {
+      final (valid, error) = await widget.api.verifyNetdrive115(cookie);
+      if (mounted) {
+        setState(() {
+          _netdriveVerifyResult = valid ? 'ok' : '失败：$error';
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _netdriveVerifyResult = '验证失败：$e');
+    } finally {
+      if (mounted) setState(() => _netdriveLoading = false);
+    }
+  }
+
+  /// 保存 Cookie。
+  Future<void> _saveNetdrive() async {
+    final cookie = _netdriveCookieCtrl.text.trim();
+    try {
+      await widget.api.setSettingsKV(_netdriveCookieKey, cookie);
+      if (mounted) {
+        setState(() {
+          _netdriveCookieSet = cookie.isNotEmpty;
+          _netdriveVerifyResult = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('115 Cookie 已保存'),
+            backgroundColor: Color(0xFF22C55E),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('保存失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+        );
+      }
+    }
+  }
+
+  /// 清除 Cookie。
+  Future<void> _clearNetdrive() async {
+    try {
+      await widget.api.deleteSettingsKV(_netdriveCookieKey);
+      if (mounted) {
+        setState(() {
+          _netdriveCookieCtrl.clear();
+          _netdriveCookieSet = false;
+          _netdriveVerifyResult = null;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('清除失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+        );
+      }
+    }
   }
 
   /// 预设主题色板
@@ -419,6 +518,98 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         value: _logFile.isEmpty ? '控制台（标准输出）' : _logFile,
                       ),
                     ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 32),
+
+            // ========== 115 网盘 ==========
+            _SectionTitle(title: '115 网盘', icon: Icons.cloud_outlined, cs: cs),
+            const SizedBox(height: 16),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '登录 Cookie',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: cs.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '用于从网盘批量获取文件 SHA1（收藏库目录树右键"从 115 补齐 SHA1"）。'
+                      '获取方式：浏览器登录 115 后按 F12 → 应用/Application → Cookie，'
+                      '复制 115.com 的全部 Cookie 值粘贴到下方。',
+                      style: TextStyle(fontSize: 12, color: cs.outline),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _netdriveCookieCtrl,
+                      maxLines: 3,
+                      obscureText: false,
+                      decoration: InputDecoration(
+                        hintText: 'UID=xxx; CID=xxx; SEID=xxx; ...',
+                        border: const OutlineInputBorder(),
+                        suffixIcon: _netdriveCookieSet
+                            ? const Tooltip(
+                                message: '已保存',
+                                child: Icon(
+                                  Icons.check_circle,
+                                  size: 18,
+                                  color: Color(0xFF22C55E),
+                                ),
+                              )
+                            : null,
+                      ),
+                    ),
+                    if (_netdriveVerifyResult != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        _netdriveVerifyResult == 'ok'
+                            ? 'Cookie 有效'
+                            : _netdriveVerifyResult!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _netdriveVerifyResult == 'ok'
+                              ? const Color(0xFF22C55E)
+                              : cs.error,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        FilledButton.tonalIcon(
+                          onPressed: _netdriveLoading ? null : _verifyNetdrive,
+                          icon: _netdriveLoading
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.verified_outlined, size: 16),
+                          label: const Text('验证'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.icon(
+                          onPressed: _netdriveLoading ? null : _saveNetdrive,
+                          icon: const Icon(Icons.save_outlined, size: 16),
+                          label: const Text('保存'),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          onPressed: _netdriveLoading ? null : _clearNetdrive,
+                          icon: const Icon(Icons.delete_outline, size: 16),
+                          label: const Text('清除'),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),

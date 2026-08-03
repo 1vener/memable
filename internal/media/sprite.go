@@ -9,9 +9,10 @@ import (
 	"image/draw"
 	"image/png"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
+
+	"memable/internal/cmdx"
 )
 
 const spriteCount = 25       // 截图数量
@@ -128,7 +129,7 @@ func ffmpegSegmentStrip(ctx context.Context, videoPath string, startSec float64,
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	filter := fmt.Sprintf("fps=5,scale=%d:-1,tile=5x1", spriteFrameWidth)
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	cmd := cmdx.Command(ctx, "ffmpeg",
 		"-y",
 		"-v", "error",
 		"-ss", fmt.Sprintf("%.3f", startSec),
@@ -250,7 +251,7 @@ func extractSpriteTile(ctx context.Context, videoPath string, durationMs int64, 
 		start, end, fps, spriteFrameWidth, spriteCols, spriteRows,
 	)
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	cmd := cmdx.Command(ctx, "ffmpeg",
 		"-y",
 		"-v", "error",
 		"-i", videoPath,
@@ -296,7 +297,7 @@ func ffmpegScaleFrame(ctx context.Context, videoPath string, sec float64, width 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	filter := fmt.Sprintf("scale=%d:-1", width)
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	cmd := cmdx.Command(ctx, "ffmpeg",
 		"-y",
 		"-ss", fmt.Sprintf("%.3f", sec),
 		"-i", videoPath,

@@ -90,11 +90,16 @@ const (
 	TaskKindPromote         TaskKind = "promote"
 	TaskKindDirectoryDelete TaskKind = "directory_delete"
 	TaskKindScanSha1        TaskKind = "scan_sha1"
+	TaskKindNetdriveSha1    TaskKind = "netdrive_sha1"
 )
 
 // ReportKinds 报告队列任务类型：生成报告类任务在独立队列中串行执行，
 // 与其他任务（扫描等）互不阻塞。
 var ReportKinds = []TaskKind{TaskKindReportImage, TaskKindReportVideo, TaskKindReportDuplicate, TaskKindReportDirectory}
+
+// NetdriveKinds 网盘队列任务类型：115 等网盘任务在独立队列中串行执行
+// （慢速外部 API 遍历 + 风控节奏），不与主队列/报告队列互相阻塞。
+var NetdriveKinds = []TaskKind{TaskKindNetdriveSha1}
 
 // IsReportKind 判断任务类型是否属于报告队列。
 func IsReportKind(kind TaskKind) bool {
@@ -105,6 +110,27 @@ func IsReportKind(kind TaskKind) bool {
 	}
 	return false
 }
+
+// IsNetdriveKind 判断任务类型是否属于网盘队列。
+func IsNetdriveKind(kind TaskKind) bool {
+	for _, k := range NetdriveKinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// NetdriveSyncPayload 115 补齐 SHA1 任务参数。
+type NetdriveSyncPayload struct {
+	LibraryID int64  `json:"library_id"`
+	LocalDir  string `json:"local_dir"`  // 本地相对库根目录（正斜杠；空=库根）
+	RemoteCID string `json:"remote_cid"` // 115 网盘目标目录 cid
+	MatchSize bool   `json:"match_size"` // 是否校验文件大小一致（防同名异内容误配）
+}
+
+// SettingsKeyNetdriveCookie settings 表中 115 网盘 Cookie 的键名。
+const SettingsKeyNetdriveCookie = "netdrive.115.cookie"
 
 // TaskStatus 任务状态。
 type TaskStatus string

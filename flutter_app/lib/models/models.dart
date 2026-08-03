@@ -286,9 +286,31 @@ class DuplicateItem {
   );
 }
 
+/// 115 网盘目录条目（目录树懒加载）。
+class NetdriveDirEntry {
+  final String cid;
+  final String name;
+  final bool isDir;
+  final bool hasChildren;
+
+  NetdriveDirEntry({
+    required this.cid,
+    required this.name,
+    required this.isDir,
+    this.hasChildren = false,
+  });
+
+  factory NetdriveDirEntry.fromJson(Map<String, dynamic> json) =>
+      NetdriveDirEntry(
+        cid: (json['cid'] as String?) ?? '',
+        name: (json['name'] as String?) ?? '',
+        isDir: json['is_dir'] == true,
+        hasChildren: json['has_children'] == true,
+      );
+}
+
 /// 后台任务模型
-class BackgroundTask {
-  final String id;
+class BackgroundTask {  final String id;
   final String kind;
   final String status;
   final String title;
@@ -413,6 +435,8 @@ class BackgroundTask {
         return '删除目录';
       case 'scan_sha1':
         return '补齐 SHA1';
+      case 'netdrive_sha1':
+        return '115 补齐 SHA1';
       default:
         return kind;
     }

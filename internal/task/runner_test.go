@@ -3,6 +3,9 @@ package task
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +30,7 @@ func TestEnqueueWakesRunnerWithoutStoppingIt(t *testing.T) {
 
 	tasks := repo.NewTaskRepo(dbh)
 	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh),
-		repo.NewLibraryRepo(dbh), nil, RunnerConfig{}, nil)
+		repo.NewLibraryRepo(dbh), nil, nil, RunnerConfig{}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.Start(ctx)
@@ -75,7 +78,7 @@ func TestReportQueueRunsWhileMainQueueBlocked(t *testing.T) {
 		return &repo.ScanResult{Session: &repo.ScanSession{ID: "s-blocked"}, Found: 0}, nil
 	}}
 
-	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, executor, RunnerConfig{PoolSize: 2}, nil)
+	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, nil, executor, RunnerConfig{PoolSize: 2}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.Start(ctx)
@@ -172,7 +175,7 @@ func TestScanSha1TaskFillsMissingSHA1(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := NewRunner(tasks, sr, mr, lr, nil, RunnerConfig{PoolSize: 2}, nil)
+	runner := NewRunner(tasks, sr, mr, lr, nil, nil, RunnerConfig{PoolSize: 2}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.Start(ctx)
@@ -215,6 +218,127 @@ func TestScanSha1TaskFillsMissingSHA1(t *testing.T) {
 	if !strings.Contains(*done.ResultJSON, `"updated":0`) {
 		t.Fatalf("二次任务应无更新: %s", *done.ResultJSON)
 	}
+}
+
+// TestNetdriveSha1TaskMatchesRemote 验证 115 补齐 SHA1 任务端到端：
+// mock 115 接口返回网盘 sha1 → 与本地目录缺失记录按相对路径+大小匹配写库；
+// 大小不符与未找到的记录保持缺失。
+func TestNetdriveSha1TaskMatchesRemote(t *testing.T) {
+	dbh, err := db.Open(&config.Config{Database: config.DatabaseConfig{Path: ":memory:"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	// mock 115 webapi：根目录含 videos 目录（cid=10），videos 下三个文件
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/" {
+			fmt.Fprint(w, `{"state":true}`)
+			return
+		}
+		if r.URL.Path != "/files" {
+			http.Error(w, "unknown", http.StatusNotFound)
+			return
+		}
+		switch r.URL.Query().Get("cid") {
+		case "0":
+			fmt.Fprint(w, `{"state":true,"count":1,"data":[{"cid":"10","pid":"0","fid":"","n":"videos","ico":"folder"}]}`)
+		case "10":
+			fmt.Fprint(w, `{"state":true,"count":3,"data":[
+				{"cid":"101","pid":"10","fid":"101","n":"a.mp4","s":"100","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+				{"cid":"102","pid":"10","fid":"102","n":"b.mp4","s":"999","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+				{"cid":"103","pid":"10","fid":"103","n":"c.mp4","s":"100","sha":"cccccccccccccccccccccccccccccccccccccccc"}
+			]}`)
+		default:
+			fmt.Fprint(w, `{"state":true,"count":0,"data":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	tasks := repo.NewTaskRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	lr := repo.NewLibraryRepo(dbh)
+	sr := repo.NewSessionRepo(dbh)
+	settings := repo.NewSettingsRepo(dbh)
+	if err := settings.Set(repo.SettingsKeyNetdriveCookie, "UID=1;CID=2;SEID=3"); err != nil {
+		t.Fatal(err)
+	}
+
+	lib := &repo.Library{Name: "视频库", Path: t.TempDir(), Kind: "video"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now()
+	// a：匹配（大小 100 = 网盘 100）；b：大小不符（本地 100 vs 网盘 999）；d：网盘无此文件
+	for _, m := range []*repo.Media{
+		{LibraryID: lib.ID, Kind: "video", RelativePath: "videos/a.mp4", FileSize: 100, Mtime: mt},
+		{LibraryID: lib.ID, Kind: "video", RelativePath: "videos/b.mp4", FileSize: 100, Mtime: mt},
+		{LibraryID: lib.ID, Kind: "video", RelativePath: "videos/d.mp4", FileSize: 100, Mtime: mt},
+	} {
+		if err := mr.Upsert(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runner := NewRunner(tasks, sr, mr, lr, settings, nil, RunnerConfig{
+		PoolSize:                  2,
+		NetdriveRequestIntervalMs: 0, // 测试加速
+		NetdriveBaseURL:           srv.URL,
+	}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runner.Start(ctx)
+	defer runner.Stop()
+
+	payload := repo.NetdriveSyncPayload{
+		LibraryID: lib.ID,
+		LocalDir:  "videos",
+		RemoteCID: "10",
+		MatchSize: true,
+	}
+	task, err := runner.Enqueue(repo.TaskKindNetdriveSha1, "115 补齐 SHA1", nil, &lib.ID, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitTaskTerminal(t, tasks, task.ID)
+
+	done, err := tasks.GetByID(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != repo.TaskStatusCompleted {
+		t.Fatalf("任务状态: %+v", done)
+	}
+	if done.ResultJSON == nil || !strings.Contains(*done.ResultJSON, `"matched":1`) ||
+		!strings.Contains(*done.ResultJSON, `"mismatched":1`) ||
+		!strings.Contains(*done.ResultJSON, `"not_found":1`) {
+		t.Fatalf("结果统计不符: %s", strPtrOrEmpty(done.ResultJSON))
+	}
+
+	// a 已补齐；b/d 仍缺失
+	a, _ := mr.GetByPath(lib.ID, "videos/a.mp4")
+	if a == nil || a.Sha1 == nil || *a.Sha1 != strings.Repeat("a", 40) {
+		t.Fatalf("a.mp4 应匹配网盘 sha1: %+v", a)
+	}
+	b, _ := mr.GetByPath(lib.ID, "videos/b.mp4")
+	if b == nil || b.Sha1 != nil {
+		t.Fatalf("b.mp4 大小不符应保持缺失: %+v", b)
+	}
+	d, _ := mr.GetByPath(lib.ID, "videos/d.mp4")
+	if d == nil || d.Sha1 != nil {
+		t.Fatalf("d.mp4 未找到应保持缺失: %+v", d)
+	}
+}
+
+func strPtrOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // stubScanExecutor 供 ETA 测试使用的扫描执行器替身。
@@ -262,7 +386,7 @@ func TestScanTaskETAUsesWorkBytesAndExcludesSkipped(t *testing.T) {
 			ProcessedBytes: 50000,
 		}, nil
 	}}
-	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, executor, RunnerConfig{PoolSize: 2}, nil)
+	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, nil, executor, RunnerConfig{PoolSize: 2}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.Start(ctx)
@@ -344,7 +468,7 @@ func TestScanTaskETAFileCountFallback(t *testing.T) {
 			Skipped:  14,
 		}, nil
 	}}
-	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, executor, RunnerConfig{PoolSize: 2}, nil)
+	runner := NewRunner(tasks, repo.NewSessionRepo(dbh), repo.NewMediaRepo(dbh), lr, nil, executor, RunnerConfig{PoolSize: 2}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	runner.Start(ctx)

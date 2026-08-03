@@ -98,9 +98,9 @@ func (r *TaskRepo) ListAll(limit, offset int) ([]BackgroundTask, error) {
 	return r.query(q)
 }
 
-// DequeueNext 取出主队列中最早的 queued 任务（报告类任务除外）并置为 running。
+// DequeueNext 取出主队列中最早的 queued 任务（报告类与网盘类任务除外）并置为 running。
 func (r *TaskRepo) DequeueNext() (*BackgroundTask, error) {
-	return r.dequeueWhere("kind NOT IN (" + reportKindsCSV() + ")")
+	return r.dequeueWhere("kind NOT IN (" + reportKindsCSV() + "," + netdriveKindsCSV() + ")")
 }
 
 // DequeueNextReport 取出报告队列中最早的 queued 报告任务并置为 running。
@@ -109,10 +109,25 @@ func (r *TaskRepo) DequeueNextReport() (*BackgroundTask, error) {
 	return r.dequeueWhere("kind IN (" + reportKindsCSV() + ")")
 }
 
+// DequeueNextNetdrive 取出网盘队列中最早的 queued 网盘任务并置为 running。
+// 网盘任务（慢速外部 API 遍历 + 风控节奏）在独立队列中串行执行，与主/报告队列互不影响。
+func (r *TaskRepo) DequeueNextNetdrive() (*BackgroundTask, error) {
+	return r.dequeueWhere("kind IN (" + netdriveKindsCSV() + ")")
+}
+
 // reportKindsCSV 报告任务类型的 SQL IN 列表（与 ReportKinds 保持同步）。
 func reportKindsCSV() string {
 	parts := make([]string, len(ReportKinds))
 	for i, k := range ReportKinds {
+		parts[i] = "'" + string(k) + "'"
+	}
+	return strings.Join(parts, ",")
+}
+
+// netdriveKindsCSV 网盘任务类型的 SQL IN 列表（与 NetdriveKinds 保持同步）。
+func netdriveKindsCSV() string {
+	parts := make([]string, len(NetdriveKinds))
+	for i, k := range NetdriveKinds {
 		parts[i] = "'" + string(k) + "'"
 	}
 	return strings.Join(parts, ",")
@@ -253,7 +268,7 @@ func (r *TaskRepo) HasActiveForSession(sessionID string) (bool, error) {
 
 // QueuePosition 获取指定任务的排队位置（仅 queued 任务有效）。
 // 按任务所属队列计数：报告类任务在报告队列中只与报告任务互排，
-// 其余任务在主队列中排队，两条队列互不影响。
+// 网盘类任务在网盘队列中只与网盘任务互排，其余任务在主队列中排队，互不影响。
 func (r *TaskRepo) QueuePosition(id string) (int, error) {
 	var kind TaskKind
 	var queuedAt time.Time
@@ -263,9 +278,12 @@ func (r *TaskRepo) QueuePosition(id string) (int, error) {
 	if err != nil {
 		return 0, errx.Wrapf(err, "查询任务 %s", id)
 	}
-	pred := "kind NOT IN (" + reportKindsCSV() + ")"
+	pred := "kind NOT IN (" + reportKindsCSV() + "," + netdriveKindsCSV() + ")"
 	if IsReportKind(kind) {
 		pred = "kind IN (" + reportKindsCSV() + ")"
+	}
+	if IsNetdriveKind(kind) {
+		pred = "kind IN (" + netdriveKindsCSV() + ")"
 	}
 	var pos int
 	err = r.db.QueryRow(

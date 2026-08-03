@@ -91,7 +91,7 @@ func TestDeleteLibraryRemovesRelatedDataAndUnreferencedThumbnails(t *testing.T) 
 		}
 	}
 
-	server := NewServer(cfg, libraries, sessions, mediaRepo, nil, nil, nil, nil, nil, thumbBase, thumbBase, nil)
+	server := NewServer(cfg, libraries, sessions, mediaRepo, nil, nil, nil, nil, nil, nil, thumbBase, thumbBase, nil)
 	request := httptest.NewRequest(http.MethodDelete, "/api/libraries/"+formatInt64(deletedLibrary.ID), nil)
 	response := httptest.NewRecorder()
 	server.http.Handler.ServeHTTP(response, request)
@@ -168,7 +168,7 @@ func TestOpenMediaFileValid(t *testing.T) {
 	if err := mr.Upsert(m); err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
 		body(`{"action":"file"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -191,7 +191,7 @@ func TestOpenMediaNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(cfg, repo.NewLibraryRepo(dbh), repo.NewSessionRepo(dbh),
-		repo.NewMediaRepo(dbh), nil, nil, nil, nil, nil, "", "", nil)
+		repo.NewMediaRepo(dbh), nil, nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/99999/open",
 		body(`{"action":"file"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -225,7 +225,7 @@ func TestOpenMediaFileNotExistOnDisk(t *testing.T) {
 	if err := mr.Upsert(m); err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
 		body(`{"action":"file"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -263,7 +263,7 @@ func TestOpenMediaDirectoryAction(t *testing.T) {
 	if err := mr.Upsert(m); err != nil {
 		t.Fatal(err)
 	}
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, nil, "", "", nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/media/"+formatInt64(m.ID)+"/open",
 		body(`{"action":"directory"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -313,7 +313,7 @@ func TestExcludeDuplicateMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", dup)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, nil, "", "", dup)
 
 	// 排除报告中成员 a
 	req := httptest.NewRequest(http.MethodPost, "/api/reports/duplicate/exclude",
@@ -377,7 +377,7 @@ func TestDirCompareAPI(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	server := NewServer(cfg, lr, sr, mr, tr, nil, nil, nil, nil, "", "", dup)
+	server := NewServer(cfg, lr, sr, mr, tr, nil, nil, nil, nil, nil, "", "", dup)
 
 	// 提交目录对比任务（无 runner 时 Enqueue 会失败，这里验证 400/409 路径与参数校验）
 	req := httptest.NewRequest(http.MethodPost, "/api/reports/directory-compare",
@@ -470,7 +470,7 @@ func TestPromoteLibrary(t *testing.T) {
 	lr := repo.NewLibraryRepo(dbh)
 	mr := repo.NewMediaRepo(dbh)
 	sr := repo.NewSessionRepo(dbh)
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, nil, "", "", nil)
 
 	// 临时库（源）：路径 last level = "tempdir"
 	srcDir := filepath.Join(t.TempDir(), "tempdir")
@@ -563,7 +563,7 @@ func TestPromoteLibraryToRoot(t *testing.T) {
 	lr := repo.NewLibraryRepo(dbh)
 	mr := repo.NewMediaRepo(dbh)
 	sr := repo.NewSessionRepo(dbh)
-	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, "", "", nil)
+	server := NewServer(cfg, lr, sr, mr, nil, nil, nil, nil, nil, nil, "", "", nil)
 
 	srcDir := filepath.Join(t.TempDir(), "mytemp")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {

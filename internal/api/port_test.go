@@ -29,7 +29,7 @@ func newPortTestServer(t *testing.T, port int) (*Server, func()) {
 	sr := repo.NewSessionRepo(dbh)
 	mr := repo.NewMediaRepo(dbh)
 	tr := repo.NewTaskRepo(dbh)
-	srv := NewServer(cfg, lr, sr, mr, tr, nil, nil, nil, nil, "", "", nil)
+	srv := NewServer(cfg, lr, sr, mr, tr, nil, nil, nil, nil, nil, "", "", nil)
 	done := make(chan error, 1)
 	go func() { done <- srv.Start() }()
 	// 等待端口确定（Start 内部避让后写入 ActualPort）

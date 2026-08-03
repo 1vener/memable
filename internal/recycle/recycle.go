@@ -5,9 +5,10 @@ package recycle
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
+
+	"memable/internal/cmdx"
 )
 
 // ToBin 将文件移入系统回收站；Windows 使用 PowerShell 调用 Microsoft.VisualBasic，
@@ -17,7 +18,7 @@ func ToBin(path string) error {
 		return os.Remove(path)
 	}
 	escaped := strings.ReplaceAll(path, "'", "''")
-	cmd := exec.Command(
+	cmd := cmdx.CommandNoCtx(
 		"powershell",
 		"-NoProfile", "-NonInteractive", "-Command",
 		fmt.Sprintf(
@@ -39,7 +40,7 @@ func ToBinDir(path string) error {
 		return os.RemoveAll(path)
 	}
 	escaped := strings.ReplaceAll(path, "'", "''")
-	cmd := exec.Command(
+	cmd := cmdx.CommandNoCtx(
 		"powershell",
 		"-NoProfile", "-NonInteractive", "-Command",
 		fmt.Sprintf(

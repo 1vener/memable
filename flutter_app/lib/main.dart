@@ -122,8 +122,8 @@ Future<String> discoverBackend() async {
   // 开发模式（flutter run）不自动拉起后端，避免重复起服务
   if (!kDebugMode) {
     await BackendManager.startBackend();
-    // 等待就绪（最多 10 秒）
-    for (var i = 0; i < 50; i++) {
+    // 等待就绪（最多 5 秒，windowsgui server 启动通常 1 秒内就绪）
+    for (var i = 0; i < 25; i++) {
       await Future.delayed(const Duration(milliseconds: 200));
       if (await _healthOk(kDefaultPort)) return 'http://localhost:$kDefaultPort';
     }
@@ -135,7 +135,7 @@ Future<bool> _healthOk(int port) async {
   try {
     final res = await http
         .get(Uri.parse('http://localhost:$port/api/health'))
-        .timeout(const Duration(milliseconds: 400));
+        .timeout(const Duration(milliseconds: 300));
     return res.statusCode == 200;
   } catch (_) {
     return false;
@@ -212,7 +212,16 @@ class _MemableAppState extends State<MemableApp> {
           theme: _lightTheme(themeNotifier.seedColor),
           darkTheme: _darkTheme(themeNotifier.seedColor),
           home: _baseUrl == null
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text('正在启动服务...', style: TextStyle(fontSize: 13)),
+                    ],
+                  ),
+                )
               : HomeScreen(api: ApiService(baseUrl: _baseUrl!)),
         );
       },

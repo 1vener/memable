@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"memable/internal/cmdx"
 	"memable/internal/config"
 	"memable/internal/duplicate"
 	"memable/internal/repo"
@@ -47,6 +48,7 @@ type Server struct {
 	media          *repo.MediaRepo
 	tasks          *repo.TaskRepo
 	fileStats      *repo.FileStatsRepo
+	settings       *repo.SettingsRepo // 杂项参数（115 Cookie 等）
 	scanSvc        *scan.Service
 	searchSvc      *search.Service
 	runner         *task.Runner
@@ -60,7 +62,7 @@ type Server struct {
 }
 
 // NewServer 创建 HTTP API 服务器。
-func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, tr *repo.TaskRepo, fsr *repo.FileStatsRepo, scanSvc *scan.Service, searchSvc *search.Service, runner *task.Runner, imageThumbBase, videoThumbBase string, dup *duplicate.Service) *Server {
+func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, mr *repo.MediaRepo, tr *repo.TaskRepo, fsr *repo.FileStatsRepo, settings *repo.SettingsRepo, scanSvc *scan.Service, searchSvc *search.Service, runner *task.Runner, imageThumbBase, videoThumbBase string, dup *duplicate.Service) *Server {
 	s := &Server{
 		cfg:            cfg,
 		libraries:      lr,
@@ -68,6 +70,7 @@ func NewServer(cfg *config.Config, lr *repo.LibraryRepo, sr *repo.SessionRepo, m
 		media:          mr,
 		tasks:          tr,
 		fileStats:      fsr,
+		settings:       settings,
 		scanSvc:        scanSvc,
 		searchSvc:      searchSvc,
 		runner:         runner,
@@ -147,6 +150,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// 健康检查
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/settings", s.handleSettings)
+	mux.HandleFunc("GET /api/settings/kv", s.handleListSettingsKV)
+	mux.HandleFunc("PUT /api/settings/kv", s.handleSetSettingsKV)
+	mux.HandleFunc("DELETE /api/settings/kv", s.handleDeleteSettingsKV)
+
+	// 网盘（115）
+	mux.HandleFunc("POST /api/netdrive/115/verify", s.handleVerifyNetdrive115)
+	mux.HandleFunc("GET /api/netdrive/115/tree", s.handleNetdrive115Tree)
+	mux.HandleFunc("POST /api/netdrive/115/sync-sha1", s.handleNetdrive115SyncSha1)
 
 	// 任务管理
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)
@@ -240,18 +251,18 @@ func (s *Server) probeFFmpegCaps() {
 	s.ffmpegCaps = &ffmpegCaps{}
 	if v, err := exec.LookPath("ffmpeg"); err == nil {
 		s.ffmpegCaps.Available = true
-		if out, err := exec.Command(v, "-version").Output(); err == nil {
+		if out, err := cmdx.CommandNoCtx(v, "-version").Output(); err == nil {
 			// 取版本第一行
 			if lines := strings.SplitN(string(out), "\n", 2); len(lines) > 0 {
 				s.ffmpegCaps.Version = strings.TrimSpace(lines[0])
 			}
 		}
 		// 探测 HEIC 解码能力
-		if out, err := exec.Command(v, "-decoders").Output(); err == nil {
+		if out, err := cmdx.CommandNoCtx(v, "-decoders").Output(); err == nil {
 			s.ffmpegCaps.HEICDecode = strings.Contains(string(out), "hevc") || strings.Contains(string(out), "heic")
 		}
 		// 探测 CR2 解码能力
-		if out, err := exec.Command(v, "-formats").Output(); err == nil {
+		if out, err := cmdx.CommandNoCtx(v, "-formats").Output(); err == nil {
 			s.ffmpegCaps.CR2Decode = strings.Contains(string(out), "cr2") || strings.Contains(string(out), "raw")
 		}
 		slog.Info("ffmpeg 能力探测完成",
@@ -264,7 +275,7 @@ func (s *Server) probeFFmpegCaps() {
 	s.ffprobeCaps = &ffprobeCaps{}
 	if v, err := exec.LookPath("ffprobe"); err == nil {
 		s.ffprobeCaps.Available = true
-		if out, err := exec.Command(v, "-version").Output(); err == nil {
+		if out, err := cmdx.CommandNoCtx(v, "-version").Output(); err == nil {
 			if lines := strings.SplitN(string(out), "\n", 2); len(lines) > 0 {
 				s.ffprobeCaps.Version = strings.TrimSpace(lines[0])
 			}

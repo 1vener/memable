@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_media_kind_created ON media(kind, created_at);
 -- ============================================================
 CREATE TABLE IF NOT EXISTS background_tasks (
     id                  TEXT    PRIMARY KEY,                             -- UUID
-    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','report_duplicate','report_directory','promote','directory_delete','scan_sha1')),
+    kind                TEXT    NOT NULL CHECK (kind IN ('scan','repair','temporary_scan','report_image','report_video','report_duplicate','report_directory','promote','directory_delete','scan_sha1','netdrive_sha1')),
     status              TEXT    NOT NULL DEFAULT 'queued'
                         CHECK (status IN ('queued','running','completed','failed','cancelled')),
     title               TEXT    NOT NULL,                               -- 任务显示名称
@@ -129,7 +129,16 @@ CREATE TABLE IF NOT EXISTS file_stats (
 CREATE INDEX IF NOT EXISTS idx_file_stats_created ON file_stats(created_at DESC);
 
 -- ============================================================
--- 6. 重复报告（三张独立表，随收藏库变更同步刷新）
+-- 6. 杂项参数表（115 Cookie 等键值对，便于后续扩展）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT    PRIMARY KEY,
+    value      TEXT    NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ============================================================
+-- 7. 重复报告（三张独立表，随收藏库变更同步刷新）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS duplicate_reports (
     id                      INTEGER PRIMARY KEY AUTOINCREMENT,

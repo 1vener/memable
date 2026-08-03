@@ -149,6 +149,35 @@ func TestOpenCreatesParentDirectory(t *testing.T) {
 	}
 }
 
+func TestMigrateV8AddsSettingsAndNetdriveKind(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := Open(cfg)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer dbh.Close()
+
+	if err := Migrate(dbh); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	// settings 表存在且可读写
+	if _, err := dbh.Exec(
+		`INSERT INTO settings (key, value) VALUES ('k1', 'v1')`,
+	); err != nil {
+		t.Fatalf("写入 settings 失败: %v", err)
+	}
+	var v string
+	if err := dbh.QueryRow(`SELECT value FROM settings WHERE key='k1'`).Scan(&v); err != nil || v != "v1" {
+		t.Fatalf("读取 settings 失败: %v %q", err, v)
+	}
+	// netdrive_sha1 任务类型被 CHECK 接受
+	if _, err := dbh.Exec(
+		`INSERT INTO background_tasks (id, kind, title) VALUES ('t-net', 'netdrive_sha1', '115 补齐 SHA1')`,
+	); err != nil {
+		t.Fatalf("netdrive_sha1 任务类型被 CHECK 约束拒绝: %v", err)
+	}
+}
+
 func TestOpenAppliesWritePragmas(t *testing.T) {
 	// WAL 只对文件数据库生效，内存库恒为 memory
 	cfg := &config.Config{Database: config.DatabaseConfig{Path: filepath.Join(t.TempDir(), "pragmas.db")}}

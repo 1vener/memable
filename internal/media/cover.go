@@ -10,9 +10,10 @@ import (
 	_ "image/png"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
+
+	"memable/internal/cmdx"
 )
 
 // CoverResult 封面提取结果。
@@ -125,7 +126,7 @@ func ffmpegExtractFrame(ctx context.Context, videoPath string, timeMs int64, out
 	// 第一次尝试：快速定位
 	fastCtx, fastCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer fastCancel()
-	cmd := exec.CommandContext(fastCtx, "ffmpeg",
+	cmd := cmdx.Command(fastCtx, "ffmpeg",
 		"-y",
 		"-ss", ts,
 		"-i", videoPath,
@@ -140,7 +141,7 @@ func ffmpegExtractFrame(ctx context.Context, videoPath string, timeMs int64, out
 	// 第二次尝试：准确定位（-ss 在 -i 后）
 	preciseCtx, preciseCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer preciseCancel()
-	cmd2 := exec.CommandContext(preciseCtx, "ffmpeg",
+	cmd2 := cmdx.Command(preciseCtx, "ffmpeg",
 		"-y",
 		"-i", videoPath,
 		"-ss", ts,

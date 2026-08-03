@@ -20,9 +20,19 @@ type Config struct {
 	Video      VideoConfig      `mapstructure:"video"`
 	Similarity SimilarityConfig `mapstructure:"similarity"`
 	Worker     WorkerConfig     `mapstructure:"worker"`
+	Netdrive   NetdriveConfig   `mapstructure:"netdrive"`
 	Log        LogConfig        `mapstructure:"log"`
 	Delete     DeleteConfig     `mapstructure:"delete"`
 	UI         UIConfig         `mapstructure:"ui"`
+}
+
+// NetdriveConfig 网盘任务配置（风控节奏等技术参数）。
+type NetdriveConfig struct {
+	// RequestIntervalMs 115 Web API 请求间隔（毫秒）。风控保护：串行请求 +
+	// 间隔 + 随机 jitter；调小加快遍历但更易触发风控，调大更安全。
+	RequestIntervalMs int `mapstructure:"request_interval_ms"`
+	// MatchSize 匹配本地文件时是否校验文件大小一致（防同名异内容误配）。
+	MatchSize *bool `mapstructure:"match_size"`
 }
 
 // ServerConfig HTTP 服务配置。
@@ -70,6 +80,11 @@ func (c *Config) ImageThumbDir() string {
 // VideoThumbDir 返回视频封面根目录（规则同上，video 子目录）。
 func (c *Config) VideoThumbDir() string {
 	return thumbRootDir(c.Thumbnail.VideoDir, "video")
+}
+
+// DataRootDir 返回系统数据目录（导出版，供 logx 等包使用）。
+func DataRootDir() string {
+	return dataRootDir()
 }
 
 // dataRootDir 返回系统数据目录（数据库、缩略图等持久数据的推荐位置）：
@@ -145,6 +160,8 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("similarity.video_phash_distance", 12)
 	v.SetDefault("similarity.video_duration_diff_ms", 3000)
 	v.SetDefault("worker.pool_size", 8)
+	v.SetDefault("netdrive.request_interval_ms", 300)
+	v.SetDefault("netdrive.match_size", true)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
 	v.SetDefault("delete.permanent", false)

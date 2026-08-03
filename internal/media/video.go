@@ -7,10 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"memable/internal/cmdx"
 )
 
 // VideoMeta 视频基础 metadata。
@@ -50,7 +51,7 @@ func ProbeVideo(ctx context.Context, path string) (*VideoMeta, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ffprobe",
+	cmd := cmdx.Command(ctx, "ffprobe",
 		"-v", "error",
 		"-print_format", "json",
 		"-show_format",
