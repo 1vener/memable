@@ -288,7 +288,7 @@ class _HomeScreenState extends State<HomeScreen> {
       curve: Curves.easeOutCubic,
       width: collapsed ? _sidebarCollapsedWidth : _sidebarExpandedWidth,
       decoration: BoxDecoration(
-        color: isDark ? const Color(0xFF1E293B) : Colors.white,
+        color: cs.surfaceContainerLow,
         border: Border(
           right: BorderSide(color: cs.outlineVariant, width: 0.5),
         ),

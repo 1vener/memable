@@ -235,24 +235,24 @@ ThemeData _lightTheme(Color seed) {
   return ThemeData(
     colorScheme: cs,
     useMaterial3: true,
-    scaffoldBackgroundColor: const Color(0xFFF8FAFC),
-    appBarTheme: const AppBarTheme(
-      backgroundColor: Colors.white,
-      foregroundColor: Color(0xFF0F172A),
+    scaffoldBackgroundColor: cs.surface,
+    appBarTheme: AppBarTheme(
+      backgroundColor: cs.surface,
+      foregroundColor: cs.onSurface,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
     ),
     cardTheme: CardTheme(
-      color: Colors.white,
+      color: cs.surfaceContainerLow,
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Color(0xFFE2E8F0)),
+        side: BorderSide(color: cs.outlineVariant),
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: const Color(0xFFF1F5F9),
+      fillColor: cs.surfaceContainerHighest,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
         borderSide: BorderSide.none,
@@ -266,17 +266,17 @@ ThemeData _lightTheme(Color seed) {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     ),
-    dividerTheme: const DividerThemeData(
-      color: Color(0xFFE2E8F0),
+    dividerTheme: DividerThemeData(
+      color: cs.outlineVariant,
       thickness: 1,
       space: 1,
     ),
     tooltipTheme: TooltipThemeData(
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
+        color: cs.inverseSurface,
         borderRadius: BorderRadius.circular(6),
       ),
-      textStyle: const TextStyle(color: Colors.white, fontSize: 12),
+      textStyle: TextStyle(color: cs.onInverseSurface, fontSize: 12),
     ),
   );
 }
@@ -287,24 +287,24 @@ ThemeData _darkTheme(Color seed) {
   return ThemeData(
     colorScheme: cs,
     useMaterial3: true,
-    scaffoldBackgroundColor: const Color(0xFF0F172A),
-    appBarTheme: const AppBarTheme(
-      backgroundColor: Color(0xFF1E293B),
-      foregroundColor: Color(0xFFF1F5F9),
+    scaffoldBackgroundColor: cs.surface,
+    appBarTheme: AppBarTheme(
+      backgroundColor: cs.surface,
+      foregroundColor: cs.onSurface,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
     ),
     cardTheme: CardTheme(
-      color: const Color(0xFF1E293B),
+      color: cs.surfaceContainerLow,
       elevation: 0,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        side: const BorderSide(color: Color(0xFF334155)),
+        side: BorderSide(color: cs.outlineVariant),
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: const Color(0xFF1E293B),
+      fillColor: cs.surfaceContainerHighest,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
         borderSide: BorderSide.none,
@@ -318,17 +318,17 @@ ThemeData _darkTheme(Color seed) {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     ),
-    dividerTheme: const DividerThemeData(
-      color: Color(0xFF334155),
+    dividerTheme: DividerThemeData(
+      color: cs.outlineVariant,
       thickness: 1,
       space: 1,
     ),
     tooltipTheme: TooltipThemeData(
       decoration: BoxDecoration(
-        color: const Color(0xFF94A3B8),
+        color: cs.inverseSurface,
         borderRadius: BorderRadius.circular(6),
       ),
-      textStyle: const TextStyle(color: Color(0xFF0F172A), fontSize: 12),
+      textStyle: TextStyle(color: cs.onInverseSurface, fontSize: 12),
     ),
   );
 }
