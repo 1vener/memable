@@ -60,7 +60,7 @@ type Client struct {
 // NewClient 创建客户端。interval 为请求间隔（ms），0 表示不等待（测试用）。
 func NewClient(cookie string, intervalMs int) *Client {
 	if intervalMs <= 0 {
-		intervalMs = 300
+		intervalMs = 1000
 	}
 	return &Client{
 		baseURL:       apiBase,
@@ -93,12 +93,12 @@ type ErrRiskControl struct{ msg string }
 
 func (e *ErrRiskControl) Error() string { return e.msg }
 
-// throttle 请求间隔控制：串行 + 固定间隔 + 随机 jitter（±50ms）。
+// throttle 请求间隔控制：串行 + 固定间隔 + 随机 jitter（基准 +500ms/-200ms）。
 func (c *Client) throttle() {
 	wait := c.interval
 	if wait > 0 {
-		wait += time.Duration(c.rand.Int63n(100)) * time.Millisecond // jitter
-		wait -= 50 * time.Millisecond
+		wait += time.Duration(c.rand.Int63n(700)) * time.Millisecond // jitter 0~699ms
+		wait -= 200 * time.Millisecond
 		if wait < 0 {
 			wait = 0
 		}

@@ -160,7 +160,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("similarity.video_phash_distance", 12)
 	v.SetDefault("similarity.video_duration_diff_ms", 3000)
 	v.SetDefault("worker.pool_size", 8)
-	v.SetDefault("netdrive.request_interval_ms", 300)
+	v.SetDefault("netdrive.request_interval_ms", 1000)
 	v.SetDefault("netdrive.match_size", true)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")

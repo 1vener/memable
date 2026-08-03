@@ -52,7 +52,7 @@ type RunnerConfig struct {
 	ImageThumbBase            string
 	VideoThumbBase            string
 	PermanentDelete           bool   // true=永久删除源文件；false=移入系统回收站
-	NetdriveRequestIntervalMs int    // 115 网盘请求间隔（毫秒，风控）；0=默认 300
+	NetdriveRequestIntervalMs int    // 115 网盘请求间隔（毫秒，风控）；0=默认 1000
 	NetdriveBaseURL           string // 115 API 基地址覆盖（测试用；空=生产地址）
 }
 

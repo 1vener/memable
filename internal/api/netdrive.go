@@ -170,10 +170,10 @@ func (s *Server) handleNetdrive115SyncSha1(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// netdriveIntervalMs 返回 115 请求间隔（配置优先，默认 300）。
+// netdriveIntervalMs 返回 115 请求间隔（配置优先，默认 1000）。
 func (s *Server) netdriveIntervalMs() int {
 	if s.cfg != nil && s.cfg.Netdrive.RequestIntervalMs > 0 {
 		return s.cfg.Netdrive.RequestIntervalMs
 	}
-	return 300
+	return 1000
 }
