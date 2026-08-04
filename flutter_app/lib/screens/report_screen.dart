@@ -864,11 +864,13 @@ class _ReportScreenState extends State<ReportScreen> {
       if (g == null || g.items.length < 2) {
         continue; // 删除后已无重复的文件不再展示
       }
-      // 目录视图只显示当前目录内仍构成重复的组。跨目录组在当前目录只剩
-      // 一个成员时，不应显示成“1 个文件”的重复卡片。
+      // same_dir 报告只显示当前目录内仍构成重复的组；all 报告允许跨目录组
+      // 在当前目录只剩一个成员时展示该成员，目录树已明确表示它属于重复组。
       clusters.putIfAbsent(g.id, () => []).add(item);
     }
-    clusters.removeWhere((_, members) => members.length < 2);
+    if (_summary?.isSameDir == true) {
+      clusters.removeWhere((_, members) => members.length < 2);
+    }
     if (clusters.isEmpty) {
       return Center(
         child: Text('此目录没有直属重复文件', style: TextStyle(color: cs.outline)),

@@ -180,6 +180,19 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 	if repAll.TotalGroups != 2 || repAll.TotalFiles != 5 {
 		t.Fatalf("全部模式应 2 组 5 文件，实际 %d 组 %d 文件", repAll.TotalGroups, repAll.TotalFiles)
 	}
+	allTree, err := svc.Tree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 全部模式下，a/b/d 跨目录重复：根目录应计 2 个，sub 应计 1 个；
+	// sub/deep 的同目录组仍计 2 个。
+	if len(allTree) != 2 || allTree[0].Path != "" || allTree[0].FileCount != 2 {
+		t.Fatalf("全部模式根目录树异常: %+v", allTree)
+	}
+	if allTree[1].Path != "sub" || allTree[1].FileCount != 1 ||
+		len(allTree[1].Children) != 1 || allTree[1].Children[0].FileCount != 2 {
+		t.Fatalf("全部模式跨目录重复树异常: %+v", allTree)
+	}
 
 	// 仅同一目录：根目录 a/b 成组；sub/deep 下 e/f 成组；sub 的 d 不成组
 	repSame, err := svc.Generate(Options{

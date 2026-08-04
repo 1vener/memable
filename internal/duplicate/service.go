@@ -521,14 +521,14 @@ func (s *Service) Tree() ([]*TreeItem, error) {
 	}
 	dirs := map[string]int{}
 	for _, v := range views {
-		// 先按组内目录分桶。某个全局重复组在当前目录只有 1 个成员时，
-		// 它不构成“此目录内重复”，不能显示图片或“1 个文件”徽标。
+		// 先按组内目录分桶。same_dir 报告要求目录内至少两个成员；
+		// all 报告则只要目录包含该全局重复组的成员，就必须显示该目录。
 		membersByDir := map[string]int{}
 		for _, m := range v.Items {
 			membersByDir[relDir(m.RelativePath)]++
 		}
 		for dir, count := range membersByDir {
-			if count >= 2 {
+			if rep.Scope == "all" || count >= 2 {
 				dirs[dir] += count
 			}
 		}

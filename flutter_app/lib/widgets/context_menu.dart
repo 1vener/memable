@@ -40,19 +40,38 @@ class _MenuLayer {
   _MenuLayer(this.position, this.items);
 }
 
+/// 当前已打开的菜单 OverlayEntry；再次打开新菜单时自动关闭旧菜单。
+OverlayEntry? _currentMenuEntry;
+
 /// 显示右键上下文菜单。
 /// 整棵菜单（含各级子菜单）共用一个 OverlayEntry，点击外围 barrier 一次全部关闭。
+/// 多次调用时自动移除上一次未关闭的菜单。
 void showContextMenu({
   required BuildContext context,
   required Offset position,
   required List<ContextMenuItem> items,
 }) {
+  // 先关闭上一次还残留在 overlay 中的旧菜单
+  if (_currentMenuEntry != null && _currentMenuEntry!.mounted) {
+    _currentMenuEntry!.remove();
+  }
+  _currentMenuEntry = null;
   final overlay = Overlay.of(context);
   late final OverlayEntry entry;
   entry = OverlayEntry(
     builder:
-        (_) => _MenuOverlay(position: position, items: items, entry: entry),
+        (_) => _MenuOverlay(
+          position: position,
+          items: items,
+          entry: entry,
+          onDispose: () {
+            if (identical(_currentMenuEntry, entry)) {
+              _currentMenuEntry = null;
+            }
+          },
+        ),
   );
+  _currentMenuEntry = entry;
   overlay.insert(entry);
 }
 
@@ -61,11 +80,13 @@ class _MenuOverlay extends StatefulWidget {
   final Offset position;
   final List<ContextMenuItem> items;
   final OverlayEntry entry;
+  final VoidCallback? onDispose;
 
   const _MenuOverlay({
     required this.position,
     required this.items,
     required this.entry,
+    this.onDispose,
   });
 
   @override
@@ -78,6 +99,7 @@ class _MenuOverlayState extends State<_MenuOverlay> {
 
   /// 关闭全部菜单并移除 OverlayEntry。
   void _closeAll() {
+    widget.onDispose?.call();
     if (widget.entry.mounted) {
       widget.entry.remove();
     }
