@@ -180,7 +180,7 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 	if repAll.TotalGroups != 2 || repAll.TotalFiles != 5 {
 		t.Fatalf("全部模式应 2 组 5 文件，实际 %d 组 %d 文件", repAll.TotalGroups, repAll.TotalFiles)
 	}
-	allTree, err := svc.Tree()
+	allTree, err := svc.Tree("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,6 +192,23 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 	if allTree[1].Path != "sub" || allTree[1].FileCount != 1 ||
 		len(allTree[1].Children) != 1 || allTree[1].Children[0].FileCount != 2 {
 		t.Fatalf("全部模式跨目录重复树异常: %+v", allTree)
+	}
+
+	// 目录树 kind 过滤回归：全库只有图片，image 过滤结果与全量一致，video 过滤应为空，
+	// 否则前端按类型过滤后点击其它类型独占的目录节点会无数据。
+	imageTree, err := svc.Tree("image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imageTree) != 2 || imageTree[0].Path != "" || imageTree[0].FileCount != 2 {
+		t.Fatalf("image 过滤目录树异常: %+v", imageTree)
+	}
+	videoTree, err := svc.Tree("video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(videoTree) != 0 {
+		t.Fatalf("video 过滤应返回空树，实际 %+v", videoTree)
 	}
 
 	// 仅同一目录：根目录 a/b 成组；sub/deep 下 e/f 成组；sub 的 d 不成组
@@ -215,7 +232,7 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 	if page.Total != 2 || len(page.Items) != 2 {
 		t.Fatalf("分组分页数据异常: %+v", page)
 	}
-	tree, err := svc.Tree()
+	tree, err := svc.Tree("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +278,7 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 	if remainingPage.Total != 0 || len(remainingPage.Items) != 0 {
 		t.Fatalf("清除后不应返回单成员重复组: %+v", remainingPage)
 	}
-	remainingTree, err := svc.Tree()
+	remainingTree, err := svc.Tree("")
 	if err != nil {
 		t.Fatal(err)
 	}

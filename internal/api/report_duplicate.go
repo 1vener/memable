@@ -190,13 +190,13 @@ func (s *Server) handleListDuplicateGroups(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, 200, pageData)
 }
 
-// handleDuplicateReportTree 返回报告中包含重复文件的目录树。
+// handleDuplicateReportTree 返回报告中包含重复文件的目录树（kind 过滤，与分组口径一致）。
 func (s *Server) handleDuplicateReportTree(w http.ResponseWriter, r *http.Request) {
 	if s.dup == nil {
 		writeError(w, 500, "重复报告服务未初始化")
 		return
 	}
-	tree, err := s.dup.Tree()
+	tree, err := s.dup.Tree(r.URL.Query().Get("kind"))
 	if err != nil {
 		writeError(w, 500, "查询重复报告目录树失败: "+err.Error())
 		return

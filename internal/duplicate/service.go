@@ -507,7 +507,9 @@ type TreeItem struct {
 }
 
 // Tree 返回最新报告中包含重复文件的目录树。
-func (s *Service) Tree() ([]*TreeItem, error) {
+// kind 为 all/image/video：指定时只统计该类型媒体的重复成员，与 Groups 的口径一致，
+// 否则目录树会包含另一类型媒体独占的目录（前端按类型过滤后点击无数据）。
+func (s *Service) Tree(kind string) ([]*TreeItem, error) {
 	rep, err := s.Dup.GetLatestReport()
 	if err != nil {
 		return nil, err
@@ -521,6 +523,9 @@ func (s *Service) Tree() ([]*TreeItem, error) {
 	}
 	dirs := map[string]int{}
 	for _, v := range views {
+		if kind != "" && kind != "all" && len(v.Items) > 0 && v.Items[0].Kind != kind {
+			continue
+		}
 		// 先按组内目录分桶。same_dir 报告要求目录内至少两个成员；
 		// all 报告则只要目录包含该全局重复组的成员，就必须显示该目录。
 		membersByDir := map[string]int{}

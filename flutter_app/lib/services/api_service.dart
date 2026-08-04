@@ -471,11 +471,12 @@ class ApiService {
     );
   }
 
-  /// 重复报告目录树。
-  Future<List<DuplicateTreeNode>> getReportTree() async {
-    final res = await http.get(
-      Uri.parse('$baseUrl/api/reports/duplicate/tree'),
-    );
+  /// 重复报告目录树（kind 过滤：all/image/video，与分组口径一致）。
+  Future<List<DuplicateTreeNode>> getReportTree({String kind = 'all'}) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/reports/duplicate/tree',
+    ).replace(queryParameters: {'kind': kind});
+    final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('读取报告目录树失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
     return list

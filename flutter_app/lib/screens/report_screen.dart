@@ -77,7 +77,9 @@ class _ReportScreenState extends State<ReportScreen> {
       loadError = '摘要: $e';
     }
     try {
-      tree = await widget.api.getReportTree();
+      // 目录树按当前媒体类型过滤，与 _allGroups 口径一致（否则树里会出现
+      // 另一类型独占的目录，点击后无数据）。
+      tree = await widget.api.getReportTree(kind: _kind);
       treeOk = true;
     } catch (e) {
       loadError = '目录树: $e';
@@ -876,6 +878,9 @@ class _ReportScreenState extends State<ReportScreen> {
         child: Text('此目录没有直属重复文件', style: TextStyle(color: cs.outline)),
       );
     }
+    // 全部数据模式：卡片展示整组（跨目录）成员——数量徽标显示整组文件总数，
+    // 叠卡预览整组成员（本目录成员优先，跨目录成员补充，最多 3 张）。
+    final selected = _selectedDirForCluster();
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Wrap(
@@ -884,7 +889,7 @@ class _ReportScreenState extends State<ReportScreen> {
         children: [
           for (final entry in clusters.entries)
             StackedCluster(
-              items: entry.value,
+              items: _clusterItemsFor(entry.value, selected),
               api: widget.api,
               width: 300,
               onTap: () {
@@ -902,6 +907,28 @@ class _ReportScreenState extends State<ReportScreen> {
         ],
       ),
     );
+  }
+
+  /// 目录树叠卡的展示成员：同目录模式直接用本目录成员；
+  /// 全部数据模式用整组成员（本目录成员排前，其余目录成员排后），
+  /// 使数量徽标与叠卡反映整组重复文件总数。
+  List<DuplicateItem> _clusterItemsFor(
+    List<DuplicateItem> localMembers,
+    String? selected,
+  ) {
+    if (_summary?.isSameDir == true || selected == null) {
+      return localMembers;
+    }
+    final g = _groupOf(localMembers.first);
+    if (g == null) {
+      return localMembers;
+    }
+    final local = <DuplicateItem>[];
+    final rest = <DuplicateItem>[];
+    for (final m in g.items) {
+      (relDir(m.relativePath) == selected ? local : rest).add(m);
+    }
+    return [...local, ...rest];
   }
 
   /// 叠卡/缩略图的右键菜单（按模式区分）。
