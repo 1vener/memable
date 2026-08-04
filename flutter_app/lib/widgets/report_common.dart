@@ -72,6 +72,7 @@ String meta(DuplicateItem item) {
 // ===== 保留条件对话框 =====
 
 /// 六种保留条件选择对话框，返回 keep 值；取消返回 null。
+/// 说明文案：本目录内互相重复的文件每组保留 1 个；仅与其它目录重复的文件直接删除本目录这份。
 Future<String?> showKeepDialog(
   BuildContext context, {
   required String title,
@@ -91,7 +92,8 @@ Future<String?> showKeepDialog(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        '共 $count 个文件，每组按条件保留 1 个',
+                        '共 $count 个文件；本目录内重复的每组保留 1 个，'
+                        '仅与其它目录重复的文件将直接删除',
                         style: const TextStyle(fontSize: 12),
                       ),
                       const SizedBox(height: 8),

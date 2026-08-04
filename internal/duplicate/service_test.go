@@ -299,6 +299,149 @@ func TestDuplicateServiceEndToEnd(t *testing.T) {
 	}
 }
 
+// TestClearDirectoryScope 回归：目录树"删除此目录下所有重复数据"只删除本目录数据——
+// 组内本目录成员 >=2 按保留条件保留 1 个；组内本目录成员 ==1（仅跨目录重复）直接删除；
+// 其它目录成员一律不动。
+func TestClearDirectoryScope(t *testing.T) {
+	root := t.TempDir()
+	libDir := filepath.Join(root, "lib")
+	thumbDir := filepath.Join(root, "thumbs")
+	for _, d := range []string{"sub/deep", "other"} {
+		if err := os.MkdirAll(filepath.Join(libDir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 组 A：a/b 在根目录 + d 在 sub（跨目录）；组 B：e/f 在 sub/deep；组 C：g/h 在 other
+	writePNG(t, filepath.Join(libDir, "a.png"), color.RGBA{R: 220, G: 40, B: 40, A: 255}, 64)
+	writePNG(t, filepath.Join(libDir, "b.png"), color.RGBA{R: 220, G: 40, B: 40, A: 255}, 64)
+	writePNG(t, filepath.Join(libDir, "sub", "d.png"), color.RGBA{R: 220, G: 40, B: 40, A: 255}, 64)
+	writePNG(t, filepath.Join(libDir, "sub", "deep", "e.png"), color.RGBA{R: 20, G: 180, B: 20, A: 255}, 32)
+	writePNG(t, filepath.Join(libDir, "sub", "deep", "f.png"), color.RGBA{R: 20, G: 180, B: 20, A: 255}, 32)
+	writePNG(t, filepath.Join(libDir, "other", "g.png"), color.RGBA{R: 100, G: 100, B: 200, A: 255}, 32)
+	writePNG(t, filepath.Join(libDir, "other", "h.png"), color.RGBA{R: 100, G: 100, B: 200, A: 255}, 32)
+
+	cfg := &config.Config{
+		Database:  config.DatabaseConfig{Path: ":memory:"},
+		Thumbnail: config.ThumbnailConfig{ImageDir: thumbDir, VideoDir: thumbDir, MaxEdge: 300},
+		Video:     config.VideoConfig{SpriteFrames: 25},
+		Similarity: config.SimilarityConfig{
+			ImagePHashDistance: 10, VideoPHashDistance: 12, VideoDurationDiffMs: 3000,
+		},
+		Worker: config.WorkerConfig{PoolSize: 2},
+	}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	libRepo := repo.NewLibraryRepo(dbh)
+	sessionRepo := repo.NewSessionRepo(dbh)
+	mediaRepo := repo.NewMediaRepo(dbh)
+	dupRepo := repo.NewDuplicateRepo(dbh)
+
+	lib := &repo.Library{Name: "测试库", Path: libDir, Kind: "mixed"}
+	if err := libRepo.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	scanSvc := &scan.Service{
+		Sessions: sessionRepo, Media: mediaRepo, Config: cfg,
+		ImageThumbBase: thumbDir, Libraries: libRepo,
+	}
+	noop := func(string, int, int, int, int, int, int64, int64, float64, *int64) {}
+	if _, err := scanSvc.ExecuteScan(context.Background(), *lib, "session-1", false, false, 2, noop); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(dupRepo, repo.NewDirDuplicateRepo(dbh), mediaRepo, libRepo, cfg, thumbDir, thumbDir)
+	if _, err := svc.Generate(Options{
+		Scope: "all", MediaType: "all", ImageThreshold: 90,
+		VideoPhashDistance: 12, VideoDurationDiffMs: 3000,
+		OshashFilter: true, IncludeSHA1: true,
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	exist := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(libDir, filepath.FromSlash(rel)))
+		return err == nil
+	}
+
+	// 场景 1：清除根目录。组 A 在根目录有 a/b（>=2），保留 1 个删 1 个；
+	// sub/d 与 other 组均不受影响。
+	res, err := svc.Clear(ClearRequest{
+		Scope: "directory", Keep: "largest", Directory: "", Permanent: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedFiles != 1 {
+		t.Fatalf("清除根目录应删 1 个文件，实际 %d", res.DeletedFiles)
+	}
+	if exist("sub/d.png") == false || exist("other/g.png") == false ||
+		exist("sub/deep/e.png") == false || exist("sub/deep/f.png") == false {
+		t.Fatalf("清除根目录不应影响其它目录文件")
+	}
+	rootRemain := exist("a.png") || exist("b.png")
+	if !rootRemain {
+		t.Fatalf("根目录应保留 1 个文件（a 或 b）")
+	}
+
+	// 场景 2：清除 sub 目录。组 A 在 sub 只有 d 一个成员（仅跨目录重复），直接删除；
+	// sub/deep 的 e/f 属于 sub/deep 目录，不受影响。
+	res, err = svc.Clear(ClearRequest{
+		Scope: "directory", Keep: "largest", Directory: "sub", Permanent: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedFiles != 1 {
+		t.Fatalf("清除 sub 应删 1 个文件（d），实际 %d", res.DeletedFiles)
+	}
+	if exist("sub/d.png") {
+		t.Fatalf("sub/d.png 应已删除")
+	}
+	if exist("sub/deep/e.png") == false || exist("sub/deep/f.png") == false ||
+		exist("other/g.png") == false || exist("other/h.png") == false {
+		t.Fatalf("清除 sub 不应影响其它目录文件")
+	}
+
+	// 场景 3：清除 sub/deep。组 B 在 sub/deep 有 e/f（>=2），保留 1 个删 1 个。
+	res, err = svc.Clear(ClearRequest{
+		Scope: "directory", Keep: "largest", Directory: "sub/deep", Permanent: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedFiles != 1 {
+		t.Fatalf("清除 sub/deep 应删 1 个文件，实际 %d", res.DeletedFiles)
+	}
+	deepRemain := exist("sub/deep/e.png") || exist("sub/deep/f.png")
+	if !deepRemain {
+		t.Fatalf("sub/deep 应保留 1 个文件（e 或 f）")
+	}
+	if exist("other/g.png") == false || exist("other/h.png") == false {
+		t.Fatalf("清除 sub/deep 不应影响其它目录文件")
+	}
+
+	// 场景 4：清除 other。组 C 在 other 有 g/h（>=2），保留 1 个删 1 个。
+	res, err = svc.Clear(ClearRequest{
+		Scope: "directory", Keep: "largest", Directory: "other", Permanent: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedFiles != 1 {
+		t.Fatalf("清除 other 应删 1 个文件，实际 %d", res.DeletedFiles)
+	}
+	otherRemain := exist("other/g.png") || exist("other/h.png")
+	if !otherRemain {
+		t.Fatalf("other 应保留 1 个文件（g 或 h）")
+	}
+}
+
 // TestBuildDirTreeNested 回归：深层嵌套目录构建目录树时不得无限递归（栈溢出）。
 func TestBuildDirTreeNested(t *testing.T) {
 	roots := buildDirTree(map[string]int{

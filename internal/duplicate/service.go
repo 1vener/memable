@@ -654,23 +654,35 @@ func (s *Service) Clear(req ClearRequest) (*ClearResult, error) {
 		return nil, err
 	}
 	targets := make([]repo.GroupView, 0, len(views))
+	toDelete := make([]int64, 0)
 	switch req.Scope {
 	case "directory":
+		// 删除目标目录下的所有重复数据：按"本目录成员"为单位处理，绝不删除其它目录的成员。
+		// 组内本目录成员 >=2（本目录内互相重复）→ 按保留条件在本目录成员中保留 1 个，删其余；
+		// 组内本目录成员 ==1（仅与其它目录文件重复）→ 直接删除本目录这一份。
 		targetDir := normalizeDirectory(req.Directory)
 		for _, v := range views {
 			if len(v.Items) == 0 {
 				continue
 			}
-			d := relDir(v.Items[0].RelativePath)
-			allSame := true
+			local := make([]repo.MediaView, 0, len(v.Items))
 			for _, m := range v.Items {
-				if relDir(m.RelativePath) != d {
-					allSame = false
-					break
+				if relDir(m.RelativePath) == targetDir {
+					local = append(local, m)
 				}
 			}
-			if allSame && d == targetDir {
-				targets = append(targets, v)
+			if len(local) == 0 {
+				continue
+			}
+			if len(local) >= 2 {
+				keepIdx := keepIndex(local, req.Keep)
+				for i, m := range local {
+					if i != keepIdx {
+						toDelete = append(toDelete, m.ID)
+					}
+				}
+			} else {
+				toDelete = append(toDelete, local[0].ID)
 			}
 		}
 	case "page":
@@ -694,7 +706,6 @@ func (s *Service) Clear(req ClearRequest) (*ClearResult, error) {
 		return nil, fmt.Errorf("无效的清除范围: %s", req.Scope)
 	}
 
-	toDelete := make([]int64, 0)
 	for _, v := range targets {
 		keepIdx := keepIndex(v.Items, req.Keep)
 		for i, m := range v.Items {

@@ -533,7 +533,7 @@ class _ReportScreenState extends State<ReportScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                       : const Icon(Icons.delete_sweep_outlined, size: 16),
-              label: Text(_clearingDir ? '清除中…' : '一键清除此目录重复数据'),
+              label: Text(_clearingDir ? '清除中…' : '删除此目录下所有重复数据'),
             ),
         ],
       ),
@@ -1314,13 +1314,13 @@ class _ReportScreenState extends State<ReportScreen> {
               .toList();
       final keep = await showKeepDialog(
         context,
-        title: '一键清除此目录重复数据',
+        title: '删除此目录下所有重复数据',
         count: dirItems.length,
       );
       if (keep == null || !mounted) return;
       final ok = await confirmClearDialog(
         context,
-        title: '一键清除此目录重复数据',
+        title: '删除此目录下所有重复数据',
         keep: keep,
         count: dirItems.length,
       );
@@ -1362,8 +1362,8 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
-  /// 全部数据模式：对本目录内每个重复组按保留条件保留 1 个，
-  /// 删除本目录内其余成员（不影响其它目录的重复文件）。
+  /// 全部数据模式：删除本目录下所有重复数据——本目录内互相重复的组
+  /// 按保留条件保留 1 个，仅跨目录重复的本目录成员直接删除（其它目录不动）。
   Future<DeleteResult> _clearDirMembers(
     List<DuplicateItem> dirItems,
     String keep,
@@ -1376,6 +1376,8 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   /// 计算本目录内每组按保留条件应删除的 media id 列表（与 _clearDirMembers 一致）。
+  /// 语义：删除本目录下所有重复数据——组内本目录成员 >=2 时按保留条件保留 1 个删其余；
+  /// 组内本目录成员 ==1（仅与其它目录文件重复）时直接删除本目录这一份；绝不删除其它目录文件。
   List<int> _computeDirDeletedIds(List<DuplicateItem> dirItems, String keep) {
     final byGroup = <int, List<DuplicateItem>>{};
     for (final item in dirItems) {
@@ -1385,7 +1387,11 @@ class _ReportScreenState extends State<ReportScreen> {
     }
     final toDelete = <int>[];
     for (final members in byGroup.values) {
-      if (members.length < 2) continue;
+      if (members.isEmpty) continue;
+      if (members.length < 2) {
+        toDelete.add(members.first.id);
+        continue;
+      }
       final keepIdx = pickKeepIndex(members, keep);
       for (var i = 0; i < members.length; i++) {
         if (i != keepIdx) toDelete.add(members[i].id);
