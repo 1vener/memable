@@ -856,30 +856,30 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     }
   }
 
-  // ===== 115 网盘补齐 SHA1 =====
+  // ===== CloudDrive2 网盘补齐 SHA1 =====
 
   Timer? _netdriveTimer;
 
-  /// 从 115 补齐 SHA1：弹窗选择网盘目录（与当前本地目录对齐）→ 提交任务 → 轮询。
+  /// 从 CloudDrive2 补齐 SHA1：弹窗选择网盘目录（与当前本地目录对齐）→ 提交任务 → 轮询。
   Future<void> _showNetdriveDialog(String localDir) async {
     if (mounted) setState(() => _error = null);
-    final remoteCid = await showDialog<String>(
+    final remotePath = await showDialog<String>(
       context: context,
       builder: (_) => _NetdriveDirDialog(api: widget.api),
     );
-    if (remoteCid == null || !mounted) return;
+    if (remotePath == null || !mounted) return;
     try {
-      final resp = await widget.api.syncNetdrive115Sha1(
+      final resp = await widget.api.syncNetdriveCD2Sha1(
         libraryId: widget.library.id,
         localDir: localDir,
-        remoteCid: remoteCid,
+        remotePath: remotePath,
       );
       final taskId = resp['task_id'] as String?;
       final dirLabel = localDir.isEmpty ? '根目录' : localDir;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('115 补齐 SHA1 任务已提交，完成后提示结果'),
+            content: Text('CD2 补齐 SHA1 任务已提交，完成后提示结果'),
             backgroundColor: Color(0xFF2563EB),
           ),
         );
@@ -889,7 +889,7 @@ class _FileTreePanelState extends State<_FileTreePanel> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('提交 115 补齐 SHA1 失败: $e'),
+            content: Text('提交 CD2 补齐 SHA1 失败: $e'),
             backgroundColor: const Color(0xFFEF4444),
           ),
         );
@@ -897,7 +897,7 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     }
   }
 
-  /// 轮询 115 补齐 SHA1 任务，完成后提示结果。
+  /// 轮询 CD2 补齐 SHA1 任务，完成后提示结果。
   void _pollNetdriveTask(String taskId, String dirLabel) {
     _netdriveTimer?.cancel();
     _netdriveTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
@@ -909,19 +909,19 @@ class _FileTreePanelState extends State<_FileTreePanel> {
         if (task.isFailed) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('115 补齐 SHA1 失败（$dirLabel）：${task.errorMessage ?? '未知错误'}'),
+              content: Text('CD2 补齐 SHA1 失败（$dirLabel）：${task.errorMessage ?? '未知错误'}'),
               backgroundColor: const Color(0xFFEF4444),
             ),
           );
           return;
         }
         // 完成：解析结果统计
-        String msg = '115 补齐 SHA1 完成（$dirLabel）';
+        String msg = 'CD2 补齐 SHA1 完成（$dirLabel）';
         final result = task.resultJson;
         if (result != null && result.isNotEmpty) {
           try {
             final data = jsonDecode(result) as Map<String, dynamic>;
-            msg = '115 补齐 SHA1 完成（$dirLabel）：匹配 ${data['matched']} 个'
+            msg = 'CD2 补齐 SHA1 完成（$dirLabel）：匹配 ${data['matched']} 个'
                 '，大小不符 ${data['mismatched']} 个，未找到 ${data['not_found']} 个';
           } catch (_) {}
         }
@@ -1581,7 +1581,7 @@ class _TreeDirTile extends StatelessWidget {
   }
 }
 
-/// 115 网盘目录选择对话框：懒加载目录树，选中与本地目录对齐的网盘目录。
+/// CloudDrive2 网盘目录选择对话框：懒加载目录树，选中与本地目录对齐的网盘目录。
 class _NetdriveDirDialog extends StatefulWidget {
   final ApiService api;
   const _NetdriveDirDialog({required this.api});
@@ -1593,20 +1593,22 @@ class _NetdriveDirDialog extends StatefulWidget {
 class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
   final Map<String, List<NetdriveDirEntry>> _children = {};
   final Set<String> _expanded = {};
-  String _selectedCid = '0';
+  String _selectedPath = '/';
   bool _loading = true;
   String? _error;
+
+  static const _rootPath = '/';
 
   @override
   void initState() {
     super.initState();
-    _load('0');
+    _load(_rootPath);
   }
 
-  Future<void> _load(String cid) async {
+  Future<void> _load(String path) async {
     try {
-      final children = await widget.api.getNetdrive115Tree(cid);
-      if (mounted) setState(() => _children[cid] = children);
+      final children = await widget.api.getNetdriveCD2Tree(path);
+      if (mounted) setState(() => _children[path] = children);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -1614,17 +1616,17 @@ class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
     }
   }
 
-  void _toggle(String cid) {
-    if (_expanded.contains(cid)) {
-      setState(() => _expanded.remove(cid));
+  void _toggle(String path) {
+    if (_expanded.contains(path)) {
+      setState(() => _expanded.remove(path));
       return;
     }
-    if (!_children.containsKey(cid)) _load(cid);
-    setState(() => _expanded.add(cid));
+    if (!_children.containsKey(path)) _load(path);
+    setState(() => _expanded.add(path));
   }
 
-  List<NetdriveDirEntry> _childrenOf(String cid) =>
-      _children[cid] ?? const [];
+  List<NetdriveDirEntry> _childrenOf(String path) =>
+      _children[path] ?? const [];
 
   @override
   Widget build(BuildContext context) {
@@ -1656,8 +1658,8 @@ class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _row(cid: '0', name: '网盘根目录', depth: 0),
-                      ..._buildLevels(_childrenOf('0'), 0),
+                      _row(path: _rootPath, name: '网盘根目录', depth: 0),
+                      ..._buildLevels(_childrenOf(_rootPath), 0),
                     ],
                   ),
                 ),
@@ -1671,7 +1673,7 @@ class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
           child: const Text('取消'),
         ),
         FilledButton(
-          onPressed: _loading ? null : () => Navigator.pop(context, _selectedCid),
+          onPressed: _loading ? null : () => Navigator.pop(context, _selectedPath),
           child: const Text('选择此目录并补齐'),
         ),
       ],
@@ -1681,24 +1683,24 @@ class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
   List<Widget> _buildLevels(List<NetdriveDirEntry> nodes, int depth) {
     final tiles = <Widget>[];
     for (final n in nodes) {
-      final isExpanded = _expanded.contains(n.cid);
-      tiles.add(_row(cid: n.cid, name: n.name, depth: depth, isExpanded: isExpanded, hasChildren: n.hasChildren));
+      final isExpanded = _expanded.contains(n.path);
+      tiles.add(_row(path: n.path, name: n.name, depth: depth, isExpanded: isExpanded, hasChildren: n.hasChildren));
       if (isExpanded) {
-        tiles.addAll(_buildLevels(_childrenOf(n.cid), depth + 1));
+        tiles.addAll(_buildLevels(_childrenOf(n.path), depth + 1));
       }
     }
     return tiles;
   }
 
   Widget _row({
-    required String cid,
+    required String path,
     required String name,
     int depth = 0,
     bool isExpanded = false,
     bool hasChildren = false,
   }) {
     final cs = Theme.of(context).colorScheme;
-    final selected = _selectedCid == cid;
+    final selected = _selectedPath == path;
     return Padding(
       padding: EdgeInsets.only(left: 8.0 + depth * 16),
       child: Material(
@@ -1706,7 +1708,7 @@ class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
         child: InkWell(
           borderRadius: BorderRadius.circular(6),
           onTap: () => setState(() {
-            _selectedCid = cid;
+            _selectedPath = path;
           }),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
@@ -1714,7 +1716,7 @@ class _NetdriveDirDialogState extends State<_NetdriveDirDialog> {
               children: [
                 if (hasChildren || isExpanded)
                   GestureDetector(
-                    onTap: () => _toggle(cid),
+                    onTap: () => _toggle(path),
                     child: Padding(
                       padding: const EdgeInsets.only(right: 2),
                       child: Icon(

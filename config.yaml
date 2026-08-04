@@ -32,7 +32,7 @@ thumbnail:
 video:
   sprite_frames: 25             # 5%-95% 区间临时截图数量，计算后清理
 
-similarity:
+similarity: 
   image_phash_distance: 6      # 图片 pHash 最大 Hamming 距离
   image_dhash_distance: 10      # 图片 dHash 最大 Hamming 距离
   image_ahash_distance: 10      # 图片 aHash 最大 Hamming 距离
@@ -43,8 +43,9 @@ worker:
   pool_size: 1             # 并发数：SSD/NVMe 建议 16-32，机械硬盘 4-8（并发过高反而寻道抖动）
 
 netdrive:
-  request_interval_ms: 1000  # 115 Web API 请求基准间隔（毫秒，风控保护）；实际间隔 = 基准 + jitter(+500/-200ms)；调小加快遍历但更易触发风控
-  match_size: true          # 匹配本地文件时校验文件大小一致（防同名异内容误配）
+  request_interval_ms: 1000   # CloudDrive2 请求基准间隔（毫秒，限速保护）；实际间隔 = 基准 + jitter(+500/-200ms)；调小加快遍历但更易触发风控
+  cd2_address: 127.0.0.1:19798  # CloudDrive2 gRPC 服务地址（设置页可覆盖）
+  match_size: true            # 匹配本地文件时校验文件大小一致（防同名异内容误配）
 
 delete:
   permanent: true          # true=永久删除源文件；false=默认移入系统回收站

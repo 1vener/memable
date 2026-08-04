@@ -21,26 +21,26 @@ func TestSettingsRepoCRUD(t *testing.T) {
 	r := NewSettingsRepo(dbh)
 
 	// 不存在时返回空
-	v, err := r.Get("netdrive.115.cookie")
+	v, err := r.Get("netdrive.cd2.token")
 	if err != nil || v != "" {
 		t.Fatalf("空参数应返回空串: %q %v", v, err)
 	}
 
 	// 写入/读取
-	if err := r.Set("netdrive.115.cookie", "UID=1;CID=2"); err != nil {
+	if err := r.Set("netdrive.cd2.token", "tok-abc"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	v, err = r.Get("netdrive.115.cookie")
-	if err != nil || v != "UID=1;CID=2" {
+	v, err = r.Get("netdrive.cd2.token")
+	if err != nil || v != "tok-abc" {
 		t.Fatalf("读取不符: %q %v", v, err)
 	}
 
 	// 覆盖写入
-	if err := r.Set("netdrive.115.cookie", "SEID=9"); err != nil {
+	if err := r.Set("netdrive.cd2.token", "tok-def"); err != nil {
 		t.Fatalf("Set 覆盖: %v", err)
 	}
-	v, _ = r.Get("netdrive.115.cookie")
-	if v != "SEID=9" {
+	v, _ = r.Get("netdrive.cd2.token")
+	if v != "tok-def" {
 		t.Fatalf("覆盖后不符: %q", v)
 	}
 
@@ -54,10 +54,10 @@ func TestSettingsRepoCRUD(t *testing.T) {
 	}
 
 	// 删除
-	if err := r.Delete("netdrive.115.cookie"); err != nil {
+	if err := r.Delete("netdrive.cd2.token"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	v, _ = r.Get("netdrive.115.cookie")
+	v, _ = r.Get("netdrive.cd2.token")
 	if v != "" {
 		t.Fatalf("删除后应为空: %q", v)
 	}

@@ -17,23 +17,23 @@ import (
 
 	"github.com/google/uuid"
 
+	"memable/internal/cd2"
 	"memable/internal/duplicate"
 	"memable/internal/media"
-	"memable/internal/pan115"
 	"memable/internal/recycle"
 	"memable/internal/repo"
 	"memable/internal/worker"
 )
 
 // Runner 任务调度器。维护三条独立队列：
-// 主队列（扫描等）、报告队列（生成报告类任务）、网盘队列（115 等慢速外部 API 任务），
+// 主队列（扫描等）、报告队列（生成报告类任务）、网盘队列（CloudDrive2 等慢速外部 API 任务），
 // 各自串行消费、互不阻塞。
 type Runner struct {
 	Tasks        *repo.TaskRepo
 	Sessions     *repo.SessionRepo
 	Media        *repo.MediaRepo
 	Libraries    *repo.LibraryRepo
-	Settings     *repo.SettingsRepo // 杂项参数（115 Cookie 等）
+	Settings     *repo.SettingsRepo // 杂项参数（CD2 地址/Token 等）
 	ScanSvc      ScanExecutor
 	Dup          *duplicate.Service
 	Config       RunnerConfig
@@ -52,8 +52,8 @@ type RunnerConfig struct {
 	ImageThumbBase            string
 	VideoThumbBase            string
 	PermanentDelete           bool   // true=永久删除源文件；false=移入系统回收站
-	NetdriveRequestIntervalMs int    // 115 网盘请求间隔（毫秒，风控）；0=默认 1000
-	NetdriveBaseURL           string // 115 API 基地址覆盖（测试用；空=生产地址）
+	NetdriveRequestIntervalMs int    // CloudDrive2 请求基准间隔（毫秒，风控）；0=不限速（测试用）
+	NetdriveAddress           string // CloudDrive2 默认地址（settings 未配置时兜底）
 }
 
 // ScanExecutor 扫描执行器接口。
@@ -67,6 +67,8 @@ func NewRunner(tasks *repo.TaskRepo, sessions *repo.SessionRepo, media *repo.Med
 	if cfg.PoolSize <= 0 {
 		cfg.PoolSize = 4
 	}
+	// 全局限速：所有 CD2 调用（含 HTTP 接口的目录树/验证）共享同一节奏。
+	cd2.SetRateLimit(cfg.NetdriveRequestIntervalMs)
 	return &Runner{
 		Tasks:        tasks,
 		Sessions:     sessions,
@@ -574,8 +576,8 @@ func (r *Runner) execScanSha1(ctx context.Context, task *repo.BackgroundTask, pr
 	return nil
 }
 
-// execNetdriveSha1 执行 115 网盘补齐 SHA1 任务：
-// 从网盘递归拉取所选目录的文件 sha1 映射（含风控节奏），与本地目录下
+// execNetdriveSha1 执行 CloudDrive2 补齐 SHA1 任务：
+// 从 CD2 网盘递归拉取所选目录的文件 sha1 映射（含全局限速），与本地目录下
 // sha1 为空的媒体按相对路径（+ 大小校验）匹配，命中直接写库；
 // 未命中不自动本地计算（需要本地算仍走原 scan_sha1 任务）。
 func (r *Runner) execNetdriveSha1(ctx context.Context, task *repo.BackgroundTask, progress repo.ProgressFunc) error {
@@ -588,43 +590,48 @@ func (r *Runner) execNetdriveSha1(ctx context.Context, task *repo.BackgroundTask
 			return fmt.Errorf("解析任务参数: %w", err)
 		}
 	}
-	if payload.RemoteCID == "" {
-		return fmt.Errorf("任务缺少 remote_cid")
+	if payload.RemotePath == "" {
+		return fmt.Errorf("任务缺少 remote_path")
 	}
 	lib, err := r.Libraries.GetByID(payload.LibraryID)
 	if err != nil || lib == nil {
 		return fmt.Errorf("收藏库不存在: %d", payload.LibraryID)
 	}
 
-	// 读取 115 Cookie（设置页填写，存 settings 表）
-	cookie, err := r.Settings.Get(repo.SettingsKeyNetdriveCookie)
+	// 读取 CD2 地址与 API Token（设置页填写，存 settings 表）
+	addr, err := r.Settings.Get(repo.SettingsKeyNetdriveAddr)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(cookie) == "" {
-		return fmt.Errorf("未配置 115 Cookie，请在设置页填写")
-	}
-
-	interval := r.Config.NetdriveRequestIntervalMs
-	client := pan115.NewClient(strings.TrimSpace(cookie), interval)
-	if r.Config.NetdriveBaseURL != "" {
-		client.SetBaseURL(r.Config.NetdriveBaseURL)
-	}
-	// 1. 登录校验
-	progress("verify", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
-	if err := client.LoginCheck(ctx); err != nil {
-		return fmt.Errorf("115 登录校验失败: %w", err)
-	}
-
-	// 2. 递归遍历网盘目录拉 sha1 映射
-	progress("walking", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
-	remoteFiles, err := client.WalkDir(ctx, payload.RemoteCID)
+	token, err := r.Settings.Get(repo.SettingsKeyNetdriveToken)
 	if err != nil {
-		var rk *pan115.ErrRiskControl
-		if errors.As(err, &rk) {
-			return err // 风控：终止任务，提示稍后再试
+		return err
+	}
+	if strings.TrimSpace(token) == "" {
+		return fmt.Errorf("未配置 CloudDrive2 API Token，请在设置页填写")
+	}
+	if strings.TrimSpace(addr) == "" {
+		addr = r.Config.NetdriveAddress
+	}
+	if strings.TrimSpace(addr) == "" {
+		addr = cd2.DefaultAddr
+	}
+	client := cd2.NewClient(addr, token)
+	// 1. 校验 Token（GetApiTokenInfo 无需鉴权；含 allow_list 权限检查）
+	progress("verify", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	if err := client.VerifyToken(ctx); err != nil {
+		return fmt.Errorf("CloudDrive2 Token 校验失败: %w", err)
+	}
+
+	// 2. 递归遍历 CD2 目录拉 sha1 映射
+	progress("walking", 0, 0, 0, 0, 0, 0, 0, 0, (*int64)(nil))
+	remoteFiles, err := client.WalkDir(ctx, payload.RemotePath)
+	if err != nil {
+		var it *cd2.ErrInvalidToken
+		if errors.As(err, &it) {
+			return err // Token 失效：终止任务，提示重新配置
 		}
-		return fmt.Errorf("遍历 115 目录失败: %w", err)
+		return fmt.Errorf("遍历 CloudDrive2 目录失败: %w", err)
 	}
 
 	// 3. 本地待补记录
@@ -636,7 +643,7 @@ func (r *Runner) execNetdriveSha1(ctx context.Context, task *repo.BackgroundTask
 	if total == 0 {
 		resJSON, _ := json.Marshal(map[string]any{
 			"library_id": lib.ID, "local_dir": payload.LocalDir,
-			"remote_cid": payload.RemoteCID, "checked": 0, "matched": 0,
+			"remote_path": payload.RemotePath, "checked": 0, "matched": 0,
 			"mismatched": 0, "not_found": 0, "failed": 0,
 		})
 		_ = r.Tasks.Complete(task.ID, string(resJSON))
@@ -693,7 +700,7 @@ func (r *Runner) execNetdriveSha1(ctx context.Context, task *repo.BackgroundTask
 	// 5. 完成
 	resJSON, _ := json.Marshal(map[string]any{
 		"library_id": lib.ID, "local_dir": payload.LocalDir,
-		"remote_cid": payload.RemoteCID, "checked": total,
+		"remote_path": payload.RemotePath, "checked": total,
 		"matched": matched, "mismatched": mismatched,
 		"not_found": notFound, "failed": failed,
 	})
@@ -708,7 +715,7 @@ func (r *Runner) execNetdriveSha1(ctx context.Context, task *repo.BackgroundTask
 	if matched > 0 && r.Dup != nil {
 		_ = r.Dup.SetStale()
 	}
-	slog.Info("115 补齐 SHA1 完成", "library", lib.Name, "local_dir", payload.LocalDir,
+	slog.Info("CloudDrive2 补齐 SHA1 完成", "library", lib.Name, "local_dir", payload.LocalDir,
 		"matched", matched, "mismatched", mismatched, "not_found", notFound, "failed", failed)
 	return nil
 }

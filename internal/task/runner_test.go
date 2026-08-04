@@ -3,15 +3,20 @@ package task
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+
+	"memable/internal/cd2"
+	cd2proto "memable/internal/cd2/proto"
 	"memable/internal/config"
 	"memable/internal/db"
 	"memable/internal/media"
@@ -220,8 +225,8 @@ func TestScanSha1TaskFillsMissingSHA1(t *testing.T) {
 	}
 }
 
-// TestNetdriveSha1TaskMatchesRemote 验证 115 补齐 SHA1 任务端到端：
-// mock 115 接口返回网盘 sha1 → 与本地目录缺失记录按相对路径+大小匹配写库；
+// TestNetdriveSha1TaskMatchesRemote 验证 CloudDrive2 补齐 SHA1 任务端到端：
+// bufconn 假 CD2 服务返回网盘 sha1 → 与本地目录缺失记录按相对路径+大小匹配写库；
 // 大小不符与未找到的记录保持缺失。
 func TestNetdriveSha1TaskMatchesRemote(t *testing.T) {
 	dbh, err := db.Open(&config.Config{Database: config.DatabaseConfig{Path: ":memory:"}})
@@ -233,38 +238,42 @@ func TestNetdriveSha1TaskMatchesRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// mock 115 webapi：根目录含 videos 目录（cid=10），videos 下三个文件
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/" {
-			fmt.Fprint(w, `{"state":true}`)
-			return
-		}
-		if r.URL.Path != "/files" {
-			http.Error(w, "unknown", http.StatusNotFound)
-			return
-		}
-		switch r.URL.Query().Get("cid") {
-		case "0":
-			fmt.Fprint(w, `{"state":true,"count":1,"data":[{"cid":"10","pid":"0","fid":"","n":"videos","ico":"folder"}]}`)
-		case "10":
-			fmt.Fprint(w, `{"state":true,"count":3,"data":[
-				{"cid":"101","pid":"10","fid":"101","n":"a.mp4","s":"100","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-				{"cid":"102","pid":"10","fid":"102","n":"b.mp4","s":"999","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-				{"cid":"103","pid":"10","fid":"103","n":"c.mp4","s":"100","sha":"cccccccccccccccccccccccccccccccccccccccc"}
-			]}`)
-		default:
-			fmt.Fprint(w, `{"state":true,"count":0,"data":[]}`)
-		}
-	}))
-	defer srv.Close()
+	// 假 CD2 服务：根目录含 videos 目录（/115/videos），videos 下三个文件
+	srv := &fakeCD2Server{
+		token: "tok-abc",
+		files: map[string][]*cd2proto.CloudDriveFile{
+			"/115": {
+				{Name: "videos", FullPathName: "/115/videos", IsDirectory: true},
+			},
+			"/115/videos": {
+				{Name: "a.mp4", FullPathName: "/115/videos/a.mp4", Size: 100, FileHashes: map[uint32]string{uint32(cd2proto.CloudDriveFile_Sha1): strings.Repeat("a", 40)}},
+				{Name: "b.mp4", FullPathName: "/115/videos/b.mp4", Size: 999, FileHashes: map[uint32]string{uint32(cd2proto.CloudDriveFile_Sha1): strings.Repeat("b", 40)}},
+				{Name: "c.mp4", FullPathName: "/115/videos/c.mp4", Size: 100, FileHashes: map[uint32]string{uint32(cd2proto.CloudDriveFile_Sha1): strings.Repeat("c", 40)}},
+			},
+		},
+	}
+	lis := bufconn.Listen(1 << 20)
+	gs := grpc.NewServer()
+	cd2proto.RegisterCloudDriveFileSrvServer(gs, srv)
+	go func() { _ = gs.Serve(lis) }()
+	cd2.SetDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	})
+	defer func() {
+		gs.Stop()
+		_ = lis.Close()
+		cd2.SetDialer(nil)
+	}()
 
 	tasks := repo.NewTaskRepo(dbh)
 	mr := repo.NewMediaRepo(dbh)
 	lr := repo.NewLibraryRepo(dbh)
 	sr := repo.NewSessionRepo(dbh)
 	settings := repo.NewSettingsRepo(dbh)
-	if err := settings.Set(repo.SettingsKeyNetdriveCookie, "UID=1;CID=2;SEID=3"); err != nil {
+	if err := settings.Set(repo.SettingsKeyNetdriveAddr, "bufnet"); err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(repo.SettingsKeyNetdriveToken, "tok-abc"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -286,8 +295,7 @@ func TestNetdriveSha1TaskMatchesRemote(t *testing.T) {
 
 	runner := NewRunner(tasks, sr, mr, lr, settings, nil, RunnerConfig{
 		PoolSize:                  2,
-		NetdriveRequestIntervalMs: 0, // 测试加速
-		NetdriveBaseURL:           srv.URL,
+		NetdriveRequestIntervalMs: 0, // 测试加速（不限速）
 	}, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -295,12 +303,12 @@ func TestNetdriveSha1TaskMatchesRemote(t *testing.T) {
 	defer runner.Stop()
 
 	payload := repo.NetdriveSyncPayload{
-		LibraryID: lib.ID,
-		LocalDir:  "videos",
-		RemoteCID: "10",
-		MatchSize: true,
+		LibraryID:  lib.ID,
+		LocalDir:   "videos",
+		RemotePath: "/115/videos",
+		MatchSize:  true,
 	}
-	task, err := runner.Enqueue(repo.TaskKindNetdriveSha1, "115 补齐 SHA1", nil, &lib.ID, payload)
+	task, err := runner.Enqueue(repo.TaskKindNetdriveSha1, "CD2 补齐 SHA1", nil, &lib.ID, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,6 +340,29 @@ func TestNetdriveSha1TaskMatchesRemote(t *testing.T) {
 	if d == nil || d.Sha1 != nil {
 		t.Fatalf("d.mp4 未找到应保持缺失: %+v", d)
 	}
+}
+
+// fakeCD2Server bufconn 假 CD2 服务：按路径返回文件列表，校验 Token。
+type fakeCD2Server struct {
+	cd2proto.UnimplementedCloudDriveFileSrvServer
+	files map[string][]*cd2proto.CloudDriveFile
+	token string
+}
+
+func (f *fakeCD2Server) GetSubFiles(req *cd2proto.ListSubFileRequest, stream grpc.ServerStreamingServer[cd2proto.SubFilesReply]) error {
+	for _, fl := range f.files[req.GetPath()] {
+		if err := stream.Send(&cd2proto.SubFilesReply{SubFiles: []*cd2proto.CloudDriveFile{fl}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *fakeCD2Server) GetApiTokenInfo(_ context.Context, in *cd2proto.StringValue) (*cd2proto.TokenInfo, error) {
+	if in.GetValue() != f.token {
+		return nil, status.Error(codes.PermissionDenied, "bad token")
+	}
+	return &cd2proto.TokenInfo{Permissions: &cd2proto.TokenPermissions{AllowList: true}}, nil
 }
 
 func strPtrOrEmpty(p *string) string {

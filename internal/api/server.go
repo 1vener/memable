@@ -154,10 +154,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/settings/kv", s.handleSetSettingsKV)
 	mux.HandleFunc("DELETE /api/settings/kv", s.handleDeleteSettingsKV)
 
-	// 网盘（115）
-	mux.HandleFunc("POST /api/netdrive/115/verify", s.handleVerifyNetdrive115)
-	mux.HandleFunc("GET /api/netdrive/115/tree", s.handleNetdrive115Tree)
-	mux.HandleFunc("POST /api/netdrive/115/sync-sha1", s.handleNetdrive115SyncSha1)
+	// 网盘（CloudDrive2）
+	mux.HandleFunc("POST /api/netdrive/cd2/verify", s.handleVerifyNetdriveCD2)
+	mux.HandleFunc("GET /api/netdrive/cd2/tree", s.handleNetdriveCD2Tree)
+	mux.HandleFunc("POST /api/netdrive/cd2/sync-sha1", s.handleNetdriveCD2SyncSha1)
 
 	// 任务管理
 	mux.HandleFunc("GET /api/tasks", s.handleListTasks)

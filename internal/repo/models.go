@@ -121,16 +121,19 @@ func IsNetdriveKind(kind TaskKind) bool {
 	return false
 }
 
-// NetdriveSyncPayload 115 补齐 SHA1 任务参数。
+// NetdriveSyncPayload CloudDrive2 补齐 SHA1 任务参数。
 type NetdriveSyncPayload struct {
-	LibraryID int64  `json:"library_id"`
-	LocalDir  string `json:"local_dir"`  // 本地相对库根目录（正斜杠；空=库根）
-	RemoteCID string `json:"remote_cid"` // 115 网盘目标目录 cid
-	MatchSize bool   `json:"match_size"` // 是否校验文件大小一致（防同名异内容误配）
+	LibraryID  int64  `json:"library_id"`
+	LocalDir   string `json:"local_dir"`   // 本地相对库根目录（正斜杠；空=库根）
+	RemotePath string `json:"remote_path"` // CloudDrive2 网盘目标目录路径（如 /115/视频）
+	MatchSize  bool   `json:"match_size"`  // 是否校验文件大小一致（防同名异内容误配）
 }
 
-// SettingsKeyNetdriveCookie settings 表中 115 网盘 Cookie 的键名。
-const SettingsKeyNetdriveCookie = "netdrive.115.cookie"
+// SettingsKeyNetdriveAddr settings 表中 CloudDrive2 服务地址的键名。
+const SettingsKeyNetdriveAddr = "netdrive.cd2.address"
+
+// SettingsKeyNetdriveToken settings 表中 CloudDrive2 API Token 的键名。
+const SettingsKeyNetdriveToken = "netdrive.cd2.token"
 
 // TaskStatus 任务状态。
 type TaskStatus string

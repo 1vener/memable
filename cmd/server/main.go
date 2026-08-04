@@ -91,6 +91,7 @@ func main() {
 		VideoThumbBase:            videoThumbBase,
 		PermanentDelete:           cfg.Delete.Permanent,
 		NetdriveRequestIntervalMs: cfg.Netdrive.RequestIntervalMs,
+		NetdriveAddress:           cfg.Netdrive.CD2Address,
 	}, dupSvc)
 	runner.Start(context.Background())
 

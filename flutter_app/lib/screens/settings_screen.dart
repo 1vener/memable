@@ -15,7 +15,8 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _apiUrlCtrl;
   late TextEditingController _hexCtrl;
-  late TextEditingController _netdriveCookieCtrl;
+  late TextEditingController _netdriveAddrCtrl;
+  late TextEditingController _netdriveTokenCtrl;
   bool _testLoading = false;
   String? _testResult;
   bool _pathsLoading = false;
@@ -25,43 +26,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String? _videoDir;
   String _logFile = '';
   String _dbPath = '';
-  // 115 网盘
+  // CloudDrive2 网盘
   bool _netdriveLoading = false;
   String? _netdriveVerifyResult; // 'ok' 或错误信息
-  bool _netdriveCookieSet = false;
+  bool _netdriveTokenSet = false;
 
-  static const _netdriveCookieKey = 'netdrive.115.cookie';
+  static const _netdriveAddrKey = 'netdrive.cd2.address';
+  static const _netdriveTokenKey = 'netdrive.cd2.token';
 
   @override
   void initState() {
     super.initState();
     _apiUrlCtrl = TextEditingController(text: widget.api.baseUrl);
     _hexCtrl = TextEditingController();
-    _netdriveCookieCtrl = TextEditingController();
+    _netdriveAddrCtrl = TextEditingController();
+    _netdriveTokenCtrl = TextEditingController();
     _syncHex();
     _loadPaths();
-    _loadNetdriveCookie();
+    _loadNetdriveConfig();
   }
 
   @override
   void dispose() {
     _apiUrlCtrl.dispose();
     _hexCtrl.dispose();
-    _netdriveCookieCtrl.dispose();
+    _netdriveAddrCtrl.dispose();
+    _netdriveTokenCtrl.dispose();
     super.dispose();
   }
 
-  // ===== 115 网盘 =====
+  // ===== CloudDrive2 网盘 =====
 
-  /// 读取已保存的 115 Cookie（回显）。
-  Future<void> _loadNetdriveCookie() async {
+  /// 读取已保存的 CD2 地址与 API Token（回显）。
+  Future<void> _loadNetdriveConfig() async {
     try {
       final kv = await widget.api.getSettingsKV();
-      final saved = kv[_netdriveCookieKey] ?? '';
+      final addr = kv[_netdriveAddrKey] ?? '';
+      final token = kv[_netdriveTokenKey] ?? '';
       if (mounted) {
         setState(() {
-          _netdriveCookieSet = saved.isNotEmpty;
-          _netdriveCookieCtrl.text = saved;
+          _netdriveTokenSet = token.isNotEmpty;
+          _netdriveAddrCtrl.text = addr;
+          _netdriveTokenCtrl.text = token;
         });
       }
     } catch (_) {
@@ -69,11 +75,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// 验证 Cookie 有效性（验证输入框当前内容）。
+  /// 验证 CD2 地址与 Token 有效性（验证输入框当前内容）。
   Future<void> _verifyNetdrive() async {
-    final cookie = _netdriveCookieCtrl.text.trim();
-    if (cookie.isEmpty) {
-      setState(() => _netdriveVerifyResult = 'Cookie 不能为空');
+    final address = _netdriveAddrCtrl.text.trim();
+    final token = _netdriveTokenCtrl.text.trim();
+    if (token.isEmpty) {
+      setState(() => _netdriveVerifyResult = 'API Token 不能为空');
       return;
     }
     setState(() {
@@ -81,7 +88,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _netdriveVerifyResult = null;
     });
     try {
-      final (valid, error) = await widget.api.verifyNetdrive115(cookie);
+      final (valid, error) = await widget.api
+          .verifyNetdriveCD2(address: address, token: token);
       if (mounted) {
         setState(() {
           _netdriveVerifyResult = valid ? 'ok' : '失败：$error';
@@ -94,19 +102,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// 保存 Cookie。
+  /// 保存 CD2 配置。
   Future<void> _saveNetdrive() async {
-    final cookie = _netdriveCookieCtrl.text.trim();
+    final address = _netdriveAddrCtrl.text.trim();
+    final token = _netdriveTokenCtrl.text.trim();
     try {
-      await widget.api.setSettingsKV(_netdriveCookieKey, cookie);
+      await widget.api.setSettingsKV(_netdriveAddrKey, address);
+      await widget.api.setSettingsKV(_netdriveTokenKey, token);
       if (mounted) {
         setState(() {
-          _netdriveCookieSet = cookie.isNotEmpty;
+          _netdriveTokenSet = token.isNotEmpty;
           _netdriveVerifyResult = null;
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('115 Cookie 已保存'),
+            content: Text('CloudDrive2 配置已保存'),
             backgroundColor: Color(0xFF22C55E),
           ),
         );
@@ -120,14 +130,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  /// 清除 Cookie。
+  /// 清除 CD2 配置。
   Future<void> _clearNetdrive() async {
     try {
-      await widget.api.deleteSettingsKV(_netdriveCookieKey);
+      await widget.api.deleteSettingsKV(_netdriveAddrKey);
+      await widget.api.deleteSettingsKV(_netdriveTokenKey);
       if (mounted) {
         setState(() {
-          _netdriveCookieCtrl.clear();
-          _netdriveCookieSet = false;
+          _netdriveAddrCtrl.clear();
+          _netdriveTokenCtrl.clear();
+          _netdriveTokenSet = false;
           _netdriveVerifyResult = null;
         });
       }
@@ -534,7 +546,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '登录 Cookie',
+                      'CloudDrive2 连接',
                       style: TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w500,
@@ -543,20 +555,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '用于从网盘批量获取文件 SHA1（收藏库目录树右键"从 115 补齐 SHA1"）。'
-                      '获取方式：浏览器登录 115 后按 F12 → 应用/Application → Cookie，'
-                      '复制 115.com 的全部 Cookie 值粘贴到下方。',
+                      '用于从网盘批量获取文件 SHA1（收藏库目录树右键「网盘 → 115 网盘 → '
+                      'CloudDrive2 → 补齐 SHA1」）。115 云盘由本地 CloudDrive2 统一管理，'
+                      'API Token 在 CloudDrive2 设置中创建（需授予文件列表权限）。',
                       style: TextStyle(fontSize: 12, color: cs.outline),
                     ),
                     const SizedBox(height: 12),
                     TextField(
-                      controller: _netdriveCookieCtrl,
-                      maxLines: 3,
-                      obscureText: false,
+                      controller: _netdriveAddrCtrl,
+                      decoration: const InputDecoration(
+                        labelText: '服务地址',
+                        hintText: '127.0.0.1:19798',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _netdriveTokenCtrl,
+                      obscureText: true,
                       decoration: InputDecoration(
-                        hintText: 'UID=xxx; CID=xxx; SEID=xxx; ...',
+                        labelText: 'API Token',
+                        hintText: '粘贴 CloudDrive2 API Token',
                         border: const OutlineInputBorder(),
-                        suffixIcon: _netdriveCookieSet
+                        suffixIcon: _netdriveTokenSet
                             ? const Tooltip(
                                 message: '已保存',
                                 child: Icon(
@@ -572,7 +593,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       const SizedBox(height: 8),
                       Text(
                         _netdriveVerifyResult == 'ok'
-                            ? 'Cookie 有效'
+                            ? '连接正常，Token 有效'
                             : _netdriveVerifyResult!,
                         style: TextStyle(
                           fontSize: 12,

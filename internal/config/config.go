@@ -26,11 +26,13 @@ type Config struct {
 	UI         UIConfig         `mapstructure:"ui"`
 }
 
-// NetdriveConfig 网盘任务配置（风控节奏等技术参数）。
+// NetdriveConfig 网盘任务配置（CloudDrive2 本地 API 技术参数）。
 type NetdriveConfig struct {
-	// RequestIntervalMs 115 Web API 请求间隔（毫秒）。风控保护：串行请求 +
-	// 间隔 + 随机 jitter；调小加快遍历但更易触发风控，调大更安全。
+	// RequestIntervalMs CloudDrive2 请求基准间隔（毫秒）。限速保护：串行请求 +
+	// 基准间隔 + 随机 jitter（+500ms/-200ms）；调小加快遍历但更易触发风控。
 	RequestIntervalMs int `mapstructure:"request_interval_ms"`
+	// CD2Address CloudDrive2 gRPC 服务地址（默认 127.0.0.1:19798）。
+	CD2Address string `mapstructure:"cd2_address"`
 	// MatchSize 匹配本地文件时是否校验文件大小一致（防同名异内容误配）。
 	MatchSize *bool `mapstructure:"match_size"`
 }
@@ -161,6 +163,7 @@ func Load(path string) (*Config, error) {
 	v.SetDefault("similarity.video_duration_diff_ms", 3000)
 	v.SetDefault("worker.pool_size", 8)
 	v.SetDefault("netdrive.request_interval_ms", 1000)
+	v.SetDefault("netdrive.cd2_address", "127.0.0.1:19798")
 	v.SetDefault("netdrive.match_size", true)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")

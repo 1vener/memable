@@ -286,15 +286,15 @@ class DuplicateItem {
   );
 }
 
-/// 115 网盘目录条目（目录树懒加载）。
+/// CloudDrive2 网盘目录条目（目录树懒加载）。
 class NetdriveDirEntry {
-  final String cid;
+  final String path; // CD2 完整路径
   final String name;
   final bool isDir;
   final bool hasChildren;
 
   NetdriveDirEntry({
-    required this.cid,
+    required this.path,
     required this.name,
     required this.isDir,
     this.hasChildren = false,
@@ -302,7 +302,7 @@ class NetdriveDirEntry {
 
   factory NetdriveDirEntry.fromJson(Map<String, dynamic> json) =>
       NetdriveDirEntry(
-        cid: (json['cid'] as String?) ?? '',
+        path: (json['path'] as String?) ?? '',
         name: (json['name'] as String?) ?? '',
         isDir: json['is_dir'] == true,
         hasChildren: json['has_children'] == true,
@@ -436,7 +436,7 @@ class BackgroundTask {  final String id;
       case 'scan_sha1':
         return '补齐 SHA1';
       case 'netdrive_sha1':
-        return '115 补齐 SHA1';
+        return 'CD2 补齐 SHA1';
       default:
         return kind;
     }

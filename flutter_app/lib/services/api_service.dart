@@ -60,14 +60,17 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('删除参数失败: ${res.body}');
   }
 
-  // ===== 115 网盘 =====
+  // ===== CloudDrive2 网盘 =====
 
-  /// 验证 115 Cookie 有效性，返回 (valid, error)。
-  Future<(bool, String)> verifyNetdrive115(String cookie) async {
+  /// 验证 CD2 地址与 API Token，返回 (valid, error)。
+  Future<(bool, String)> verifyNetdriveCD2({
+    required String address,
+    required String token,
+  }) async {
     final res = await http.post(
-      Uri.parse('$baseUrl/api/netdrive/115/verify'),
+      Uri.parse('$baseUrl/api/netdrive/cd2/verify'),
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'cookie': cookie}),
+      body: jsonEncode({'address': address, 'token': token}),
     );
     if (res.statusCode != 200) throw Exception('验证失败: ${res.body}');
     final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -77,11 +80,11 @@ class ApiService {
     );
   }
 
-  /// 网盘目录树懒加载：返回指定 cid 的直属子目录。
-  Future<List<NetdriveDirEntry>> getNetdrive115Tree(String cid) async {
+  /// CD2 目录树懒加载：返回指定路径的直属子目录。
+  Future<List<NetdriveDirEntry>> getNetdriveCD2Tree(String path) async {
     final uri = Uri.parse(
-      '$baseUrl/api/netdrive/115/tree',
-    ).replace(queryParameters: {'cid': cid});
+      '$baseUrl/api/netdrive/cd2/tree',
+    ).replace(queryParameters: {'path': path});
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('读取网盘目录失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;
@@ -90,19 +93,19 @@ class ApiService {
         .toList();
   }
 
-  /// 提交 115 补齐 SHA1 任务（本地目录 ↔ 网盘目录对齐）。
-  Future<Map<String, dynamic>> syncNetdrive115Sha1({
+  /// 提交 CD2 补齐 SHA1 任务（本地目录 ↔ 网盘目录对齐）。
+  Future<Map<String, dynamic>> syncNetdriveCD2Sha1({
     required int libraryId,
     required String localDir,
-    required String remoteCid,
+    required String remotePath,
   }) async {
     final res = await http.post(
-      Uri.parse('$baseUrl/api/netdrive/115/sync-sha1'),
+      Uri.parse('$baseUrl/api/netdrive/cd2/sync-sha1'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'library_id': libraryId,
         'local_dir': localDir,
-        'remote_cid': remoteCid,
+        'remote_path': remotePath,
       }),
     );
     if (res.statusCode != 202) throw Exception('提交任务失败: ${res.body}');
