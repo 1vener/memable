@@ -1,5 +1,6 @@
 // scan_screen.dart：扫描页面（库选择 + 临时扫描 + 进度 + 历史）
 // 代码注释使用中文
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -20,9 +21,10 @@ class _ScanScreenState extends State<ScanScreen> {
   List<Library> _libraries = [];
   int? _selectedLibraryId;
   bool _scanning = false;
-  String? _sessionId;
+  String? _taskId;
   String? _statusMessage;
   String? _error;
+  Timer? _pollTimer;
 
   // 临时扫描路径
   String _tempPath = '';
@@ -33,6 +35,12 @@ class _ScanScreenState extends State<ScanScreen> {
   void initState() {
     super.initState();
     _loadLibraries();
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -99,43 +107,101 @@ class _ScanScreenState extends State<ScanScreen> {
         force: _useExistingLib && _force,
       );
 
+      final taskId = result['task_id'] as String?;
       final queuePos = result['queue_position'] ?? 0;
       if (mounted) {
         setState(() {
+          _taskId = taskId;
           _statusMessage = '任务已提交 · 排队中第 $queuePos 位';
         });
       }
+      // 轮询任务状态：排队 → 运行（含进度）→ 完成/失败；
+      // _scanning 保持 true 直到终态，期间显示进度与取消按钮。
+      if (taskId != null) _startPolling();
     } catch (e) {
       if (mounted) {
-        setState(() => _error = '提交失败: $e');
+        setState(() {
+          _scanning = false;
+          _error = '提交失败: $e';
+        });
       }
-    } finally {
-      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
+  /// 每 1 秒轮询任务状态，页面只读期间持续更新进度消息。
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => _pollTask());
+  }
+
+  Future<void> _pollTask() async {
+    final taskId = _taskId;
+    if (taskId == null) return;
+    try {
+      final task = await widget.api.getTask(taskId);
+      if (!mounted) return;
+      if (task.isCompleted) {
+        _pollTimer?.cancel();
+        _pollTimer = null;
+        setState(() {
+          _scanning = false;
+          _taskId = null;
+          _statusMessage = '扫描完成：新增 ${task.succeededItems}，'
+              '跳过 ${task.skippedItems}，失败 ${task.failedItems}';
+        });
+        // 临时扫描完成后刷新库列表（可能新增了临时库）
+        if (!_useExistingLib) await _loadLibraries();
+        return;
+      }
+      if (task.isFailed || task.isCancelled) {
+        _pollTimer?.cancel();
+        _pollTimer = null;
+        setState(() {
+          _scanning = false;
+          _taskId = null;
+          _statusMessage = task.isFailed
+              ? '扫描失败：${task.errorMessage ?? '未知错误'}'
+              : '扫描已取消';
+        });
+        return;
+      }
+      // 运行中/排队中：展示阶段与进度
+      String msg;
+      if (task.totalItems > 0 && task.phase != 'queued') {
+        final pct = (task.progress * 100).toStringAsFixed(1);
+        msg = '扫描中 · $pct%（已处理 ${task.processedItems}/${task.totalItems}）';
+      } else if (task.phase == 'discovering') {
+        msg = '正在扫描目录...';
+      } else if (task.phase == 'cleaning') {
+        msg = '正在清理缺失文件...';
+      } else {
+        msg = task.isQueued ? '任务已提交 · 排队中' : '扫描中...';
+      }
+      setState(() => _statusMessage = msg);
+    } catch (_) {
+      // 查询失败不中断轮询
     }
   }
 
   Future<void> _cancelScan() async {
-    if (_sessionId == null) {
-      setState(() => _scanning = false);
-      return;
-    }
+    final taskId = _taskId;
     try {
-      await widget.api.cancelSession(_sessionId!);
-      if (mounted) {
-        setState(() {
-          _statusMessage = '扫描已取消';
-          _scanning = false;
-          _sessionId = null;
-        });
+      if (taskId != null) {
+        await widget.api.cancelTask(taskId);
       }
     } catch (e) {
       if (mounted) {
-        setState(() {
-          _error = '取消失败: $e';
-          _scanning = false;
-          _sessionId = null;
-        });
+        setState(() => _error = '取消失败: $e');
       }
+    }
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    if (mounted) {
+      setState(() {
+        _statusMessage = '扫描已取消';
+        _scanning = false;
+        _taskId = null;
+      });
     }
   }
 
@@ -412,7 +478,17 @@ class _ScanScreenState extends State<ScanScreen> {
                 ),
                 child: Row(
                   children: [
-                    Icon(Icons.info_outline, size: 18, color: cs.primary),
+                    if (_scanning)
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFF2563EB),
+                        ),
+                      )
+                    else
+                      Icon(Icons.info_outline, size: 18, color: cs.primary),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
