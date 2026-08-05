@@ -797,9 +797,15 @@ func (s *Service) DeleteMedia(ids []int64, permanent bool) (*DeleteResult, error
 			// 缩略图清理失败不影响删除结果
 		}
 	}
-	// 刷新重复报告（清理 <2 的组、更新统计）
+	// 刷新重复报告（清理 <2 的组、更新统计）；目录对比报告同样需要清理，
+	// 否则目录对比页删除单文件后 dir_duplicate_groups 会残留不足 2 个成员的空组。
 	if err := s.Dup.PruneGroupsAndUpdateStats(); err != nil {
 		return nil, err
+	}
+	if s.Dir != nil {
+		if err := s.Dir.PruneGroupsAndUpdateStats(); err != nil {
+			return nil, err
+		}
 	}
 	return &DeleteResult{DeletedFiles: deleted, FreedBytes: freed}, nil
 }

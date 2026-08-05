@@ -500,6 +500,7 @@ class DuplicateMemberCard extends StatelessWidget {
   final void Function(List<int> deletedIds) onDeleted;
   final MemberMenuBuilder? menuBuilder;
   final Widget? badge; // 可选角标（如目录对比的"所选目录"标识）
+  final bool showPathTooltip; // 缩略图 hover 时显示完整路径（详情弹窗使用）
 
   const DuplicateMemberCard({
     super.key,
@@ -513,6 +514,7 @@ class DuplicateMemberCard extends StatelessWidget {
     required this.onDeleted,
     this.menuBuilder,
     this.badge,
+    this.showPathTooltip = false,
   });
 
   @override
@@ -566,20 +568,25 @@ class DuplicateMemberCard extends StatelessWidget {
   }
 
   Widget _thumb(ColorScheme cs) {
-    if (item.thumbnailPath == null || item.thumbnailPath!.isEmpty) {
-      return ColoredBox(
-        color: cs.surfaceContainerHighest,
-        child: Icon(
-          item.kind == 'video' ? Icons.videocam_outlined : Icons.image_outlined,
-          color: cs.outline,
-          size: 36,
-        ),
+    final thumb = () {
+      if (item.thumbnailPath == null || item.thumbnailPath!.isEmpty) {
+        return ColoredBox(
+          color: cs.surfaceContainerHighest,
+          child: Icon(
+            item.kind == 'video' ? Icons.videocam_outlined : Icons.image_outlined,
+            color: cs.outline,
+            size: 36,
+          ),
+        );
+      }
+      return LazyThumb(
+        url: api.thumbnailUrl(item.kind, item.thumbnailPath!),
+        cacheWidth: 400,
       );
-    }
-    return LazyThumb(
-      url: api.thumbnailUrl(item.kind, item.thumbnailPath!),
-      cacheWidth: 400,
-    );
+    }();
+    // 详情弹窗内 hover 显示完整文件路径
+    if (!showPathTooltip) return thumb;
+    return Tooltip(message: item.fullPath, child: thumb);
   }
 
   void _showMenu(BuildContext context, Offset position) {
@@ -612,6 +619,12 @@ class DuplicateMemberCard extends StatelessWidget {
             icon: Icons.block,
             label: '排除重复',
             onTap: () => _exclude(context, item),
+          ),
+          ContextMenuItem(
+            icon: Icons.delete_outline,
+            label: '删除此文件',
+            isDestructive: true,
+            onTap: () => _deleteFile(context),
           ),
           if (group != null && group!.items.length > 1)
             ContextMenuItem(
@@ -666,6 +679,12 @@ class DuplicateMemberCard extends StatelessWidget {
           icon: Icons.block,
           label: '排除重复',
           onTap: () => _exclude(context, item),
+        ),
+        ContextMenuItem(
+          icon: Icons.delete_outline,
+          label: '删除此文件',
+          isDestructive: true,
+          onTap: () => _deleteFile(context),
         ),
         if (showOtherPaths && otherDirItems.isNotEmpty) ...[
           const ContextMenuItem.divider(),
@@ -806,6 +825,55 @@ class DuplicateMemberCard extends StatelessWidget {
           SnackBar(
             content: Text(
               '已删除 ${result.deletedFiles} 个文件，释放 ${formatBytes(result.freedBytes)}',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      onError('删除失败: $e');
+    }
+  }
+
+  /// 删除此文件：独立简单确认 → 删除本地文件/media 记录/缩略图 → 通知上层局部刷新。
+  void _deleteFile(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('删除此文件'),
+            content: Text(
+              '将删除「${fileName(item.fullPath)}」\n'
+              '同步删除本地文件、数据库记录与缩略图，此操作不可恢复。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(ctx).colorScheme.error,
+                ),
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  _deleteOne(context);
+                },
+                child: const Text('确定删除'),
+              ),
+            ],
+          ),
+    );
+  }
+
+  Future<void> _deleteOne(BuildContext context) async {
+    try {
+      final result = await api.deleteMedia([item.id]);
+      onDeleted([item.id]);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '已删除 1 个文件，释放 ${formatBytes(result.freedBytes)}',
             ),
           ),
         );

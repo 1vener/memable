@@ -42,19 +42,23 @@ class _ReportScreenState extends State<ReportScreen> {
   final Set<String> _collapsedPaths = {};
   String? _selectedDirectory;
 
+  // 目录树搜索：关键词非空时过滤树并自动定位到第一个匹配节点
+  final TextEditingController _treeSearchCtrl = TextEditingController();
+  String _treeQuery = '';
+
   Timer? _pollTimer;
 
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    _treeSearchCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   void initState() {
     super.initState();
     _refreshAll();
-  }
-
-  @override
-  void dispose() {
-    _pollTimer?.cancel();
-    super.dispose();
   }
 
   // ===== 数据加载 =====
@@ -544,23 +548,122 @@ class _ReportScreenState extends State<ReportScreen> {
     if (_tree.isEmpty) {
       return const Center(child: Text('无重复目录'));
     }
-    return ListView(
-      padding: const EdgeInsets.all(10),
-      children:
-          _tree
-              .expand((node) => _buildTreeRows(node, 0, selected, cs))
-              .toList(),
+    final query = _treeQuery.trim().toLowerCase();
+    // 搜索时只展示匹配节点（保留祖先链保证层级定位），并强制展开全部节点
+    final visibleTree = query.isEmpty
+        ? _tree
+        : _filterTreeNodes(_tree, query);
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
+          child: TextField(
+            controller: _treeSearchCtrl,
+            onChanged: (v) => _onTreeSearch(v),
+            decoration: InputDecoration(
+              hintText: '搜索目录…',
+              prefixIcon: const Icon(Icons.search, size: 18),
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+            ),
+            style: const TextStyle(fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child:
+              visibleTree.isEmpty
+                  ? const Center(child: Text('无匹配目录'))
+                  : ListView(
+                    padding: const EdgeInsets.all(10),
+                    children: visibleTree
+                        .expand(
+                          (node) => _buildTreeRows(
+                            node,
+                            0,
+                            selected,
+                            cs,
+                            query: query,
+                          ),
+                        )
+                        .toList(),
+                  ),
+        ),
+      ],
     );
   }
+
+  /// 目录树搜索：更新关键词；非空时自动选中并定位到第一个匹配节点。
+  void _onTreeSearch(String v) {
+    setState(() {
+      _treeQuery = v;
+      final q = v.trim().toLowerCase();
+      if (q.isNotEmpty) {
+        final first = _firstMatch(_tree, q);
+        if (first != null) _selectedDirectory = first.path;
+      }
+    });
+  }
+
+  /// 递归过滤树：匹配节点保留，非匹配但存在匹配后代的节点保留（祖先链）。
+  List<DuplicateTreeNode> _filterTreeNodes(
+    List<DuplicateTreeNode> nodes,
+    String q,
+  ) {
+    final out = <DuplicateTreeNode>[];
+    for (final node in nodes) {
+      final matched =
+          node.path.toLowerCase().contains(q) ||
+          node.name.toLowerCase().contains(q);
+      final children = _filterTreeNodes(node.children, q);
+      if (matched || children.isNotEmpty) {
+        out.add(
+          DuplicateTreeNode(
+            name: node.name,
+            path: node.path,
+            fileCount: node.fileCount,
+            children: children,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
+  /// 深度优先返回第一个匹配节点（含子节点）。
+  DuplicateTreeNode? _firstMatch(List<DuplicateTreeNode> nodes, String q) {
+    for (final node in nodes) {
+      if (node.path.toLowerCase().contains(q) ||
+          node.name.toLowerCase().contains(q)) {
+        return node;
+      }
+      final child = _firstMatch(node.children, q);
+      if (child != null) return child;
+    }
+    return null;
+  }
+
+  /// 节点是否命中搜索关键词。
+  bool _isTreeMatch(DuplicateTreeNode node, String q) =>
+      q.isNotEmpty &&
+      (node.path.toLowerCase().contains(q) ||
+          node.name.toLowerCase().contains(q));
 
   List<Widget> _buildTreeRows(
     DuplicateTreeNode node,
     int depth,
     String? selected,
-    ColorScheme cs,
-  ) {
-    // 默认全部展开，确保深层目录立即可见（可点击收起）
-    final expanded = !_collapsedPaths.contains(node.path);
+    ColorScheme cs, {
+    String query = '',
+  }) {
+    // 默认全部展开，确保深层目录立即可见（可点击收起）；搜索时强制展开
+    final searching = query.isNotEmpty;
+    final expanded = searching || !_collapsedPaths.contains(node.path);
     final rows = <Widget>[
       Padding(
         padding: EdgeInsets.only(left: depth * 16.0, bottom: 2),
@@ -585,7 +688,17 @@ class _ReportScreenState extends State<ReportScreen> {
           title: Text(
             node.name,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12),
+            style: TextStyle(
+              fontSize: 12,
+              // 搜索时高亮匹配节点
+              fontWeight: searching && _isTreeMatch(node, query)
+                  ? FontWeight.w700
+                  : FontWeight.w400,
+              color:
+                  searching && _isTreeMatch(node, query)
+                      ? cs.primary
+                      : null,
+            ),
           ),
           trailing:
               node.fileCount > 0
@@ -600,7 +713,9 @@ class _ReportScreenState extends State<ReportScreen> {
     ];
     if (expanded) {
       for (final child in node.children) {
-        rows.addAll(_buildTreeRows(child, depth + 1, selected, cs));
+        rows.addAll(
+          _buildTreeRows(child, depth + 1, selected, cs, query: query),
+        );
       }
     }
     return rows;
@@ -805,6 +920,7 @@ class _ReportScreenState extends State<ReportScreen> {
     String emptyText = '没有重复文件',
     ValueChanged<DuplicateItem>? onTapMember,
     bool shrinkWrap = false,
+    bool showPathTooltip = false,
     void Function(List<int> deletedIds)? onDeleted,
   }) {
     if (items.isEmpty) {
@@ -835,6 +951,7 @@ class _ReportScreenState extends State<ReportScreen> {
           onTap: onTapMember == null ? null : () => onTapMember(item),
           onError: (m) => setState(() => _error = m),
           onDeleted: onDeleted ?? (ids) => _removeMediaFromLocalState(ids),
+          showPathTooltip: showPathTooltip,
         );
       },
     );
@@ -1286,6 +1403,7 @@ class _ReportScreenState extends State<ReportScreen> {
                         Theme.of(ctx).colorScheme,
                         showOtherPaths: !isSameDir,
                         emptyText: '无缩略图',
+                        showPathTooltip: true,
                         onDeleted: (ids) {
                           // 详情弹窗内删除后关闭弹窗并刷新页面，避免残留已无重复的图片
                           Navigator.of(ctx).pop();

@@ -44,6 +44,10 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
   final Set<String> _collapsedPaths = {};
   String? _selectedDirectory;
 
+  // 目录树搜索：关键词非空时过滤树并自动定位到第一个匹配节点
+  final TextEditingController _treeSearchCtrl = TextEditingController();
+  String _treeQuery = '';
+
   @override
   void initState() {
     super.initState();
@@ -54,6 +58,7 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
   @override
   void dispose() {
     _dirPollTimer?.cancel();
+    _treeSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -339,6 +344,56 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
           SnackBar(
             content: Text(
               '已删除 ${result.deletedFiles} 个文件，释放 ${formatBytes(result.freedBytes)}',
+            ),
+          ),
+        );
+      }
+      await _loadAll();
+    } catch (e) {
+      if (mounted) setState(() => _error = '删除失败: $e');
+    }
+  }
+
+  /// 删除此文件：独立简单确认 → 删除本地文件/media 记录/缩略图 → 局部刷新。
+  void _deleteFile(DuplicateItem item) {
+    showDialog<void>(
+      context: context,
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text('删除此文件'),
+            content: Text(
+              '将删除「${fileName(item.fullPath)}」\n'
+              '同步删除本地文件、数据库记录与缩略图，此操作不可恢复。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(ctx).colorScheme.error,
+                ),
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  _deleteOne(item);
+                },
+                child: const Text('确定删除'),
+              ),
+            ],
+          ),
+    );
+  }
+
+  Future<void> _deleteOne(DuplicateItem item) async {
+    try {
+      final result = await widget.api.deleteMedia([item.id]);
+      _removeMediaFromLocalState([item.id]);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '已删除 1 个文件，释放 ${formatBytes(result.freedBytes)}',
             ),
           ),
         );
@@ -789,23 +844,120 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
     if (_tree.isEmpty) {
       return const Center(child: Text('无重复目录'));
     }
-    return ListView(
-      padding: const EdgeInsets.all(10),
-      children:
-          _tree
-              .expand((node) => _buildTreeRows(node, 0, selected, cs))
-              .toList(),
+    final query = _treeQuery.trim().toLowerCase();
+    // 搜索时只展示匹配节点（保留祖先链保证层级定位），并强制展开全部节点
+    final visibleTree = query.isEmpty ? _tree : _filterTreeNodes(_tree, query);
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
+          child: TextField(
+            controller: _treeSearchCtrl,
+            onChanged: _onTreeSearch,
+            decoration: InputDecoration(
+              hintText: '搜索目录…',
+              prefixIcon: const Icon(Icons.search, size: 18),
+              isDense: true,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+            ),
+            style: const TextStyle(fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child:
+              visibleTree.isEmpty
+                  ? const Center(child: Text('无匹配目录'))
+                  : ListView(
+                    padding: const EdgeInsets.all(10),
+                    children: visibleTree
+                        .expand(
+                          (node) => _buildTreeRows(
+                            node,
+                            0,
+                            selected,
+                            cs,
+                            query: query,
+                          ),
+                        )
+                        .toList(),
+                  ),
+        ),
+      ],
     );
   }
+
+  /// 目录树搜索：更新关键词；非空时自动选中并定位到第一个匹配节点。
+  void _onTreeSearch(String v) {
+    setState(() {
+      _treeQuery = v;
+      final q = v.trim().toLowerCase();
+      if (q.isNotEmpty) {
+        final first = _firstTreeMatch(_tree, q);
+        if (first != null) _selectedDirectory = first.path;
+      }
+    });
+  }
+
+  /// 递归过滤树：匹配节点保留，非匹配但存在匹配后代的节点保留（祖先链）。
+  List<DuplicateTreeNode> _filterTreeNodes(
+    List<DuplicateTreeNode> nodes,
+    String q,
+  ) {
+    final out = <DuplicateTreeNode>[];
+    for (final node in nodes) {
+      final matched =
+          node.path.toLowerCase().contains(q) ||
+          node.name.toLowerCase().contains(q);
+      final children = _filterTreeNodes(node.children, q);
+      if (matched || children.isNotEmpty) {
+        out.add(
+          DuplicateTreeNode(
+            name: node.name,
+            path: node.path,
+            fileCount: node.fileCount,
+            children: children,
+          ),
+        );
+      }
+    }
+    return out;
+  }
+
+  /// 深度优先返回第一个匹配节点（含子节点）。
+  DuplicateTreeNode? _firstTreeMatch(List<DuplicateTreeNode> nodes, String q) {
+    for (final node in nodes) {
+      if (node.path.toLowerCase().contains(q) ||
+          node.name.toLowerCase().contains(q)) {
+        return node;
+      }
+      final child = _firstTreeMatch(node.children, q);
+      if (child != null) return child;
+    }
+    return null;
+  }
+
+  /// 节点是否命中搜索关键词。
+  bool _isTreeMatch(DuplicateTreeNode node, String q) =>
+      q.isNotEmpty &&
+      (node.path.toLowerCase().contains(q) ||
+          node.name.toLowerCase().contains(q));
 
   List<Widget> _buildTreeRows(
     DuplicateTreeNode node,
     int depth,
     String? selected,
-    ColorScheme cs,
-  ) {
-    // 默认全部展开，确保深层目录立即可见（可点击收起）
-    final expanded = !_collapsedPaths.contains(node.path);
+    ColorScheme cs, {
+    String query = '',
+  }) {
+    // 默认全部展开，确保深层目录立即可见（可点击收起）；搜索时强制展开
+    final searching = query.isNotEmpty;
+    final expanded = searching || !_collapsedPaths.contains(node.path);
     final rows = <Widget>[
       Padding(
         padding: EdgeInsets.only(left: depth * 16.0, bottom: 2),
@@ -830,7 +982,14 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
           title: Text(
             node.name,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12),
+            style: TextStyle(
+              fontSize: 12,
+              // 搜索时高亮匹配节点
+              fontWeight: searching && _isTreeMatch(node, query)
+                  ? FontWeight.w700
+                  : FontWeight.w400,
+              color: searching && _isTreeMatch(node, query) ? cs.primary : null,
+            ),
           ),
           trailing:
               node.fileCount > 0
@@ -845,7 +1004,9 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
     ];
     if (expanded) {
       for (final child in node.children) {
-        rows.addAll(_buildTreeRows(child, depth + 1, selected, cs));
+        rows.addAll(
+          _buildTreeRows(child, depth + 1, selected, cs, query: query),
+        );
       }
     }
     return rows;
@@ -1093,6 +1254,7 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
     ColorScheme cs, {
     required DirCompareGroupItem group,
     bool shrinkWrap = false,
+    bool showPathTooltip = false,
     ValueChanged<DuplicateItem>? onTapMember,
   }) {
     if (items.isEmpty) {
@@ -1124,6 +1286,7 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
           onDeleted: (ids) => _removeMediaFromLocalState(ids),
           menuBuilder: (ctx, pos, m) => _showMemberMenu(pos, m, group),
           badge: item.isTarget ? _targetBadge(cs) : null,
+          showPathTooltip: showPathTooltip,
         );
       },
     );
@@ -1183,6 +1346,7 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
                         group.items,
                         Theme.of(ctx).colorScheme,
                         group: group,
+                        showPathTooltip: true,
                       ),
                     ),
                   ),
@@ -1256,6 +1420,12 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
           icon: Icons.block,
           label: '排除重复',
           onTap: () => _excludeMedia(item.id),
+        ),
+        ContextMenuItem(
+          icon: Icons.delete_outline,
+          label: '删除此文件',
+          isDestructive: true,
+          onTap: () => _deleteFile(item),
         ),
         if (otherDirItems.isNotEmpty) ...[
           const ContextMenuItem.divider(),
