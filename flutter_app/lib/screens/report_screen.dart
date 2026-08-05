@@ -997,30 +997,70 @@ class _ReportScreenState extends State<ReportScreen> {
     }
     // 全部数据模式：卡片展示整组（跨目录）成员——数量徽标显示整组文件总数，
     // 叠卡预览整组成员（本目录成员优先，跨目录成员补充，最多 3 张）。
+    // 收集当前目录所有重复组涉及的父目录（跨目录去重，保持首现顺序）
+    final allDirs = <String>[];
+    for (final entry in clusters.entries) {
+      final g = _groupOf(entry.value.first);
+      if (g == null) continue;
+      for (final m in g.items) {
+        final d = relDir(m.relativePath);
+        if (!allDirs.contains(d)) allDirs.add(d);
+      }
+    }
     final selected = _selectedDirForCluster();
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
-      child: Wrap(
-        spacing: 20,
-        runSpacing: 20,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final entry in clusters.entries)
-            StackedCluster(
-              items: _clusterItemsFor(entry.value, selected),
-              api: widget.api,
-              width: 300,
-              onTap: () {
-                final g = _groupOf(entry.value.first);
-                if (g != null) _showGroupDetail(g);
-              },
-              onSecondaryTap:
-                  (pos) => _showMemberMenu(
-                    pos,
-                    entry.value.first,
-                    _groupOf(entry.value.first),
-                    directoryScope: _selectedDirForCluster(),
+          if (allDirs.isNotEmpty) ...[
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final dir in allDirs)
+                  DirChip(
+                    label: dir.isEmpty ? '/' : dir,
+                    onTap: () {
+                      for (final entry in clusters.entries) {
+                        final g = _groupOf(entry.value.first);
+                        if (g == null) continue;
+                        for (final m in g.items) {
+                          if (relDir(m.relativePath) == dir) {
+                            _openMedia(m.id, true);
+                            return;
+                          }
+                        }
+                      }
+                    },
                   ),
+              ],
             ),
+            const SizedBox(height: 16),
+          ],
+          Wrap(
+            spacing: 20,
+            runSpacing: 20,
+            children: [
+              for (final entry in clusters.entries)
+                StackedCluster(
+                  items: _clusterItemsFor(entry.value, selected),
+                  api: widget.api,
+                  width: 300,
+                  onTap: () {
+                    final g = _groupOf(entry.value.first);
+                    if (g != null) _showGroupDetail(g);
+                  },
+                  onSecondaryTap:
+                      (pos) => _showMemberMenu(
+                        pos,
+                        entry.value.first,
+                        _groupOf(entry.value.first),
+                        directoryScope: _selectedDirForCluster(),
+                      ),
+                ),
+            ],
+          ),
         ],
       ),
     );
