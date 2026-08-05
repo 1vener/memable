@@ -88,10 +88,15 @@ if(PLUGIN_BUNDLED_LIBRARIES)
 endif()
 
 # Copy the native assets provided by the build.dart from all packages.
+# Only when the directory exists: projects without native assets never
+# generate build/native_assets/windows, and installing a missing directory
+# fails the whole build (Flutter 3.29 template bug).
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
-install(DIRECTORY "${NATIVE_ASSETS_DIR}"
-   DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-   COMPONENT Runtime)
+if(EXISTS "${NATIVE_ASSETS_DIR}")
+  install(DIRECTORY "${NATIVE_ASSETS_DIR}"
+     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+     COMPONENT Runtime)
+endif()
 
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.

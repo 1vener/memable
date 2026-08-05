@@ -117,6 +117,11 @@ func buildCoverCandidates(durationMs int64) []int64 {
 	return candidates
 }
 
+// ExtractVideoFirstFrame 提取视频首帧（0s）为 jpg，供视频搜索等查询方使用。
+func ExtractVideoFirstFrame(ctx context.Context, videoPath, outPath string) error {
+	return ffmpegExtractFrame(ctx, videoPath, 0, outPath)
+}
+
 // ffmpegExtractFrame 用 ffmpeg 在指定时间点抽取单张 jpg。
 // 先尝试快速定位（-ss 在 -i 前），失败后重试准确但较慢的定位（-ss 在 -i 后）。
 func ffmpegExtractFrame(ctx context.Context, videoPath string, timeMs int64, outPath string) error {

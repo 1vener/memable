@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1202,6 +1203,70 @@ func (s *Server) handleSearchImageUpload(w http.ResponseWriter, r *http.Request)
 		"results": results,
 		"count":   len(results),
 	})
+}
+
+// handleSearchVideoUpload 以视频搜视频：上传视频（不限制大小），
+// 服务端提取 sprite pHash 与首帧 pHash，分别匹配库中视频/图片。
+func (s *Server) handleSearchVideoUpload(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeError(w, 400, "解析上传失败: "+err.Error())
+		return
+	}
+
+	file, _, err := r.FormFile("video")
+	if err != nil {
+		writeError(w, 400, "缺少 video 字段")
+		return
+	}
+	defer file.Close()
+
+	// 距离阈值（前端用户选择，钳制 0~64）；默认视频 16、图片 12
+	imageMax := parseClampedInt(r.FormValue("image_max_distance"), 12, 0, 64)
+	videoMax := parseClampedInt(r.FormValue("video_max_distance"), 16, 0, 64)
+
+	tmpFile, err := os.CreateTemp("", "search-video-upload-*")
+	if err != nil {
+		writeError(w, 500, "创建临时文件失败")
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+	defer tmpFile.Close()
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		writeError(w, 500, "写入临时文件失败")
+		return
+	}
+	tmpFile.Close()
+
+	results, err := s.searchSvc.SearchByVideo(r.Context(), tmpFile.Name(), imageMax, videoMax)
+	if err != nil {
+		writeError(w, 500, "以视频搜视频失败: "+err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"results":            results,
+		"count":              len(results),
+		"image_max_distance": imageMax,
+		"video_max_distance": videoMax,
+	})
+}
+
+// parseClampedInt 解析整数字符串，缺失/非法时返回 def，并钳制到 [min, max]。
+func parseClampedInt(s string, def, min, max int) int {
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 // ===== 重复报告（阶段 6）=====

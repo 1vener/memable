@@ -1,9 +1,12 @@
-// 包 search：媒体搜索服务（文本搜索 + 以图搜图）。
+// 包 search：媒体搜索服务（文本搜索 + 以图搜图 + 以视频搜视频）。
 // 代码注释使用中文。
 package search
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 
 	"memable/internal/media"
@@ -101,6 +104,86 @@ func (s *Service) SearchByImage(queryPHash string, maxDistance int) ([]SearchRes
 			continue
 		}
 		if dist <= maxDistance {
+			results = append(results, s.toResult(m, dist))
+		}
+	}
+
+	// 按距离升序排序
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Distance < results[j].Distance
+	})
+	return results, nil
+}
+
+// SearchByVideo 以视频搜视频：提取查询视频的 sprite pHash 与首帧 pHash，
+// 分别与库中视频 sprite pHash、库中图片 phash 对比（两个距离阈值独立可调）。
+// 与视频重复检测不同：这里不区分时长差、不区分 <4000ms 短视频，统一按 sprite pHash 对比。
+func (s *Service) SearchByVideo(ctx context.Context, videoPath string, imageMaxDistance, videoMaxDistance int) ([]SearchResult, error) {
+	if videoMaxDistance <= 0 {
+		videoMaxDistance = 16
+	}
+	if imageMaxDistance <= 0 {
+		imageMaxDistance = 12
+	}
+
+	// 1. 元数据 + sprite pHash（与扫描同口径）
+	meta, err := media.ProbeVideo(ctx, videoPath)
+	if err != nil {
+		return nil, fmt.Errorf("解析视频: %w", err)
+	}
+	spritePhash, err := media.ComputeVideoSpritePHash(ctx, videoPath, meta.DurationMs)
+	if err != nil {
+		return nil, fmt.Errorf("计算 sprite pHash: %w", err)
+	}
+
+	// 2. 首帧 pHash
+	tmpDir, err := os.MkdirTemp("", "search-video-*")
+	if err != nil {
+		return nil, fmt.Errorf("创建临时目录: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	firstFramePath := filepath.Join(tmpDir, "first.jpg")
+	if err := media.ExtractVideoFirstFrame(ctx, videoPath, firstFramePath); err != nil {
+		return nil, fmt.Errorf("提取视频首帧: %w", err)
+	}
+	firstHashes, err := media.ImagePerceptualHashes(firstFramePath)
+	if err != nil {
+		return nil, fmt.Errorf("计算首帧 pHash: %w", err)
+	}
+
+	// 3. 图片按首帧 pHash 匹配（只对比图片，不对比视频 cover_phash）
+	images, err := s.Media.ListByKind("image")
+	if err != nil {
+		return nil, fmt.Errorf("查询图片: %w", err)
+	}
+	results := make([]SearchResult, 0)
+	for _, m := range images {
+		if m.Phash == nil {
+			continue
+		}
+		dist, err := media.HammingHex64(firstHashes.PHash, *m.Phash)
+		if err != nil {
+			continue
+		}
+		if dist <= imageMaxDistance {
+			results = append(results, s.toResult(m, dist))
+		}
+	}
+
+	// 4. 视频按 sprite pHash 匹配（不区分时长差/短视频）
+	videos, err := s.Media.ListByKind("video")
+	if err != nil {
+		return nil, fmt.Errorf("查询视频: %w", err)
+	}
+	for _, m := range videos {
+		if m.Phash == nil {
+			continue
+		}
+		dist, err := media.HammingHex64(spritePhash, *m.Phash)
+		if err != nil {
+			continue
+		}
+		if dist <= videoMaxDistance {
 			results = append(results, s.toResult(m, dist))
 		}
 	}

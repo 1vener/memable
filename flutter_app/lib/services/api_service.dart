@@ -363,6 +363,30 @@ class ApiService {
         .toList();
   }
 
+  /// 以视频搜视频（通过文件上传，服务端提取首帧 pHash 与 sprite pHash）。
+  /// imageMaxDistance/videoMaxDistance 为前端用户选择的两路距离阈值（0~64）。
+  Future<List<SearchResult>> searchVideo(
+    File file, {
+    int imageMaxDistance = 12,
+    int videoMaxDistance = 16,
+  }) async {
+    final req = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/api/search/video/upload'),
+    );
+    req.fields['image_max_distance'] = '$imageMaxDistance';
+    req.fields['video_max_distance'] = '$videoMaxDistance';
+    req.files.add(await http.MultipartFile.fromPath('video', file.path));
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode != 200) throw Exception('以视频搜视频失败: ${res.body}');
+    final data = jsonDecode(res.body);
+    final results = (data['results'] as List<dynamic>?) ?? <dynamic>[];
+    return results
+        .map((e) => SearchResult.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   // ===== 重复报告 =====
 
   /// 提交重复检测报告任务（图片 + 视频）

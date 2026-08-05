@@ -122,6 +122,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/search", s.handleSearchText)
 	mux.HandleFunc("POST /api/search/image", s.handleSearchImage)
 	mux.HandleFunc("POST /api/search/image/upload", s.handleSearchImageUpload)
+	mux.HandleFunc("POST /api/search/video/upload", s.handleSearchVideoUpload)
 
 	// 重复报告（阶段 6）
 	mux.HandleFunc("POST /api/reports/image", s.handleImageReport)

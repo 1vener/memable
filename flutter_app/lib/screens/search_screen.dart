@@ -28,6 +28,12 @@ class _SearchScreenState extends State<SearchScreen> {
   String? _imagePath;
   bool _isImageSearch = false;
 
+  // 以视频搜视频：两路距离阈值（用户可调，0~64 整数）
+  String? _videoPath;
+  bool _isVideoSearch = false;
+  double _imageMaxDistance = 12;
+  double _videoMaxDistance = 16;
+
   @override
   void dispose() {
     _searchCtrl.dispose();
@@ -43,6 +49,7 @@ class _SearchScreenState extends State<SearchScreen> {
       _error = null;
       _results = [];
       _isImageSearch = false;
+      _isVideoSearch = false;
       _hasSearched = true;
     });
 
@@ -77,6 +84,8 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() {
       _imagePath = path;
       _isImageSearch = true;
+      _isVideoSearch = false;
+      _videoPath = null;
       _searching = true;
       _error = null;
       _results = [];
@@ -100,6 +109,90 @@ class _SearchScreenState extends State<SearchScreen> {
         });
       }
     }
+  }
+
+  Future<void> _pickVideoAndSearch() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.video,
+      dialogTitle: '选择视频进行以视频搜视频',
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final path = result.files.first.path;
+    if (path == null) return;
+
+    setState(() {
+      _videoPath = path;
+      _isVideoSearch = true;
+      _isImageSearch = false;
+      _imagePath = null;
+      _searching = true;
+      _error = null;
+      _results = [];
+      _hasSearched = true;
+    });
+
+    try {
+      final file = File(path);
+      final data = await widget.api.searchVideo(
+        file,
+        imageMaxDistance: _imageMaxDistance.round(),
+        videoMaxDistance: _videoMaxDistance.round(),
+      );
+      if (mounted) {
+        setState(() {
+          _results = data;
+          _searching = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = '$e';
+          _searching = false;
+        });
+      }
+    }
+  }
+
+  /// 距离阈值滑块：0~64 整数步进（divisions=64，只能选整数），实时显示相似度百分比。
+  Widget _buildDistanceSlider({
+    required String label,
+    required double value,
+    required ValueChanged<double> onChanged,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final dist = value.round();
+    final percent = (1.0 - dist / 64.0) * 100;
+    return Row(
+      children: [
+        SizedBox(
+          width: 110,
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+          ),
+        ),
+        Expanded(
+          child: Slider(
+            value: value,
+            min: 0,
+            max: 64,
+            divisions: 64,
+            label: '$dist（${percent.toStringAsFixed(0)}%）',
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+          width: 110,
+          child: Text(
+            '距离 $dist · ${percent.toStringAsFixed(0)}%',
+            style: TextStyle(fontSize: 12, color: cs.primary),
+            textAlign: TextAlign.right,
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -147,7 +240,7 @@ class _SearchScreenState extends State<SearchScreen> {
                       const SizedBox(width: 12),
                       FilledButton.icon(
                         onPressed: _searching ? null : _textSearch,
-                        icon: _searching && !_isImageSearch
+                        icon: _searching && !_isImageSearch && !_isVideoSearch
                             ? const SizedBox(
                                 width: 16, height: 16,
                                 child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
@@ -198,6 +291,47 @@ class _SearchScreenState extends State<SearchScreen> {
                       ],
                     ],
                   ),
+                  const SizedBox(height: 12),
+                  // 以视频搜视频按钮
+                  Row(
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _searching ? null : _pickVideoAndSearch,
+                        icon: const Icon(Icons.videocam, size: 18),
+                        label: const Text('以视频搜视频'),
+                      ),
+                      if (_videoPath != null) ...[
+                        const SizedBox(width: 12),
+                        Icon(Icons.movie_outlined, size: 28, color: cs.primary),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _videoPath!.split('/').last.split('\\').last,
+                            style: TextStyle(fontSize: 12, color: cs.outline),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 16),
+                          onPressed: () => setState(() => _videoPath = null),
+                        ),
+                      ],
+                    ],
+                  ),
+                  // 距离阈值滑块（仅以视频搜视频时显示，只能选整数）
+                  if (_isVideoSearch) ...[
+                    const SizedBox(height: 8),
+                    _buildDistanceSlider(
+                      label: '图片匹配距离',
+                      value: _imageMaxDistance,
+                      onChanged: (v) => setState(() => _imageMaxDistance = v.roundToDouble()),
+                    ),
+                    _buildDistanceSlider(
+                      label: '视频匹配距离',
+                      value: _videoMaxDistance,
+                      onChanged: (v) => setState(() => _videoMaxDistance = v.roundToDouble()),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -255,7 +389,11 @@ class _SearchScreenState extends State<SearchScreen> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              _isImageSearch ? Icons.image_search : Icons.search_off,
+                              _isImageSearch
+                                  ? Icons.image_search
+                                  : _isVideoSearch
+                                      ? Icons.videocam
+                                      : Icons.search_off,
                               size: 64,
                               color: cs.outline.withValues(alpha: 0.4),
                             ),
@@ -263,13 +401,21 @@ class _SearchScreenState extends State<SearchScreen> {
                             Text(
                               _hasSearched
                                   ? '查询结果为空'
-                                  : (_isImageSearch ? '选择图片开始以图搜图' : '输入关键词开始搜索'),
+                                  : (_isImageSearch
+                                        ? '选择图片开始以图搜图'
+                                        : _isVideoSearch
+                                            ? '选择视频开始以视频搜视频'
+                                            : '输入关键词开始搜索'),
                               style: TextStyle(fontSize: 15, color: cs.outline),
                             ),
                             if (_hasSearched) ...[
                               const SizedBox(height: 6),
                               Text(
-                                _isImageSearch ? '没有找到相似的图片' : '没有找到匹配的媒体，换个关键词试试',
+                                _isImageSearch
+                                    ? '没有找到相似的图片'
+                                    : _isVideoSearch
+                                        ? '没有找到相似的视频或图片'
+                                        : '没有找到匹配的媒体，换个关键词试试',
                                 style: TextStyle(fontSize: 13, color: cs.outline.withValues(alpha: 0.7)),
                               ),
                             ],
