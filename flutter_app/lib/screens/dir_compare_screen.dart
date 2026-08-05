@@ -465,17 +465,40 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
               .expand((g) => g.items)
               .where((m) => relDir(m.relativePath) == dir)
               .toList();
-      final keep = await showKeepDialog(
-        context,
-        title: '删除此目录下所有重复数据',
-        count: dirItems.length,
-      );
-      if (keep == null || !mounted) return;
+      // 按组聚合：本目录成员 >=2 的组按保留条件处理；==1（仅跨目录重复）直接删除
+      final byGroup = <int, List<DuplicateItem>>{};
+      for (final item in dirItems) {
+        final g = _groupByMediaId[item.id];
+        if (g == null) continue;
+        byGroup.putIfAbsent(g.id, () => []).add(item);
+      }
+      var keepCount = 0;
+      var directCount = 0;
+      for (final members in byGroup.values) {
+        if (members.length >= 2) {
+          keepCount += members.length;
+        } else {
+          directCount += members.length;
+        }
+      }
+      String keep = 'largest';
+      // 本目录内存在重复 >1 的组才弹保留条件对话框；否则直接确认（全部直接删除）
+      if (keepCount > 0) {
+        final picked = await showKeepDialog(
+          context,
+          title: '删除此目录下所有重复数据',
+          count: keepCount,
+          directDeleteCount: directCount > 0 ? directCount : null,
+        );
+        if (picked == null || !mounted) return;
+        keep = picked;
+      }
       final ok = await confirmClearDialog(
         context,
         title: '删除此目录下所有重复数据',
         keep: keep,
         count: dirItems.length,
+        directOnly: keepCount == 0,
       );
       if (!ok || !mounted) return;
       final toDelete = _computeDirDeletedIds(dirItems, keep);

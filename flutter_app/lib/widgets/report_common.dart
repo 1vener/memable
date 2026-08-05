@@ -73,12 +73,21 @@ String meta(DuplicateItem item) {
 
 /// 六种保留条件选择对话框，返回 keep 值；取消返回 null。
 /// 说明文案：本目录内互相重复的文件每组保留 1 个；仅与其它目录重复的文件直接删除本目录这份。
+/// directDeleteCount 非空时（目录清除场景）文案区分两类文件数量：
+/// 保留条件只对本目录内重复 >1 的文件生效，仅跨目录重复的文件直接删除。
 Future<String?> showKeepDialog(
   BuildContext context, {
   required String title,
   required int count,
+  int? directDeleteCount,
 }) {
   String keep = 'largest';
+  final direct = directDeleteCount ?? 0;
+  final desc = direct > 0
+      ? '共 $count 个文件：本目录内重复的按保留条件每组保留 1 个；'
+            '另有 $direct 个仅与其它目录重复的文件将直接删除'
+      : '共 $count 个文件；本目录内重复的每组保留 1 个，'
+            '仅与其它目录重复的文件将直接删除';
   return showDialog<String>(
     context: context,
     builder:
@@ -91,11 +100,7 @@ Future<String?> showKeepDialog(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        '共 $count 个文件；本目录内重复的每组保留 1 个，'
-                        '仅与其它目录重复的文件将直接删除',
-                        style: const TextStyle(fontSize: 12),
-                      ),
+                      Text(desc, style: const TextStyle(fontSize: 12)),
                       const SizedBox(height: 8),
                       for (final k in const [
                         'largest',
@@ -134,11 +139,14 @@ Future<String?> showKeepDialog(
 }
 
 /// 清除确认对话框，确认返回 true。
+/// keep 为空或 directOnly=true 时（目录清除且无本目录内重复组），
+/// 不显示"保留条件"行，改为说明全部直接删除。
 Future<bool> confirmClearDialog(
   BuildContext context, {
   required String title,
   required String keep,
   required int count,
+  bool directOnly = false,
 }) async {
   final result = await showDialog<bool>(
     context: context,
@@ -147,7 +155,7 @@ Future<bool> confirmClearDialog(
           title: Text(title),
           content: Text(
             '将删除 $count 个文件（含生成的缩略图、media 表数据、本地文件）\n'
-            '保留条件：${keepLabel(keep)}',
+            '${directOnly ? '本目录下文件仅与其它目录重复，将全部直接删除（其它目录不受影响）' : '保留条件：${keepLabel(keep)}'}',
           ),
           actions: [
             TextButton(
