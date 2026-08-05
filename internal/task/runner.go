@@ -684,7 +684,9 @@ func (r *Runner) execNetdriveSha1(ctx context.Context, task *repo.BackgroundTask
 			report()
 			continue
 		}
-		if err := r.Media.UpdateSha1(item.ID, info.Sha1); err != nil {
+		// 统一转小写：与本地扫描生成的 sha1（hex.EncodeToString 小写）保持一致，
+		// 否则同一文件大小写不同的两条记录无法被 groupBySha1 精确分组（重复检测漏报）。
+		if err := r.Media.UpdateSha1(item.ID, strings.ToLower(info.Sha1)); err != nil {
 			mu.Lock()
 			failed++
 			mu.Unlock()

@@ -339,7 +339,11 @@ func (r *MediaRepo) UpdateThumbnailPath(id int64, thumbPath *string) error {
 }
 
 // UpdateSha1 更新媒体记录的 SHA1（补齐 SHA1 任务使用）。
+// 写入前统一转为小写并去除首尾空白：与本地扫描生成的 sha1
+// （hex.EncodeToString 小写）保持一致，避免同一文件因大小写不同
+// 无法被 groupBySha1 精确分组（重复检测漏报）。
 func (r *MediaRepo) UpdateSha1(id int64, sha1 string) error {
+	sha1 = strings.ToLower(strings.TrimSpace(sha1))
 	if _, err := r.db.Exec(`UPDATE media SET sha1 = ? WHERE id = ?`, sha1, id); err != nil {
 		return errx.Wrapf(err, "更新媒体 sha1 id=%d", id)
 	}

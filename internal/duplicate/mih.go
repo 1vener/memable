@@ -166,10 +166,17 @@ func (idx *PhashIndex) QueryAll(maxDist int, queryIdx []int) [][]int {
 				end := idx.bucketOffset[seg][bv+1]
 				for p := start; p < end; p++ {
 					ci := int(idx.postings[p])
-					if ci <= i {
+					if ci == i {
 						continue
 					}
-					pairKey := uint64(i)<<32 | uint64(ci)
+					// 规范化 pair key：小的在前，保证 (i,j) 与 (j,i) 只统计一次。
+					// 不能跳过 ci < i 的候选：queryIdx 只查询部分索引（增量/目录对比）时，
+					// 若目标索引大于存量索引，跳过会把这对漏掉。
+					a, b := i, ci
+					if a > b {
+						a, b = b, a
+					}
+					pairKey := uint64(a)<<32 | uint64(b)
 					if seen[pairKey] {
 						continue
 					}
