@@ -467,13 +467,13 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
               .toList();
       final keep = await showKeepDialog(
         context,
-        title: '一键清除此目录重复数据',
+        title: '删除此目录下所有重复数据',
         count: dirItems.length,
       );
       if (keep == null || !mounted) return;
       final ok = await confirmClearDialog(
         context,
-        title: '一键清除此目录重复数据',
+        title: '删除此目录下所有重复数据',
         keep: keep,
         count: dirItems.length,
       );
@@ -548,7 +548,9 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
     }
   }
 
-  /// 计算本目录内每组按保留条件应删除的 media id 列表（乐观更新用）。
+  /// 计算本目录内每组按保留条件应删除的 media id 列表（乐观更新用，与后端 DirClear 一致）。
+  /// 语义：删除本目录下所有重复数据——组内本目录成员 >=2 时按保留条件保留 1 个删其余；
+  /// 组内本目录成员 ==1（仅与其它目录文件重复）时直接删除本目录这一份；绝不删除其它目录文件。
   List<int> _computeDirDeletedIds(List<DuplicateItem> dirItems, String keep) {
     final byGroup = <int, List<DuplicateItem>>{};
     for (final item in dirItems) {
@@ -558,7 +560,11 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
     }
     final toDelete = <int>[];
     for (final members in byGroup.values) {
-      if (members.length < 2) continue;
+      if (members.isEmpty) continue;
+      if (members.length < 2) {
+        toDelete.add(members.first.id);
+        continue;
+      }
       final keepIdx = pickKeepIndex(members, keep);
       for (var i = 0; i < members.length; i++) {
         if (i != keepIdx) toDelete.add(members[i].id);
@@ -833,7 +839,7 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.delete_sweep_outlined, size: 16),
-              label: Text(_clearingDir ? '清除中…' : '一键清除此目录重复数据'),
+              label: Text(_clearingDir ? '清除中…' : '删除此目录下所有重复数据'),
             ),
         ],
       ),
@@ -1013,7 +1019,8 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
   }
 
   /// 目录树叠卡：按重复组聚合。目录对比的组是"目标 vs 存量"，目录内通常只有
-  /// 1 个成员，因此单成员组也展示（叠卡显示本目录成员，点击进组详情看全部）。
+  /// 1 个成员，因此单成员组也展示；叠卡展示整组成员（本目录成员优先，
+  /// 其它目录成员补充），数量徽标与叠卡反映整组重复文件总数，点击进组详情看全部。
   Widget _buildDirClusters(List<DuplicateItem> files, ColorScheme cs) {
     if (files.isEmpty) {
       return Center(
@@ -1033,6 +1040,8 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
         child: Text('此目录没有直属重复文件', style: TextStyle(color: cs.outline)),
       );
     }
+    final selected =
+        _selectedDirectory ?? (_tree.isNotEmpty ? _tree.first.path : null);
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Wrap(
@@ -1041,7 +1050,11 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
         children: [
           for (final entry in clusters.entries)
             StackedCluster(
-              items: entry.value,
+              items: _clusterItemsFor(
+                entry.value,
+                _groupByMediaId[entry.value.first.id],
+                selected,
+              ),
               api: widget.api,
               width: 300,
               onTap: () {
@@ -1060,6 +1073,24 @@ class _DirCompareScreenState extends State<DirCompareScreen> {
         ],
       ),
     );
+  }
+
+  /// 叠卡的展示成员：当前目录成员排前，其余目录成员排后，
+  /// 使数量徽标与叠卡预览反映整组重复文件（叠卡最多预览 3 张）。
+  List<DuplicateItem> _clusterItemsFor(
+    List<DuplicateItem> localMembers,
+    DirCompareGroupItem? group,
+    String? selected,
+  ) {
+    if (group == null || selected == null) {
+      return localMembers;
+    }
+    final local = <DuplicateItem>[];
+    final rest = <DuplicateItem>[];
+    for (final m in group.items) {
+      (relDir(m.relativePath) == selected ? local : rest).add(m);
+    }
+    return [...local, ...rest];
   }
 
   // ===== 分组视图 =====

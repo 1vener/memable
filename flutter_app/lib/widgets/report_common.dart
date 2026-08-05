@@ -299,6 +299,8 @@ class StackedCluster extends StatelessWidget {
     // 叠卡最多展示 3 张，数量只影响内部层数，不改变外框尺寸
     final preview = items.take(3).toList();
     final first = items.first;
+    // 重复文件超过 3 个时，数量胶囊增强显示（叠卡层数不再增加，数字是唯一体现数量的地方）
+    final prominent = items.length > 3;
 
     const clusterRadius = 16.0;
     const contentPadding = 10.0;
@@ -373,47 +375,62 @@ class StackedCluster extends StatelessWidget {
                             ),
                           ),
                         ),
-                      // 数量信息胶囊：白色文字 + 极淡深色底，保证在图片上有对比度，
-                      // 深浅主题下均清晰可读
+                      // 数量信息胶囊：白色文字 + 深色半透明底，保证在图片上有对比度，
+                      // 深浅主题下均清晰可读；重复文件超过 3 个时加深底、亮边框、放大文字。
                       Positioned(
                         right: 12,
                         top: 12,
                         child: DecoratedBox(
                           decoration: BoxDecoration(
-                            color: Colors.black.withValues(
-                              alpha:
-                                  cs.brightness == Brightness.dark ? 0.45 : 0.28,
+                            color: prominent
+                                ? cs.surfaceContainerHighest
+                                : (cs.brightness == Brightness.dark
+                                ? Colors.black.withValues(alpha: 0.45)
+                                : Colors.black.withValues(alpha: 0.28)),
+                            borderRadius: BorderRadius.circular(
+                              prominent ? 12 : 10,
                             ),
-                            borderRadius: BorderRadius.circular(10),
                             border: Border.all(
-                              color: cs.primary.withValues(alpha: 0.35),
+                              color: cs.primary.withValues(
+                                alpha: prominent ? 1.0 : 0.35,
+                              ),
+                              width: prominent ? 1.5 : 1,
                             ),
+                            boxShadow: prominent
+                                ? [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.35),
+                                blurRadius: 4,
+                                offset: const Offset(0, 1),
+                              ),
+                            ]
+                                : null,
                           ),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 9,
-                              vertical: 5,
+                            padding: EdgeInsets.symmetric(
+                              horizontal: prominent ? 12 : 9,
+                              vertical: prominent ? 7 : 5,
                             ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(
+                                Icon(
                                   Icons.layers_outlined,
-                                  size: 14,
+                                  size: prominent ? 16 : 14,
                                   color: Colors.white,
                                 ),
                                 const SizedBox(width: 5),
                                 Text(
                                   '${items.length} 个文件',
                                   style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
+                                    fontSize: prominent ? 13 : 11,
+                                    fontWeight: prominent
+                                        ? FontWeight.w800
+                                        : FontWeight.w600,
                                     color: Colors.white,
                                     shadows: [
                                       Shadow(
-                                        color: Colors.black.withValues(
-                                          alpha: 0.35,
-                                        ),
+                                        color: Colors.black.withValues(alpha: 0.35),
                                         blurRadius: 2,
                                       ),
                                     ],

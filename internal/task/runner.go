@@ -518,7 +518,7 @@ func (r *Runner) execScanSha1(ctx context.Context, task *repo.BackgroundTask, pr
 		item := item
 		if !pool.Submit(&worker.ScanJob{
 			Run: func(jobCtx context.Context) error {
-				slog.Info("处理文件", "dir", filepath.Dir(item.RelativePath), "file", filepath.Base(item.RelativePath))
+				slog.Debug("处理文件", "dir", filepath.Dir(item.RelativePath), "file", filepath.Base(item.RelativePath))
 				mu.Lock()
 				processed++
 				mu.Unlock()

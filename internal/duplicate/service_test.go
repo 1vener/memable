@@ -1063,3 +1063,108 @@ func TestGenerateDirCompare(t *testing.T) {
 		t.Fatalf("最新目录对比报告不符: %+v", latest)
 	}
 }
+
+// TestDirClearDirectoryScope 回归：目录对比"删除此目录下所有重复数据"与重复报告语义一致——
+// 按"本目录成员"为单位处理、只删本目录数据：组内本目录成员 >=2 按保留条件保留 1 个删其余；
+// 组内本目录成员 ==1（目标 vs 存量的典型形态）直接删除本目录这一份；其它目录成员一律不动。
+func TestDirClearDirectoryScope(t *testing.T) {
+	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
+	dbh, err := db.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbh.Close()
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatal(err)
+	}
+
+	lr := repo.NewLibraryRepo(dbh)
+	mr := repo.NewMediaRepo(dbh)
+	svc := NewService(repo.NewDuplicateRepo(dbh), repo.NewDirDuplicateRepo(dbh), mr, lr, cfg, "", "")
+
+	root := t.TempDir()
+	libDir := filepath.Join(root, "lib")
+	for _, d := range []string{"target", "other"} {
+		if err := os.MkdirAll(filepath.Join(libDir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 组 A：target/a + other/b（目标 1 成员 vs 存量 1 成员）
+	// 组 B：target/c + target/d + other/e（目标 2 成员 vs 存量 1 成员）
+	writePNG(t, filepath.Join(libDir, "target", "a.png"), color.RGBA{R: 220, G: 40, B: 40, A: 255}, 64)
+	writePNG(t, filepath.Join(libDir, "other", "b.png"), color.RGBA{R: 220, G: 40, B: 40, A: 255}, 64)
+	writePNG(t, filepath.Join(libDir, "target", "c.png"), color.RGBA{R: 20, G: 180, B: 20, A: 255}, 32)
+	writePNG(t, filepath.Join(libDir, "target", "d.png"), color.RGBA{R: 20, G: 180, B: 20, A: 255}, 32)
+	writePNG(t, filepath.Join(libDir, "other", "e.png"), color.RGBA{R: 20, G: 180, B: 20, A: 255}, 32)
+
+	lib := &repo.Library{Name: "对比库", Path: libDir, Kind: "image"}
+	if err := lr.Create(lib); err != nil {
+		t.Fatal(err)
+	}
+	// 直接扫描入库（与 TestGenerateDirCompare 使用同一媒体写入路径）
+	sessionRepo := repo.NewSessionRepo(dbh)
+	scanSvc := &scan.Service{
+		Sessions: sessionRepo, Media: mr, Config: cfg,
+		ImageThumbBase: filepath.Join(root, "thumbs"), Libraries: lr,
+	}
+	noop := func(string, int, int, int, int, int, int64, int64, float64, *int64) {}
+	if _, err := scanSvc.ExecuteScan(context.Background(), *lib, "session-1", false, false, 2, noop); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := Options{MediaType: "image", ImageThreshold: 90, IncludeSHA1: true}
+	rep, err := svc.GenerateDirCompare(opts, lib.ID, "target", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.TotalGroups != 2 || rep.TotalFiles != 5 {
+		t.Fatalf("目录对比报告应 2 组 5 文件: %+v", rep)
+	}
+
+	exist := func(rel string) bool {
+		_, err := os.Stat(filepath.Join(libDir, filepath.FromSlash(rel)))
+		return err == nil
+	}
+
+	// 清除 target 目录：组 A 本目录仅 1 成员（a）→ 直接删除；
+	// 组 B 本目录 2 成员（c/d）→ 按保留条件保留 1 个删 1 个；other 成员一律不动。
+	res, err := svc.DirClear(ClearRequest{
+		Scope: "directory", Keep: "largest", Directory: "target",
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedFiles != 2 {
+		t.Fatalf("清除 target 应删 2 个文件，实际 %d", res.DeletedFiles)
+	}
+	if exist("target/a.png") {
+		t.Fatalf("target/a.png 应已删除（组 A 本目录唯一成员）")
+	}
+	if !(exist("target/c.png") || exist("target/d.png")) {
+		t.Fatalf("组 B 应保留 1 个（c 或 d）")
+	}
+	if exist("other/b.png") == false || exist("other/e.png") == false {
+		t.Fatalf("清除 target 不应影响 other 目录文件")
+	}
+
+	// 清除 other 目录：第一次清除 target 后组 A（a/b）已被 prune，b 不再属于任何组，
+	// 不参与清除；组 B 本目录仅 1 成员（e）→ 直接删除。
+	res, err = svc.DirClear(ClearRequest{
+		Scope: "directory", Keep: "largest", Directory: "other",
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedFiles != 1 {
+		t.Fatalf("清除 other 应删 1 个文件（e），实际 %d", res.DeletedFiles)
+	}
+	if exist("other/e.png") {
+		t.Fatalf("other/e.png 应已删除")
+	}
+	if exist("other/b.png") == false {
+		t.Fatalf("b 所在组已被 prune，不应再被删除")
+	}
+	if !(exist("target/c.png") || exist("target/d.png")) {
+		t.Fatalf("清除 other 不应影响 target 目录保留文件")
+	}
+}

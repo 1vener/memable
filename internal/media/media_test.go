@@ -426,3 +426,75 @@ func TestFileEntryDecoder(t *testing.T) {
 		}
 	}
 }
+
+// makeSolidImage 构造纯色图像（均值恒定，标准差为 0）。
+func makeSolidImage(w, h int, lum uint8) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: lum, G: lum, B: lum, A: 255})
+		}
+	}
+	return img
+}
+
+// TestIsBlackOrSolidImage 验证近纯色判定改为相对标准差：
+// 偏暗但有对比的帧（暗视频常见）不再误判为无效；纯黑与纯色帧仍判无效。
+func TestIsBlackOrSolidImage(t *testing.T) {
+	// 纯黑：均值 < 8 → 无效
+	if !isBlackOrSolidImage(makeSolidImage(64, 64, 0)) {
+		t.Fatalf("纯黑帧应判为无效")
+	}
+	// 纯灰（均值 100，标准差 0）：近纯色 → 无效
+	if !isBlackOrSolidImage(makeSolidImage(64, 64, 100)) {
+		t.Fatalf("纯灰帧应判为无效")
+	}
+
+	// 偏暗但有对比：均值约 40，标准差 > mean*5% → 有效（旧逻辑标准差 < 2 会误判）
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			lum := uint8(40 + (x%8)*2) // 40~54 波动，标准差 > 2
+			img.Set(x, y, color.RGBA{R: lum, G: lum, B: lum, A: 255})
+		}
+	}
+	if isBlackOrSolidImage(img) {
+		t.Fatalf("偏暗但有对比的帧应判为有效")
+	}
+}
+
+// TestSelectSpriteCoverFallsBackToVarianceMax 回归：视频短且偏暗导致 sprite 中
+// 全部帧被判无效时，selectSpriteCover 应兜底返回亮度方差最大的一帧而非报错，
+// 保证封面帧 pHash 与封面始终可用。
+func TestSelectSpriteCoverFallsBackToVarianceMax(t *testing.T) {
+	fw, fh := 160, 90
+	sprite := image.NewRGBA(image.Rect(0, 0, fw*spriteCols, fh*spriteRows))
+	// 全部 25 帧均为近纯色暗帧（相对标准差 < mean*5%，均判无效）；
+	// 第 24 帧（最后一张）带少量亮度波动，是所有无效帧中方差最大的一帧。
+	for i := 0; i < spriteCount; i++ {
+		ox, oy := i%spriteCols*fw, i/spriteCols*fh
+		for y := 0; y < fh; y++ {
+			for x := 0; x < fw; x++ {
+				lum := uint8(30)
+				if i == spriteCount-1 {
+					// 30~34 波动：均值 ≈32，标准差 ≈1.1 < 32*5%=1.6 → 仍判无效
+					lum = 30 + uint8(x%5)
+				}
+				sprite.Set(ox+x, oy+y, color.RGBA{R: lum, G: lum, B: lum, A: 255})
+			}
+		}
+	}
+
+	cover, err := selectSpriteCover(sprite)
+	if err != nil {
+		t.Fatalf("全暗 sprite 应兜底返回封面帧而非报错: %v", err)
+	}
+	b := cover.Bounds()
+	if b.Dx() != fw || b.Dy() != fh {
+		t.Fatalf("封面帧尺寸异常: %+v", b)
+	}
+	// 兜底帧应为方差最大的最后一帧（含亮度波动，非纯色帧）
+	if v, ok := luminanceVariance(cover); !ok || v < 0.5 {
+		t.Fatalf("兜底帧应含亮度波动（方差 %v），实际 %v", v, ok)
+	}
+}

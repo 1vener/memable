@@ -328,7 +328,7 @@ func (s *Service) ScanLibrary(ctx context.Context, lib repo.Library, sessionID s
 }
 
 func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string, e media.FileEntry) (*repo.Media, error) {
-	slog.Info("处理文件", "dir", filepath.Dir(e.RelativePath), "file", filepath.Base(e.RelativePath))
+	slog.Debug("处理文件", "dir", filepath.Dir(e.RelativePath), "file", filepath.Base(e.RelativePath))
 	// 图片需要 SHA1（缩略图内容寻址 + sha1_exact 精确去重），在解码时经 TeeReader
 	// 一次读完成（DecodeImageWithSHA1）；视频主扫描不计算 SHA1，避免大文件全量读取，
 	// 需要时由独立 scan_sha1 任务补齐。

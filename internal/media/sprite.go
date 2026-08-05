@@ -191,11 +191,19 @@ func buildSpriteFromStrips(stripPaths []string, outPath string) error {
 }
 
 // selectSpriteCover 优先取第 13 帧（50% 附近），无效时向前后寻找最近候选。
+// selectSpriteCover 优先取第 13 帧（50% 附近），无效时向前后寻找最近候选。
+// 全部帧均无效（视频短且偏暗/近纯色）时兜底返回亮度方差最大的一帧，
+// 保证封面帧 pHash 与封面始终可用，避免短视频/暗视频整体处理失败。
 func selectSpriteCover(sprite image.Image) (image.Image, error) {
 	b := sprite.Bounds()
 	fw, fh := b.Dx()/spriteCols, b.Dy()/spriteRows
 	if fw <= 0 || fh <= 0 {
 		return nil, fmt.Errorf("sprite 尺寸无效: %dx%d", b.Dx(), b.Dy())
+	}
+	frameAt := func(index int) image.Image {
+		x := b.Min.X + index%spriteCols*fw
+		y := b.Min.Y + index/spriteCols*fh
+		return cropImage(sprite, image.Rect(x, y, x+fw, y+fh))
 	}
 	center := spriteCount / 2
 	for distance := 0; distance < spriteCount; distance++ {
@@ -207,15 +215,50 @@ func selectSpriteCover(sprite image.Image) (image.Image, error) {
 			if index < 0 || index >= spriteCount {
 				continue
 			}
-			x := b.Min.X + index%spriteCols*fw
-			y := b.Min.Y + index/spriteCols*fh
-			frame := cropImage(sprite, image.Rect(x, y, x+fw, y+fh))
+			frame := frameAt(index)
 			if !isBlackOrSolidImage(frame) {
 				return frame, nil
 			}
 		}
 	}
-	return nil, fmt.Errorf("sprite 中没有有效封面帧")
+	// 兜底：全帧无效时选亮度方差最大的一帧（内容最丰富），而不是报错
+	bestIndex, bestVariance := -1, -1.0
+	for i := 0; i < spriteCount; i++ {
+		if v, ok := luminanceVariance(frameAt(i)); ok && v > bestVariance {
+			bestIndex, bestVariance = i, v
+		}
+	}
+	if bestIndex < 0 {
+		return nil, fmt.Errorf("sprite 中没有有效封面帧")
+	}
+	return frameAt(bestIndex), nil
+}
+
+// luminanceVariance 计算图像的亮度方差（采样降采样），并返回是否有有效像素。
+func luminanceVariance(img image.Image) (float64, bool) {
+	b := img.Bounds()
+	var sum, count float64
+	for y := b.Min.Y; y < b.Max.Y; y += 4 {
+		for x := b.Min.X; x < b.Max.X; x += 4 {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			sum += (float64(r) + float64(g) + float64(bl)) / 3.0 / 257.0
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, false
+	}
+	mean := sum / count
+	var sqSum float64
+	for y := b.Min.Y; y < b.Max.Y; y += 4 {
+		for x := b.Min.X; x < b.Max.X; x += 4 {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			lum := (float64(r) + float64(g) + float64(bl)) / 3.0 / 257.0
+			diff := lum - mean
+			sqSum += diff * diff
+		}
+	}
+	return sqSum / count, true
 }
 
 func cropImage(src image.Image, rect image.Rectangle) image.Image {

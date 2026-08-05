@@ -156,7 +156,9 @@ func ffmpegExtractFrame(ctx context.Context, videoPath string, timeMs int64, out
 }
 
 // isBlackOrSolid 检测图片是否为黑屏或近纯色。
-// 判据：像素均值 < 8（黑屏）或所有像素与均值的标准差 < 2（近纯色）。
+// 判据：像素均值 < 8（黑屏）或相对标准差 < 5%（近纯色）。
+// 相对判据（标准差 / 均值）避免"偏暗但有效"的视频帧被误判为近纯色：
+// 暗场景均值低、绝对标准差天然小，但若内容有对比（stddev 与 mean 同量级）仍应视为有效。
 func isBlackOrSolid(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -207,7 +209,9 @@ func isBlackOrSolidImage(img image.Image) bool {
 		}
 	}
 	stddev := math.Sqrt(sqSum / count)
-	return stddev < 2.0 // 近纯色
+	// 近纯色：相对标准差 < 5%（标准差显著小于均值）。
+	// 纯黑帧由 mean < 8 拦截；这里对"暗但有对比"的帧放行。
+	return stddev < mean*0.05
 }
 
 // ReplaceExt 替换文件扩展名。
