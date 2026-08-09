@@ -165,6 +165,9 @@ type FileTreeNode struct {
 	HasChildren bool   `json:"has_children,omitempty"`
 }
 
+// handleFileTree 返回库下指定目录的直属子目录，数据由 media 表
+// relative_path 派生（ListDirChildren），不再读取本地文件路径——
+// 扫描/改名/移动/删除后树自动反映数据库真值，云盘挂载等慢速磁盘也不受影响。
 func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 	id, err := parseInt64(r.PathValue("id"))
 	if err != nil {
@@ -187,39 +190,21 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "路径非法")
 		return
 	}
-	nodes := listDirChildren(lib.Path, dir)
-	writeJSON(w, 200, nodes)
-}
-
-// listDirChildren 列出指定目录的直属子项，目录节点仅检查是否有子项（has_children），不递归。
-func listDirChildren(basePath, relPath string) []FileTreeNode {
-	absPath := filepath.Join(basePath, relPath)
-	entries, err := os.ReadDir(absPath)
+	children, err := s.media.ListDirChildren(lib.ID, dir)
 	if err != nil {
-		return []FileTreeNode{}
+		writeError(w, 500, "查询目录树失败: "+err.Error())
+		return
 	}
-
-	nodes := make([]FileTreeNode, 0, len(entries))
-	for _, e := range entries {
-		childRel := joinPath(relPath, e.Name())
-		node := FileTreeNode{
-			Name:  e.Name(),
-			Path:  childRel,
-			IsDir: e.IsDir(),
-		}
-		if e.IsDir() {
-			// 检查子目录是否有子项（用于展开图标）
-			subEntries, err := os.ReadDir(filepath.Join(basePath, childRel))
-			node.HasChildren = err == nil && len(subEntries) > 0
-		} else {
-			info, _ := e.Info()
-			if info != nil {
-				node.Size = info.Size()
-			}
-		}
-		nodes = append(nodes, node)
+	nodes := make([]FileTreeNode, 0, len(children))
+	for _, c := range children {
+		nodes = append(nodes, FileTreeNode{
+			Name:        c.Name,
+			Path:        c.Path,
+			IsDir:       true,
+			HasChildren: c.HasChildren,
+		})
 	}
-	return nodes
+	writeJSON(w, 200, nodes)
 }
 
 // isUnsafePath 检查路径是否包含 .. 等危险成分。
