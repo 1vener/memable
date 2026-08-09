@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"memable/internal/cmdx"
@@ -141,9 +142,15 @@ func needsScaledDecode(w, h int) bool {
 }
 
 // decodeImageWithFFmpeg 通过 FFmpeg 将源文件转为临时 PNG 再用 Go 解码。
-// 适用于 HEIC、CR2 等解码器不直接支持的格式。
+// 适用于 HEIC 等解码器不直接支持的格式。CR2 例外：FFmpeg 无 CR2 demuxer
+// 直接转换必失败，先走内嵌 JPEG 预览提取（cr2.go，纯 Go），失败才回退 FFmpeg。
 // 单文件超时 60 秒；若 ctx 先到期则以 ctx 为准。
 func decodeImageWithFFmpeg(ctx context.Context, srcPath string) (image.Image, string, error) {
+	if strings.EqualFold(filepath.Ext(srcPath), ".cr2") {
+		if img, format, err := decodeCR2EmbeddedPreview(ctx, srcPath); err == nil {
+			return img, format, nil
+		}
+	}
 	return decodeImageWithFFmpegFilter(ctx, srcPath, "")
 }
 

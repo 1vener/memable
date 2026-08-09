@@ -4,8 +4,10 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"memable/internal/media"
@@ -412,6 +415,63 @@ func splitRelPath(rel string) (parent, base string) {
 	return rel[:idx], rel[idx+1:]
 }
 
+// renameDirWithRetry 目录改名带短暂重试：Windows 上杀毒软件/索引器/资源管理器可能瞬时
+// 占用目录导致 Access denied，稍等片刻重试可避免偶发失败。
+func renameDirWithRetry(src, dst string) error {
+	var err error
+	for i := 0; i < 3; i++ {
+		if err = os.Rename(src, dst); err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(i) * 300 * time.Millisecond)
+	}
+	return err
+}
+
+// findLockedFiles 尝试以读写方式打开目录树内各文件，收集被其它进程占用（无法打开）的文件。
+// O_RDWR 失败但 O_RDONLY 成功视为只读属性而非占用，不列入。
+func findLockedFiles(absDir string, limit int) []string {
+	locked := make([]string, 0, limit)
+	checked := 0
+	filepath.WalkDir(absDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if len(locked) >= limit || checked >= 5000 {
+			return fs.SkipAll
+		}
+		checked++
+		f, err := os.OpenFile(p, os.O_RDWR, 0)
+		if err == nil {
+			_ = f.Close()
+			return nil
+		}
+		rf, err2 := os.Open(p)
+		if err2 == nil {
+			_ = rf.Close()
+			return nil
+		}
+		locked = append(locked, p)
+		return nil
+	})
+	return locked
+}
+
+// dirRenameErrMsg 组装目录改名/移动失败的错误信息。Windows 上 Access denied 常见原因是
+// 目录内文件被其它进程占用，追加被占用文件清单与排查提示。
+func dirRenameErrMsg(op string, err error, srcAbs string) string {
+	msg := op + ": " + err.Error()
+	if runtime.GOOS != "windows" || (!errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM)) {
+		return msg
+	}
+	locked := findLockedFiles(srcAbs, 20)
+	if len(locked) == 0 {
+		return msg + "。目录可能正被其它程序占用（如资源管理器正在浏览/定位该目录、该目录是某程序的当前目录），请关闭相关程序后重试"
+	}
+	return fmt.Sprintf("%s。检测到 %d 个文件被其它程序占用，请先关闭占用程序（常见：资源管理器预览窗格、下载工具、播放器、杀毒软件）再重试。被占用文件：%s",
+		msg, len(locked), strings.Join(locked, "、"))
+}
+
 // handleRenameDirectory 重命名库内目录：本地改名 + 批量更新 media.relative_path 前缀。
 // 顺序：先改盘（原子 rename），成功后改库；库更新失败时回滚移回。
 func (s *Server) handleRenameDirectory(w http.ResponseWriter, r *http.Request) {
@@ -484,18 +544,18 @@ func (s *Server) handleRenameDirectory(w http.ResponseWriter, r *http.Request) {
 	if caseOnly {
 		tmpName := fmt.Sprintf(".%s.ren-%d", base, time.Now().UnixNano())
 		tmpAbs := filepath.Join(filepath.Dir(absOld), tmpName)
-		if err := os.Rename(absOld, tmpAbs); err != nil {
-			writeError(w, 500, "改名失败: "+err.Error())
+		if err := renameDirWithRetry(absOld, tmpAbs); err != nil {
+			writeError(w, 500, dirRenameErrMsg("改名失败", err, absOld))
 			return
 		}
-		if err := os.Rename(tmpAbs, absNew); err != nil {
+		if err := renameDirWithRetry(tmpAbs, absNew); err != nil {
 			_ = os.Rename(tmpAbs, absOld) // 回滚临时名
-			writeError(w, 500, "改名失败: "+err.Error())
+			writeError(w, 500, dirRenameErrMsg("改名失败", err, tmpAbs))
 			return
 		}
 	} else {
-		if err := os.Rename(absOld, absNew); err != nil {
-			writeError(w, 500, "改名失败: "+err.Error())
+		if err := renameDirWithRetry(absOld, absNew); err != nil {
+			writeError(w, 500, dirRenameErrMsg("改名失败", err, absOld))
 			return
 		}
 	}
@@ -596,8 +656,8 @@ func (s *Server) handleMoveDirectory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "创建目标目录失败: "+err.Error())
 		return
 	}
-	if err := os.Rename(absOld, absNew); err != nil {
-		writeError(w, 500, "移动目录失败（同卷移动，跨卷或占用时无法完成）: "+err.Error())
+	if err := renameDirWithRetry(absOld, absNew); err != nil {
+		writeError(w, 500, dirRenameErrMsg("移动目录失败（同卷移动，跨卷或占用时无法完成）", err, absOld))
 		return
 	}
 
