@@ -558,6 +558,25 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   }
 
   @override
+  void didUpdateWidget(covariant _FileTreePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 切换收藏库时重置面板状态并重载目录树；
+    // 无此处理时 State 被复用（无 key），树仍显示旧库数据。
+    if (oldWidget.library.id != widget.library.id) {
+      _rootChildren = [];
+      _loadingTree = true;
+      _error = null;
+      _expandedPaths.clear();
+      _expandedChildren.clear();
+      _loadingPaths.clear();
+      _selectedDir = '';
+      _files = [];
+      _typeFilter = null;
+      _loadRootChildren();
+    }
+  }
+
+  @override
   void dispose() {
     _netdriveTimer?.cancel();
     super.dispose();
