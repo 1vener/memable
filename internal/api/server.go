@@ -146,6 +146,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// 媒体操作
 	mux.HandleFunc("POST /api/media/{id}/open", s.handleOpenMedia)
+	mux.HandleFunc("GET /api/media/{id}/file", s.handleMediaFile)
 	mux.HandleFunc("POST /api/media/delete", s.handleDeleteMedia)
 
 	// 健康检查

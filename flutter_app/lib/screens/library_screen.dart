@@ -9,6 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
+import '../widgets/media_viewer.dart';
 import '../widgets/path_dialog.dart';
 import '../widgets/resizable_split.dart';
 
@@ -1349,7 +1350,8 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                   return _MediaThumbCard(
                     media: m,
                     thumbUrl: thumbUrl,
-                    onOpenFile: () => _openMediaFile(m.id, context),
+                    onOpenFile: () => _openInViewer(displayFiles, index),
+                    onOpenSystem: () => _openMediaFile(m.id, context),
                     onOpenDirectory: () => _openMediaDirectory(m.id, context),
                   );
                 },
@@ -1498,6 +1500,20 @@ class _FileTreePanelState extends State<_FileTreePanel> {
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  /// 应用内查看器：传当前排序/筛选后的列表，支持左右切换
+  void _openInViewer(List<Media> list, int index) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => MediaViewer(
+          medias: list,
+          initialIndex: index,
+          api: widget.api,
+        ),
+      ),
+    );
   }
 
   Future<void> _openMediaFile(int mediaId, BuildContext context) async {
@@ -2159,12 +2175,14 @@ class _MediaThumbCard extends StatelessWidget {
   final Media media;
   final String? thumbUrl;
   final VoidCallback? onOpenFile;
+  final VoidCallback? onOpenSystem;
   final VoidCallback? onOpenDirectory;
 
   const _MediaThumbCard({
     required this.media,
     required this.thumbUrl,
     this.onOpenFile,
+    this.onOpenSystem,
     this.onOpenDirectory,
   });
 
@@ -2339,8 +2357,13 @@ class _MediaThumbCard extends StatelessWidget {
               media.kind == 'video'
                   ? Icons.play_circle_outline
                   : Icons.image_outlined,
-          label: media.kind == 'video' ? '打开视频' : '打开图片',
+          label: '应用内查看',
           onTap: onOpenFile,
+        ),
+        ContextMenuItem(
+          icon: Icons.open_in_new,
+          label: '用系统默认程序打开',
+          onTap: onOpenSystem,
         ),
         ContextMenuItem(
           icon: Icons.folder_open,

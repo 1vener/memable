@@ -1064,52 +1064,19 @@ func (s *Server) handleOpenMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. 查询媒体记录
-	m, err := s.media.GetByID(id)
+	// 1. 查询媒体并校验完整路径（媒体/库存在、库内不越界、文件存在）
+	_, fileAbs, err := s.resolveMediaAbsPath(id)
 	if err != nil {
-		writeError(w, 500, "查询媒体失败: "+err.Error())
-		return
-	}
-	if m == nil {
-		writeError(w, 404, "媒体不存在")
+		var he *httpErr
+		if errors.As(err, &he) {
+			writeError(w, he.code, he.msg)
+			return
+		}
+		writeError(w, 500, err.Error())
 		return
 	}
 
-	// 2. 查询所属收藏库
-	lib, err := s.libraries.GetByID(m.LibraryID)
-	if err != nil {
-		writeError(w, 500, "查询收藏库失败: "+err.Error())
-		return
-	}
-	if lib == nil {
-		writeError(w, 404, "收藏库不存在")
-		return
-	}
-
-	// 3. 构造并校验完整路径
-	fullPath := filepath.Join(lib.Path, filepath.FromSlash(m.RelativePath))
-	libAbs, err := filepath.Abs(lib.Path)
-	if err != nil {
-		writeError(w, 500, "解析库路径失败")
-		return
-	}
-	fileAbs, err := filepath.Abs(fullPath)
-	if err != nil {
-		writeError(w, 500, "解析文件路径失败")
-		return
-	}
-	// 安全校验：文件必须在收藏库根目录内
-	rel, err := filepath.Rel(libAbs, fileAbs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		writeError(w, 403, "文件路径越界")
-		return
-	}
-	if _, err := os.Stat(fileAbs); err != nil {
-		writeError(w, 404, "文件已不存在")
-		return
-	}
-
-	// 4. 跨平台执行打开命令
+	// 2. 跨平台执行打开命令
 	slog.Info("打开系统文件/目录", "media_id", id, "action", req.Action, "path", fileAbs)
 	if err := openFile(req.Action, fileAbs); err != nil {
 		slog.Error("打开系统文件/目录失败", "media_id", id, "action", req.Action, "path", fileAbs, "err", err)

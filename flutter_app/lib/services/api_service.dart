@@ -1,8 +1,9 @@
 // api_service.dart：HTTP API 客户端
 // 代码注释使用中文
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:http/http.dart' as http;
 import '../models/models.dart';
 
@@ -327,14 +328,20 @@ class ApiService {
 
   /// 以图搜图（通过文件上传，服务端计算 pHash）
   Future<List<SearchResult>> searchImage({
-    required File file,
+    required PlatformFile file,
     int maxDistance = 12,
   }) async {
     final req = http.MultipartRequest(
       'POST',
       Uri.parse('$baseUrl/api/search/image/upload'),
     );
-    req.files.add(await http.MultipartFile.fromPath('image', file.path));
+    req.files.add(
+      http.MultipartFile.fromBytes(
+        'image',
+        await _fileBytes(file),
+        filename: file.name,
+      ),
+    );
     final streamed = await req.send();
     final res = await http.Response.fromStream(streamed);
     if (res.statusCode != 200) throw Exception('以图搜图失败: ${res.body}');
@@ -366,7 +373,7 @@ class ApiService {
   /// 以视频搜视频（通过文件上传，服务端提取首帧 pHash 与 sprite pHash）。
   /// imageMaxDistance/videoMaxDistance 为前端用户选择的两路距离阈值（0~64）。
   Future<List<SearchResult>> searchVideo(
-    File file, {
+    PlatformFile file, {
     int imageMaxDistance = 12,
     int videoMaxDistance = 16,
   }) async {
@@ -376,7 +383,13 @@ class ApiService {
     );
     req.fields['image_max_distance'] = '$imageMaxDistance';
     req.fields['video_max_distance'] = '$videoMaxDistance';
-    req.files.add(await http.MultipartFile.fromPath('video', file.path));
+    req.files.add(
+      http.MultipartFile.fromBytes(
+        'video',
+        await _fileBytes(file),
+        filename: file.name,
+      ),
+    );
     final streamed = await req.send();
     final res = await http.Response.fromStream(streamed);
     if (res.statusCode != 200) throw Exception('以视频搜视频失败: ${res.body}');
@@ -757,6 +770,17 @@ class ApiService {
   /// 缩略图 URL（kind: image/video；缩略图根目录按类型区分）
   String thumbnailUrl(String kind, String thumbnailPath) {
     return '$baseUrl/api/thumbnails/$kind/$thumbnailPath';
+  }
+
+  /// 媒体源文件字节地址（应用内查看器用，服务端 http.ServeContent 支持 Range）。
+  String mediaFileUrl(int mediaId) {
+    return '$baseUrl/api/media/$mediaId/file';
+  }
+
+  /// 取选中文件的字节：web 端 pickFiles 直接带 bytes，桌面端经 XFile 读取。
+  static Future<Uint8List> _fileBytes(PlatformFile f) async {
+    if (f.bytes != null) return f.bytes!;
+    return await f.xFile.readAsBytes();
   }
 
   // ===== 工具 - 文件统计 =====
