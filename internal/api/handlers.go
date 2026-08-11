@@ -4,10 +4,8 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"memable/internal/media"
@@ -165,9 +162,6 @@ type FileTreeNode struct {
 	HasChildren bool   `json:"has_children,omitempty"`
 }
 
-// handleFileTree 返回库下指定目录的直属子目录，数据由 media 表
-// relative_path 派生（ListDirChildren），不再读取本地文件路径——
-// 扫描/改名/移动/删除后树自动反映数据库真值，云盘挂载等慢速磁盘也不受影响。
 func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 	id, err := parseInt64(r.PathValue("id"))
 	if err != nil {
@@ -190,21 +184,39 @@ func (s *Server) handleFileTree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "路径非法")
 		return
 	}
-	children, err := s.media.ListDirChildren(lib.ID, dir)
-	if err != nil {
-		writeError(w, 500, "查询目录树失败: "+err.Error())
-		return
-	}
-	nodes := make([]FileTreeNode, 0, len(children))
-	for _, c := range children {
-		nodes = append(nodes, FileTreeNode{
-			Name:        c.Name,
-			Path:        c.Path,
-			IsDir:       true,
-			HasChildren: c.HasChildren,
-		})
-	}
+	nodes := listDirChildren(lib.Path, dir)
 	writeJSON(w, 200, nodes)
+}
+
+// listDirChildren 列出指定目录的直属子项，目录节点仅检查是否有子项（has_children），不递归。
+func listDirChildren(basePath, relPath string) []FileTreeNode {
+	absPath := filepath.Join(basePath, relPath)
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		return []FileTreeNode{}
+	}
+
+	nodes := make([]FileTreeNode, 0, len(entries))
+	for _, e := range entries {
+		childRel := joinPath(relPath, e.Name())
+		node := FileTreeNode{
+			Name:  e.Name(),
+			Path:  childRel,
+			IsDir: e.IsDir(),
+		}
+		if e.IsDir() {
+			// 检查子目录是否有子项（用于展开图标）
+			subEntries, err := os.ReadDir(filepath.Join(basePath, childRel))
+			node.HasChildren = err == nil && len(subEntries) > 0
+		} else {
+			info, _ := e.Info()
+			if info != nil {
+				node.Size = info.Size()
+			}
+		}
+		nodes = append(nodes, node)
+	}
+	return nodes
 }
 
 // isUnsafePath 检查路径是否包含 .. 等危险成分。
@@ -400,63 +412,6 @@ func splitRelPath(rel string) (parent, base string) {
 	return rel[:idx], rel[idx+1:]
 }
 
-// renameDirWithRetry 目录改名带短暂重试：Windows 上杀毒软件/索引器/资源管理器可能瞬时
-// 占用目录导致 Access denied，稍等片刻重试可避免偶发失败。
-func renameDirWithRetry(src, dst string) error {
-	var err error
-	for i := 0; i < 3; i++ {
-		if err = os.Rename(src, dst); err == nil {
-			return nil
-		}
-		time.Sleep(time.Duration(i) * 300 * time.Millisecond)
-	}
-	return err
-}
-
-// findLockedFiles 尝试以读写方式打开目录树内各文件，收集被其它进程占用（无法打开）的文件。
-// O_RDWR 失败但 O_RDONLY 成功视为只读属性而非占用，不列入。
-func findLockedFiles(absDir string, limit int) []string {
-	locked := make([]string, 0, limit)
-	checked := 0
-	filepath.WalkDir(absDir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if len(locked) >= limit || checked >= 5000 {
-			return fs.SkipAll
-		}
-		checked++
-		f, err := os.OpenFile(p, os.O_RDWR, 0)
-		if err == nil {
-			_ = f.Close()
-			return nil
-		}
-		rf, err2 := os.Open(p)
-		if err2 == nil {
-			_ = rf.Close()
-			return nil
-		}
-		locked = append(locked, p)
-		return nil
-	})
-	return locked
-}
-
-// dirRenameErrMsg 组装目录改名/移动失败的错误信息。Windows 上 Access denied 常见原因是
-// 目录内文件被其它进程占用，追加被占用文件清单与排查提示。
-func dirRenameErrMsg(op string, err error, srcAbs string) string {
-	msg := op + ": " + err.Error()
-	if runtime.GOOS != "windows" || (!errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM)) {
-		return msg
-	}
-	locked := findLockedFiles(srcAbs, 20)
-	if len(locked) == 0 {
-		return msg + "。目录可能正被其它程序占用（如资源管理器正在浏览/定位该目录、该目录是某程序的当前目录），请关闭相关程序后重试"
-	}
-	return fmt.Sprintf("%s。检测到 %d 个文件被其它程序占用，请先关闭占用程序（常见：资源管理器预览窗格、下载工具、播放器、杀毒软件）再重试。被占用文件：%s",
-		msg, len(locked), strings.Join(locked, "、"))
-}
-
 // handleRenameDirectory 重命名库内目录：本地改名 + 批量更新 media.relative_path 前缀。
 // 顺序：先改盘（原子 rename），成功后改库；库更新失败时回滚移回。
 func (s *Server) handleRenameDirectory(w http.ResponseWriter, r *http.Request) {
@@ -529,18 +484,18 @@ func (s *Server) handleRenameDirectory(w http.ResponseWriter, r *http.Request) {
 	if caseOnly {
 		tmpName := fmt.Sprintf(".%s.ren-%d", base, time.Now().UnixNano())
 		tmpAbs := filepath.Join(filepath.Dir(absOld), tmpName)
-		if err := renameDirWithRetry(absOld, tmpAbs); err != nil {
-			writeError(w, 500, dirRenameErrMsg("改名失败", err, absOld))
+		if err := os.Rename(absOld, tmpAbs); err != nil {
+			writeError(w, 500, "改名失败: "+err.Error())
 			return
 		}
-		if err := renameDirWithRetry(tmpAbs, absNew); err != nil {
+		if err := os.Rename(tmpAbs, absNew); err != nil {
 			_ = os.Rename(tmpAbs, absOld) // 回滚临时名
-			writeError(w, 500, dirRenameErrMsg("改名失败", err, tmpAbs))
+			writeError(w, 500, "改名失败: "+err.Error())
 			return
 		}
 	} else {
-		if err := renameDirWithRetry(absOld, absNew); err != nil {
-			writeError(w, 500, dirRenameErrMsg("改名失败", err, absOld))
+		if err := os.Rename(absOld, absNew); err != nil {
+			writeError(w, 500, "改名失败: "+err.Error())
 			return
 		}
 	}
@@ -641,8 +596,8 @@ func (s *Server) handleMoveDirectory(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "创建目标目录失败: "+err.Error())
 		return
 	}
-	if err := renameDirWithRetry(absOld, absNew); err != nil {
-		writeError(w, 500, dirRenameErrMsg("移动目录失败（同卷移动，跨卷或占用时无法完成）", err, absOld))
+	if err := os.Rename(absOld, absNew); err != nil {
+		writeError(w, 500, "移动目录失败（同卷移动，跨卷或占用时无法完成）: "+err.Error())
 		return
 	}
 
@@ -1064,19 +1019,52 @@ func (s *Server) handleOpenMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. 查询媒体并校验完整路径（媒体/库存在、库内不越界、文件存在）
-	_, fileAbs, err := s.resolveMediaAbsPath(id)
+	// 1. 查询媒体记录
+	m, err := s.media.GetByID(id)
 	if err != nil {
-		var he *httpErr
-		if errors.As(err, &he) {
-			writeError(w, he.code, he.msg)
-			return
-		}
-		writeError(w, 500, err.Error())
+		writeError(w, 500, "查询媒体失败: "+err.Error())
+		return
+	}
+	if m == nil {
+		writeError(w, 404, "媒体不存在")
 		return
 	}
 
-	// 2. 跨平台执行打开命令
+	// 2. 查询所属收藏库
+	lib, err := s.libraries.GetByID(m.LibraryID)
+	if err != nil {
+		writeError(w, 500, "查询收藏库失败: "+err.Error())
+		return
+	}
+	if lib == nil {
+		writeError(w, 404, "收藏库不存在")
+		return
+	}
+
+	// 3. 构造并校验完整路径
+	fullPath := filepath.Join(lib.Path, filepath.FromSlash(m.RelativePath))
+	libAbs, err := filepath.Abs(lib.Path)
+	if err != nil {
+		writeError(w, 500, "解析库路径失败")
+		return
+	}
+	fileAbs, err := filepath.Abs(fullPath)
+	if err != nil {
+		writeError(w, 500, "解析文件路径失败")
+		return
+	}
+	// 安全校验：文件必须在收藏库根目录内
+	rel, err := filepath.Rel(libAbs, fileAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		writeError(w, 403, "文件路径越界")
+		return
+	}
+	if _, err := os.Stat(fileAbs); err != nil {
+		writeError(w, 404, "文件已不存在")
+		return
+	}
+
+	// 4. 跨平台执行打开命令
 	slog.Info("打开系统文件/目录", "media_id", id, "action", req.Action, "path", fileAbs)
 	if err := openFile(req.Action, fileAbs); err != nil {
 		slog.Error("打开系统文件/目录失败", "media_id", id, "action", req.Action, "path", fileAbs, "err", err)

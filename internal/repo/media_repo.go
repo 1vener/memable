@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"memable/internal/errx"
 )
@@ -182,9 +181,9 @@ func (r *MediaRepo) RenameDirectoryPrefix(libraryID int64, oldPrefix, newPrefix 
 		`UPDATE media SET relative_path = ? || substr(relative_path, ?)
 		 WHERE library_id = ? AND substr(relative_path, 1, ?) = ?
 		   AND (length(relative_path) = ? OR substr(relative_path, ? + 1, 1) = '/')`,
-		newPrefix, utf8.RuneCountInString(oldPrefix)+1,
-		libraryID, utf8.RuneCountInString(oldPrefix), oldPrefix,
-		utf8.RuneCountInString(oldPrefix), utf8.RuneCountInString(oldPrefix),
+		newPrefix, len(oldPrefix)+1,
+		libraryID, len(oldPrefix), oldPrefix,
+		len(oldPrefix), len(oldPrefix),
 	)
 	if err != nil {
 		return 0, errx.Wrapf(err, "更新目录前缀 %q -> %q", oldPrefix, newPrefix)
@@ -216,70 +215,6 @@ func (r *MediaRepo) ListByDirectoryDirect(libraryID int64, relDir string) ([]Med
 		`SELECT `+mediaCols+` FROM media WHERE library_id = ? AND relative_path LIKE ? AND relative_path NOT LIKE ? ORDER BY relative_path`,
 		libraryID, prefix+"%", prefix+"%/%",
 	)
-}
-
-// DirChild 库目录树的单个子目录节点。
-type DirChild struct {
-	Name        string
-	Path        string
-	HasChildren bool
-}
-
-// ListDirChildren 返回库下指定目录的直属子目录，由 media.relative_path 派生，
-// 不读本地磁盘。目录改名/移动/删除、媒体增删后自动反映数据库真值；
-// 仅包含已入库媒体的目录（空目录、只有非媒体文件的目录不出现）。
-// 查询走 UNIQUE(library_id, relative_path) 索引做区间扫描，逐层懒加载。
-func (r *MediaRepo) ListDirChildren(libraryID int64, relDir string) ([]DirChild, error) {
-	parent := strings.TrimPrefix(strings.TrimPrefix(relDir, "/"), "\\")
-	parent = strings.Trim(strings.ReplaceAll(parent, "\\", "/"), "/")
-	pattern := "%"
-	if parent != "" {
-		pattern = parent + "/%"
-	}
-	// substr(relative_path, offset) 取 parent 之后的部分：offset = 字符数(parent)+2
-	// （substr 为 1 基，跳过 parent 与其后的 "/"）；根目录 offset=1 取整条路径。
-	// 注意必须用 RuneCountInString（字符数）而非 len（字节数）：SQLite 的
-	// substr/instr/length 一律按字符计，中文/emoji 目录名按字节算会切错位置，
-	// 导致子目录查询为空（曾踩坑：PLAN1/【...❤️...】 展开返回 0 个）。
-	// 内层 INSTR>0 排除直属文件（无斜杠，防根级文件被误判为目录）；
-	// 外层 MAX(has_more) 判定该子目录下是否还有更深层级（has_children）。
-	offset := utf8.RuneCountInString(parent) + 2
-	if parent == "" {
-		offset = 1
-	}
-	rows, err := r.db.Query(
-		`SELECT child, MAX(has_more) AS has_children FROM (
-			SELECT
-				SUBSTR(s, 1, INSTR(s, '/') - 1) AS child,
-				(INSTR(SUBSTR(s, INSTR(s, '/') + 1), '/') > 0) AS has_more
-			FROM (
-				SELECT substr(relative_path, ?) AS s
-				FROM media
-				WHERE library_id = ? AND relative_path LIKE ?
-				  AND INSTR(substr(relative_path, ?), '/') > 0
-			)
-		) WHERE child <> '' GROUP BY child ORDER BY child`,
-		offset, libraryID, pattern, offset,
-	)
-	if err != nil {
-		return nil, errx.Wrapf(err, "查询目录子项 %q", parent)
-	}
-	defer rows.Close()
-
-	children := make([]DirChild, 0)
-	for rows.Next() {
-		var name string
-		var hasChildren bool
-		if err := rows.Scan(&name, &hasChildren); err != nil {
-			return nil, errx.Wrapf(err, "读取目录子项 %q", parent)
-		}
-		path := name
-		if parent != "" {
-			path = parent + "/" + name
-		}
-		children = append(children, DirChild{Name: name, Path: path, HasChildren: hasChildren})
-	}
-	return children, rows.Err()
 }
 
 // DeleteByDirectory 删除库下指定目录及其子目录的所有媒体记录，

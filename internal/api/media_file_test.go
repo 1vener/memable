@@ -4,6 +4,7 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -121,5 +122,69 @@ func TestHandleMediaFileInvalid(t *testing.T) {
 	server.http.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("越界路径 code=%d, want 403", rec.Code)
+	}
+}
+
+// TestHandleMediaPath 媒体本地路径接口：返回库内绝对路径，越界/不存在报错。
+func TestHandleMediaPath(t *testing.T) {
+	server, mr, libID, root := setupMediaFileServer(t)
+	medias, err := mr.ListByLibrary(libID)
+	if err != nil || len(medias) != 1 {
+		t.Fatalf("读取媒体失败: %v", err)
+	}
+	id := medias[0].ID
+
+	req := httptest.NewRequest(http.MethodGet, "/api/media/"+formatInt64(id)+"/path", nil)
+	rec := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("path 请求 code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "sub", "a.jpg")
+	if out["path"] != want {
+		t.Fatalf("path = %q, want %q", out["path"], want)
+	}
+
+	// 不存在 → 404；越界 → 403
+	req = httptest.NewRequest(http.MethodGet, "/api/media/99999/path", nil)
+	rec = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("不存在媒体 code=%d, want 404", rec.Code)
+	}
+	evil := &repo.Media{LibraryID: libID, Kind: "image", RelativePath: "../evil.jpg", FileSize: 1, Mtime: time.Now().UTC()}
+	if err := mr.Upsert(evil); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/media/"+formatInt64(evil.ID)+"/path", nil)
+	rec = httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("越界路径 code=%d, want 403", rec.Code)
+	}
+}
+
+// TestSettingsExternalURLs settings 响应包含 external_urls 字段。
+func TestSettingsExternalURLs(t *testing.T) {
+	server, _, _, _ := setupMediaFileServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	rec := httptest.NewRecorder()
+	server.http.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings code=%d", rec.Code)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out["external_urls"]; !ok {
+		t.Fatal("settings 缺少 external_urls 字段")
+	}
+	if _, ok := out["server_port"]; !ok {
+		t.Fatal("settings 缺少 server_port 字段")
 	}
 }

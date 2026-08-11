@@ -3,6 +3,7 @@
 // 代码注释使用中文。
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart' as mk;
@@ -34,8 +35,15 @@ class _MediaViewerState extends State<MediaViewer> {
 
   VideoController? _videoController;
   bool _videoError = false;
+  String _videoErrorMessage = '';
   StreamSubscription<String>? _errorSub;
+  StreamSubscription<bool>? _playingSub;
   StreamSubscription<double>? _rateSub;
+
+  // 转码兜底（解码器不支持时自动转码播放）
+  bool _transcoding = false;
+  String? _transcodeError;
+  int? _transcodeTarget; // 正在转码/已转码的媒体 id，防重复触发与切换竞态
   late final ValueNotifier<double> _rate = ValueNotifier(1.0);
 
   List<Media> _directoryVideos = [];
@@ -84,6 +92,7 @@ class _MediaViewerState extends State<MediaViewer> {
   @override
   void dispose() {
     _errorSub?.cancel();
+    _playingSub?.cancel();
     _rateSub?.cancel();
     _rate.dispose();
     _pageScrollController.dispose();
@@ -94,6 +103,8 @@ class _MediaViewerState extends State<MediaViewer> {
   Future<void> _disposeVideo() async {
     _errorSub?.cancel();
     _errorSub = null;
+    _playingSub?.cancel();
+    _playingSub = null;
     _rateSub?.cancel();
     _rateSub = null;
     final controller = _videoController;
@@ -137,10 +148,32 @@ class _MediaViewerState extends State<MediaViewer> {
     }
   }
 
-  Future<void> _loadVideo() async {
+  /// 解析播放源：桌面端优先使用本地文件路径（mpv 本地寻址，moov 在文件尾等
+  /// 结构也能正常打开，规避 HTTP 流 seek 问题），失败时回退 HTTP 流；
+  /// Web 端只能走 HTTP。
+  Future<mk.Media> _resolvePlaybackMedia() async {
+    if (!kIsWeb) {
+      try {
+        final local = await widget.api.mediaLocalPath(_media.id);
+        if (local.isNotEmpty) return mk.Media(local);
+      } catch (e) {
+        debugPrint('[MediaViewer] 获取本地路径失败，回退 HTTP 播放: $e');
+      }
+    }
+    return mk.Media(_url);
+  }
+
+  Future<void> _loadVideo({String? localPath, String? httpUrl}) async {
     if (!mounted || _currentMedia?.kind != 'video') return;
+    // 释放上一个播放器（转码重载/重复加载场景，避免解码器资源泄漏）
+    final previous = _videoController;
+    _videoController = null;
+    if (previous != null) {
+      await previous.player.dispose();
+    }
     setState(() {
       _videoError = false;
+      _videoErrorMessage = '';
       _videoController = null;
     });
     try {
@@ -148,8 +181,25 @@ class _MediaViewerState extends State<MediaViewer> {
       // 必须先挂接 VideoController 再 open，避免 Windows 首帧渲染黑屏。
       final controller = VideoController(player);
       _errorSub?.cancel();
-      _errorSub = player.stream.error.listen((_) {
-        if (mounted) setState(() => _videoError = true);
+      _errorSub = player.stream.error.listen((message) {
+        debugPrint('[MediaViewer] mpv 错误: $message');
+        if (mounted) {
+          setState(() {
+            _videoError = true;
+            _videoErrorMessage = message;
+          });
+        }
+        _maybeAutoTranscode(message);
+      });
+      // 兜底：若报错后视频仍成功开始播放（非致命错误），自动清除错误提示
+      _playingSub?.cancel();
+      _playingSub = player.stream.playing.listen((playing) {
+        if (playing && mounted && _videoError) {
+          setState(() {
+            _videoError = false;
+            _videoErrorMessage = '';
+          });
+        }
       });
       _rateSub?.cancel();
       _rateSub = player.stream.rate.listen((rate) {
@@ -161,9 +211,103 @@ class _MediaViewerState extends State<MediaViewer> {
         return;
       }
       setState(() => _videoController = controller);
-      await player.open(mk.Media(_url));
-    } catch (_) {
-      if (mounted) setState(() => _videoError = true);
+      final playbackMedia = localPath != null
+          ? mk.Media(localPath)
+          : httpUrl != null
+              ? mk.Media(httpUrl)
+              : await _resolvePlaybackMedia();
+      if (!mounted) {
+        await player.dispose();
+        return;
+      }
+      await player.open(playbackMedia);
+    } catch (e) {
+      debugPrint('[MediaViewer] 加载视频失败: $e');
+      if (mounted) {
+        setState(() {
+          _videoError = true;
+          _videoErrorMessage = '$e';
+        });
+      }
+    }
+  }
+
+  /// 解码器错误时自动启动转码（同一媒体只自动触发一次）。
+  void _maybeAutoTranscode(String message) {
+    final m = message.toLowerCase();
+    final isDecoderIssue = m.contains('decoder') ||
+        m.contains('failed to initialize') ||
+        m.contains('unknown codec') ||
+        m.contains('no decoder');
+    if (isDecoderIssue && !_transcoding && _transcodeTarget != _media.id) {
+      _startTranscode();
+    }
+  }
+
+  /// 启动转码：产物命中缓存立即播放，否则轮询状态。
+  Future<void> _startTranscode() async {
+    if (_transcoding) return;
+    setState(() {
+      _transcoding = true;
+      _transcodeError = null;
+      _transcodeTarget = _media.id;
+    });
+    try {
+      final resp = await widget.api.transcodeMedia(_media.id);
+      if (!mounted) return;
+      if (resp['status'] == 'done') {
+        _playTranscoded(resp);
+      } else {
+        _pollTranscode();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _transcoding = false;
+          _transcodeError = '启动转码失败: $e';
+        });
+      }
+    }
+  }
+
+  Future<void> _pollTranscode() async {
+    while (mounted && _transcoding && _transcodeTarget == _media.id) {
+      await Future.delayed(const Duration(seconds: 2));
+      if (!mounted || !_transcoding || _transcodeTarget != _media.id) return;
+      try {
+        final st = await widget.api.transcodeStatus(_media.id);
+        if (st['status'] == 'done') {
+          _playTranscoded(st);
+          return;
+        }
+        if (st['status'] == 'failed') {
+          setState(() {
+            _transcoding = false;
+            _transcodeError = st['error'] as String? ?? '转码失败';
+          });
+          return;
+        }
+      } catch (_) {
+        // 网络抖动继续轮询
+      }
+    }
+  }
+
+  /// 播放转码产物：桌面播本地路径，web 播 HTTP 地址。
+  void _playTranscoded(Map<String, dynamic> st) {
+    if (!mounted) return;
+    setState(() {
+      _transcoding = false;
+      _transcodeError = null;
+    });
+    final path = st['path'] as String?;
+    final name = st['name'] as String?;
+    if (kIsWeb) {
+      if (name != null && name.isNotEmpty) {
+        _loadVideo(httpUrl: widget.api.transcodeFileUrl(name));
+      }
+    } else if (path != null && path.isNotEmpty) {
+      _loadVideo(localPath: path);
     }
   }
 
@@ -177,6 +321,10 @@ class _MediaViewerState extends State<MediaViewer> {
     setState(() {
       _index = normalized;
       _videoError = false;
+      _videoErrorMessage = '';
+      _transcoding = false;
+      _transcodeError = null;
+      _transcodeTarget = null;
     });
     if (nextMedia.kind == 'video') _loadVideo();
   }
@@ -306,6 +454,11 @@ class _MediaViewerState extends State<MediaViewer> {
             tooltip: '用系统默认程序打开',
             icon: const Icon(Icons.open_in_new, color: Colors.white70),
             onPressed: _openSystem,
+          ),
+          IconButton(
+            tooltip: '复制外部播放地址（其它设备/播放器可播）',
+            icon: const Icon(Icons.link, color: Colors.white70),
+            onPressed: _copyExternalUrl,
           ),
           IconButton(
             tooltip: '打开文件所在目录',
@@ -666,6 +819,7 @@ class _MediaViewerState extends State<MediaViewer> {
 
   Widget _buildVideo() {
     final controller = _videoController;
+    if (_transcoding) return _transcodingHint();
     if (_videoError) return _unsupportedHint();
     if (controller == null) {
       return const Center(
@@ -814,7 +968,28 @@ class _MediaViewerState extends State<MediaViewer> {
     if (selected != null && mounted) await player.setRate(selected);
   }
 
+  Widget _transcodingHint() {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+          SizedBox(height: 14),
+          Text(
+            '解码器不支持此编码，正在转码为通用格式…\n首次播放需等待，完成后自动播放',
+            style: TextStyle(fontSize: 12, color: Colors.white70),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _unsupportedHint() {
+    final isDecoderIssue =
+        _videoErrorMessage.toLowerCase().contains('decoder') ||
+            _videoErrorMessage.toLowerCase().contains('failed to initialize') ||
+            _videoErrorMessage.toLowerCase().contains('unknown codec');
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -822,11 +997,43 @@ class _MediaViewerState extends State<MediaViewer> {
           const Icon(Icons.image_not_supported_outlined,
               size: 56, color: Colors.white38),
           const SizedBox(height: 12),
-          const Text(
-            '此格式无法在应用内预览（如 HEIC/CR2）',
-            style: TextStyle(fontSize: 13, color: Colors.white70),
+          Text(
+            isDecoderIssue ? '此编码无法直接播放（如 ProRes）' : '此格式无法在应用内预览（如 HEIC/CR2）',
+            style: const TextStyle(fontSize: 13, color: Colors.white70),
           ),
-          const SizedBox(height: 8),
+          if (_videoErrorMessage.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                '播放器错误：$_videoErrorMessage',
+                style: const TextStyle(fontSize: 11, color: Colors.white38),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+          if (_transcodeError != null) ...[
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Text(
+                '转码失败：$_transcodeError',
+                style: const TextStyle(fontSize: 11, color: Color(0xFFFF8A80)),
+                textAlign: TextAlign.center,
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          if (isDecoderIssue)
+            OutlinedButton.icon(
+              onPressed: _transcoding ? null : _startTranscode,
+              icon: const Icon(Icons.autorenew, size: 16),
+              label: Text(_transcoding ? '转码中…' : '转码后播放'),
+            ),
           TextButton.icon(
             onPressed: _openSystem,
             icon: const Icon(Icons.open_in_new, size: 16),
@@ -846,6 +1053,26 @@ class _MediaViewerState extends State<MediaViewer> {
           SnackBar(content: Text('打开失败: $e')),
         );
       }
+    }
+  }
+
+  /// 复制外部播放地址：局域网内其它设备（浏览器/VLC/手机播放器）直接打开播放。
+  /// 地址优先用服务端探测的本机对外 IP，缺失时回退当前 baseUrl。
+  Future<void> _copyExternalUrl() async {
+    var urls = <String>[];
+    try {
+      urls = await widget.api.getExternalUrls();
+    } catch (_) {}
+    final base = urls.isNotEmpty ? urls.first : widget.api.baseUrl;
+    final url = '$base/api/media/${_media.id}/file';
+    await Clipboard.setData(ClipboardData(text: url));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('外部播放地址已复制，可在其它设备或播放器中打开\n$url'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
     }
   }
 

@@ -1,14 +1,11 @@
-﻿// search_screen.dart：搜索页面（文字搜索 + 以图搜图 + 网格/列表视图）
+// search_screen.dart：搜索页面（文字搜索 + 以图搜图 + 网格/列表视图）
 // 代码注释使用中文
-import 'dart:typed_data';
-
+import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
-import '../widgets/media_viewer.dart';
 
 class SearchScreen extends StatefulWidget {
   final ApiService api;
@@ -29,7 +26,6 @@ class _SearchScreenState extends State<SearchScreen> {
 
   // 以图搜图
   String? _imagePath;
-  Uint8List? _imageBytes;
   bool _isImageSearch = false;
 
   // 以视频搜视频：两路距离阈值（用户可调，0~64 整数）
@@ -82,13 +78,11 @@ class _SearchScreenState extends State<SearchScreen> {
     );
     if (result == null || result.files.isEmpty) return;
 
-    final pf = result.files.first;
-    // web 端无本地路径，显示名回退文件名
-    final display = pf.path ?? pf.name;
+    final path = result.files.first.path;
+    if (path == null) return;
 
     setState(() {
-      _imagePath = display;
-      _imageBytes = pf.bytes;
+      _imagePath = path;
       _isImageSearch = true;
       _isVideoSearch = false;
       _videoPath = null;
@@ -99,7 +93,8 @@ class _SearchScreenState extends State<SearchScreen> {
     });
 
     try {
-      final data = await widget.api.searchImage(file: pf);
+      final file = File(path);
+      final data = await widget.api.searchImage(file: file);
       if (mounted) {
         setState(() {
           _results = data;
@@ -123,12 +118,11 @@ class _SearchScreenState extends State<SearchScreen> {
     );
     if (result == null || result.files.isEmpty) return;
 
-    final pf = result.files.first;
-    if (pf.path == null && pf.bytes == null) return;
-    final display = pf.path ?? pf.name;
+    final path = result.files.first.path;
+    if (path == null) return;
 
     setState(() {
-      _videoPath = display;
+      _videoPath = path;
       _isVideoSearch = true;
       _isImageSearch = false;
       _imagePath = null;
@@ -139,8 +133,9 @@ class _SearchScreenState extends State<SearchScreen> {
     });
 
     try {
+      final file = File(path);
       final data = await widget.api.searchVideo(
-        pf,
+        file,
         imageMaxDistance: _imageMaxDistance.round(),
         videoMaxDistance: _videoMaxDistance.round(),
       );
@@ -266,26 +261,20 @@ class _SearchScreenState extends State<SearchScreen> {
                       ),
                       if (_imagePath != null) ...[
                         const SizedBox(width: 12),
-                        // 图片预览缩略图（web 兼容：用内存字节，桌面同样可用）
+                        // 图片预览缩略图
                         ClipRRect(
                           borderRadius: BorderRadius.circular(6),
-                          child: _imageBytes != null
-                              ? Image.memory(
-                                  _imageBytes!,
-                                  width: 32,
-                                  height: 32,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => Container(
-                                    width: 32, height: 32,
-                                    color: cs.surfaceContainerHighest,
-                                    child: const Icon(Icons.image, size: 16),
-                                  ),
-                                )
-                              : Container(
-                                  width: 32, height: 32,
-                                  color: cs.surfaceContainerHighest,
-                                  child: const Icon(Icons.image, size: 16),
-                                ),
+                          child: Image.file(
+                            File(_imagePath!),
+                            width: 32,
+                            height: 32,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(
+                              width: 32, height: 32,
+                              color: cs.surfaceContainerHighest,
+                              child: const Icon(Icons.image, size: 16),
+                            ),
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
@@ -297,8 +286,7 @@ class _SearchScreenState extends State<SearchScreen> {
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, size: 16),
-                          onPressed: () =>
-                              setState(() => _imagePath = null),
+                          onPressed: () => setState(() => _imagePath = null),
                         ),
                       ],
                     ],
@@ -458,8 +446,6 @@ class _SearchScreenState extends State<SearchScreen> {
         return _ResultGridCard(
           result: result,
           api: widget.api,
-          onOpenViewer: () => _openViewer(result),
-          onDelete: () => _deleteResult(result),
         );
       },
     );
@@ -475,67 +461,9 @@ class _SearchScreenState extends State<SearchScreen> {
           result: result,
           api: widget.api,
           index: index + 1,
-          onOpenViewer: () => _openViewer(result),
-          onDelete: () => _deleteResult(result),
         );
       },
     );
-  }
-
-  // ===== 结果操作（右键菜单/双击） =====
-
-  /// 应用内查看：传整个结果列表，支持左右切换
-  void _openViewer(SearchResult r) {
-    final idx = _results.indexOf(r);
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        fullscreenDialog: true,
-        builder: (_) => MediaViewer(
-          medias: _results.map((e) => e.media).toList(),
-          initialIndex: idx < 0 ? 0 : idx,
-          api: widget.api,
-        ),
-      ),
-    );
-  }
-
-  /// 删除此文件：确认后删除（源文件默认移入回收站），并从结果列表移除
-  Future<void> _deleteResult(SearchResult r) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('确认删除'),
-        content: Text('确定要删除文件「${r.name}」吗？\n源文件将移入回收站（可恢复）。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            style: TextButton.styleFrom(
-              foregroundColor: Theme.of(ctx).colorScheme.error,
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
-    try {
-      await widget.api.deleteMedia([r.media.id]);
-      if (!mounted) return;
-      setState(() => _results.remove(r));
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已删除')),
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('删除失败: $e')),
-        );
-      }
-    }
   }
 }
 
@@ -543,15 +471,8 @@ class _SearchScreenState extends State<SearchScreen> {
 class _ResultGridCard extends StatelessWidget {
   final SearchResult result;
   final ApiService api;
-  final VoidCallback onOpenViewer;
-  final VoidCallback onDelete;
 
-  const _ResultGridCard({
-    required this.result,
-    required this.api,
-    required this.onOpenViewer,
-    required this.onDelete,
-  });
+  const _ResultGridCard({required this.result, required this.api});
 
   @override
   Widget build(BuildContext context) {
@@ -564,63 +485,15 @@ class _ResultGridCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
-          onDoubleTap: onOpenViewer,
           onSecondaryTapDown: (details) {
             showContextMenu(
               context: context,
               position: details.globalPosition,
               items: [
-                ContextMenuItem(
-                  icon: result.media.kind == 'video'
-                      ? Icons.play_circle_outline
-                      : Icons.image_outlined,
-                  label: '应用内查看',
-                  onTap: onOpenViewer,
-                ),
-                ContextMenuItem(
-                  icon: Icons.open_in_new,
-                  label: '用系统默认程序打开',
-                  onTap: () async {
-                  try {
-                    await api.openMediaFile(result.media.id);
-                    } catch (e) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('打开失败: $e')),
-                        );
-                      }
-                    }
-                  },
-                ),
-                ContextMenuItem(
-                  icon: Icons.folder_open,
-                  label: '打开文件所在目录',
-                  onTap: () async {
-                  try {
-                    await api.openMediaDirectory(result.media.id);
-                    } catch (e) {
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('打开目录失败: $e')),
-                        );
-                      }
-                    }
-                  },
-                ),
+                const ContextMenuItem(icon: Icons.folder_open, label: '在库中查看'),
+                const ContextMenuItem(icon: Icons.copy, label: '复制路径', shortcut: 'Ctrl+C'),
                 const ContextMenuItem.divider(),
-                ContextMenuItem(
-                  icon: Icons.copy,
-                  label: '复制文件路径',
-                  shortcut: 'Ctrl+C',
-                  onTap: () {
-                    Clipboard.setData(ClipboardData(text: result.fullPath));
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('路径已复制')),
-                      );
-                    }
-                  },
-                ),
+                const ContextMenuItem(icon: Icons.open_in_new, label: '打开文件'),
               ],
             );
           },
@@ -694,15 +567,11 @@ class _ResultListTile extends StatelessWidget {
   final SearchResult result;
   final ApiService api;
   final int index;
-  final VoidCallback onOpenViewer;
-  final VoidCallback onDelete;
 
   const _ResultListTile({
     required this.result,
     required this.api,
     required this.index,
-    required this.onOpenViewer,
-    required this.onDelete,
   });
 
   @override
@@ -712,70 +581,15 @@ class _ResultListTile extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.only(bottom: 6),
       child: GestureDetector(
-        onDoubleTap: onOpenViewer,
         onSecondaryTapDown: (details) {
           showContextMenu(
             context: context,
             position: details.globalPosition,
             items: [
-              ContextMenuItem(
-                icon: result.media.kind == 'video'
-                    ? Icons.play_circle_outline
-                    : Icons.image_outlined,
-                label: '应用内查看',
-                onTap: onOpenViewer,
-              ),
-              ContextMenuItem(
-                icon: Icons.open_in_new,
-                label: '用系统默认程序打开',
-                onTap: () async {
-                  try {
-                    await api.openMediaFile(result.media.id);
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('打开失败: $e')),
-                      );
-                    }
-                  }
-                },
-              ),
-              ContextMenuItem(
-                icon: Icons.folder_open,
-                label: '打开文件所在目录',
-                onTap: () async {
-                  try {
-                    await api.openMediaDirectory(result.media.id);
-                  } catch (e) {
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('打开目录失败: $e')),
-                      );
-                    }
-                  }
-                },
-              ),
+              const ContextMenuItem(icon: Icons.folder_open, label: '在库中查看'),
+              const ContextMenuItem(icon: Icons.copy, label: '复制路径', shortcut: 'Ctrl+C'),
               const ContextMenuItem.divider(),
-              ContextMenuItem(
-                icon: Icons.copy,
-                label: '复制文件路径',
-                shortcut: 'Ctrl+C',
-                onTap: () {
-                  Clipboard.setData(ClipboardData(text: result.fullPath));
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('路径已复制')),
-                    );
-                  }
-                },
-              ),
-              const ContextMenuItem.divider(),
-              ContextMenuItem(
-                icon: Icons.delete_outline,
-                label: '删除此文件',
-                isDestructive: true,
-                onTap: onDelete,
-              ),
+              const ContextMenuItem(icon: Icons.open_in_new, label: '打开文件'),
             ],
           );
         },
@@ -841,4 +655,3 @@ class _PlaceholderIcon extends StatelessWidget {
     );
   }
 }
-

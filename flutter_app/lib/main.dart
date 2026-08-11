@@ -1,5 +1,6 @@
 // main.dart：Flutter 应用入口，主题系统与全局配置
 // 代码注释使用中文
+import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/foundation.dart' show kDebugMode;
@@ -7,8 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'desktop/backend_manager.dart'
-    if (dart.library.js_interop) 'web/backend_manager_stub.dart';
 import 'screens/home_screen.dart';
 import 'services/api_service.dart';
 
@@ -143,8 +142,38 @@ Future<bool> _healthOk(int port) async {
   }
 }
 
-/// 后端进程管理：桌面端实现在 desktop/backend_manager.dart，web 端为
-/// backend_manager_stub.dart 空实现（条件导入），此处不再定义。
+/// 后端进程管理：启动同目录 server.exe 并在应用退出时终止。
+class BackendManager {
+  static Process? _process;
+
+  /// 启动与前端 exe 同目录的 server.exe（仅 release 构建调用）。
+  static Future<void> startBackend() async {
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final serverExe = File('$exeDir${Platform.pathSeparator}server.exe');
+      if (!await serverExe.exists()) return;
+      // detached：stdout/stderr 脱离管道，避免服务端日志积压管道缓冲导致阻塞；
+      // Process 句柄仍保留，退出时可 kill。
+      _process = await Process.start(
+        serverExe.path,
+        const ['-config', 'config.yaml'],
+        mode: ProcessStartMode.detached,
+      );
+    } catch (_) {
+      _process = null;
+    }
+  }
+
+  /// 停止后端进程（应用退出时调用，幂等）。
+  static Future<void> stopBackend() async {
+    final p = _process;
+    _process = null;
+    if (p != null) {
+      p.kill();
+      await p.exitCode.timeout(const Duration(seconds: 2), onTimeout: () => -1);
+    }
+  }
+}
 
 class MemableApp extends StatefulWidget {
   const MemableApp({super.key});

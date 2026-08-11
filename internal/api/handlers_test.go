@@ -3,7 +3,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -619,94 +618,3 @@ func containsStr(list []string, s string) bool {
 }
 
 func strp(s string) *string { return &s }
-
-// TestHandleFileTreeFromDB 目录树改读数据库（media.relative_path 派生）：
-// 库 path 指向不存在的目录，树仍能返回数据库中的目录节点，
-// 且 has_children / 根级文件排除行为正确。
-func TestHandleFileTreeFromDB(t *testing.T) {
-	cfg := &config.Config{Database: config.DatabaseConfig{Path: ":memory:"}}
-	dbh, err := db.Open(cfg)
-	if err != nil {
-		t.Fatalf("打开测试数据库: %v", err)
-	}
-	t.Cleanup(func() { _ = dbh.Close() })
-	if err := db.Migrate(dbh); err != nil {
-		t.Fatalf("迁移测试数据库: %v", err)
-	}
-	lr := repo.NewLibraryRepo(dbh)
-	mr := repo.NewMediaRepo(dbh)
-
-	// 库 path 指向不存在的目录，验证树不读本地文件系统
-	lib := &repo.Library{Name: "DB库", Path: filepath.Join(t.TempDir(), "not-exist"), Kind: "mixed"}
-	if err := lr.Create(lib); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	for _, rel := range []string{
-		"root.jpg", // 根级文件，不得出现在树中
-		"a/1.jpg",  // a 有更深层级（a/b）→ has_children
-		"a/b/2.jpg",
-		"a/c/3.jpg",
-		"onlyfile/4.jpg", // onlyfile 只有直属文件 → has_children=false
-	} {
-		if err := mr.Upsert(&repo.Media{LibraryID: lib.ID, Kind: "image", RelativePath: rel, FileSize: 1, Mtime: now}); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	server := NewServer(cfg, lr, nil, mr, nil, nil, nil, nil, nil, nil, "", "", nil)
-	urlBase := "/api/libraries/" + formatInt64(lib.ID) + "/tree"
-
-	getTree := func(path string) []FileTreeNode {
-		t.Helper()
-		u := urlBase
-		if path != "" {
-			u += "?path=" + path
-		}
-		req := httptest.NewRequest(http.MethodGet, u, nil)
-		rec := httptest.NewRecorder()
-		server.http.Handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("tree 请求失败: code=%d body=%s", rec.Code, rec.Body.String())
-		}
-		var nodes []FileTreeNode
-		if err := json.Unmarshal(rec.Body.Bytes(), &nodes); err != nil {
-			t.Fatalf("解析响应: %v", err)
-		}
-		return nodes
-	}
-
-	byName := func(nodes []FileTreeNode) map[string]FileTreeNode {
-		m := map[string]FileTreeNode{}
-		for _, n := range nodes {
-			m[n.Name] = n
-		}
-		return m
-	}
-
-	// 根：a（有子目录）、onlyfile（无）；root.jpg 不出现
-	root := byName(getTree(""))
-	if len(root) != 2 {
-		t.Fatalf("根节点 = %+v, want a/onlyfile 两个目录", root)
-	}
-	if n, ok := root["a"]; !ok || !n.IsDir || !n.HasChildren {
-		t.Fatalf("a 节点异常: %+v", n)
-	}
-	if n, ok := root["onlyfile"]; !ok || n.HasChildren {
-		t.Fatalf("onlyfile 节点异常: %+v", n)
-	}
-	// a 的子级：b、c（均为叶子目录）
-	aKids := byName(getTree("a"))
-	if len(aKids) != 2 {
-		t.Fatalf("a 子节点 = %+v, want b/c", aKids)
-	}
-	for _, name := range []string{"b", "c"} {
-		if n, ok := aKids[name]; !ok || n.HasChildren || n.Path != "a/"+name {
-			t.Fatalf("a 的子节点 %q 异常: %+v", name, n)
-		}
-	}
-	// onlyfile：无子目录
-	if kids := getTree("onlyfile"); len(kids) != 0 {
-		t.Fatalf("onlyfile 子节点应为空: %+v", kids)
-	}
-}

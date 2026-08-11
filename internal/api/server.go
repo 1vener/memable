@@ -146,7 +146,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// 媒体操作
 	mux.HandleFunc("POST /api/media/{id}/open", s.handleOpenMedia)
-	mux.HandleFunc("GET /api/media/{id}/file", s.handleMediaFile)
 	mux.HandleFunc("POST /api/media/delete", s.handleDeleteMedia)
 
 	// 健康检查
@@ -263,10 +262,10 @@ func (s *Server) probeFFmpegCaps() {
 		if out, err := cmdx.CommandNoCtx(v, "-decoders").Output(); err == nil {
 			s.ffmpegCaps.HEICDecode = strings.Contains(string(out), "hevc") || strings.Contains(string(out), "heic")
 		}
-		// CR2 解码走内嵌 JPEG 预览提取（media/cr2.go，纯 Go），不依赖 FFmpeg。
-		// 旧实现用 "-formats" 输出子串匹配 "cr2" 或 "raw"，"raw" 必中 rawvideo
-		// 造成假阳性；现内置支持恒为 true。
-		s.ffmpegCaps.CR2Decode = true
+		// 探测 CR2 解码能力
+		if out, err := cmdx.CommandNoCtx(v, "-formats").Output(); err == nil {
+			s.ffmpegCaps.CR2Decode = strings.Contains(string(out), "cr2") || strings.Contains(string(out), "raw")
+		}
 		slog.Info("ffmpeg 能力探测完成",
 			"version", s.ffmpegCaps.Version,
 			"heic", s.ffmpegCaps.HEICDecode,
