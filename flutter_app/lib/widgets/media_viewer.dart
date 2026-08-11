@@ -1,7 +1,5 @@
-// media_viewer.dart：应用内全屏媒体查看器（图片/视频）。
-// 桌面与 Web 统一走 HTTP（api.mediaFileUrl），视频用 media_kit 播放（网络流 + Range）。
-// 支持：左右方向键/侧边按钮上一张下一张、图片缩放平移（InteractiveViewer）、
-// Esc/返回关闭；HEIC/CR2 等应用内无法解码的格式提示用系统默认程序打开。
+// media_viewer.dart：YouTube 风格的应用内媒体查看器。
+// 桌面与 Web 统一走 HTTP，视频使用 media_kit 播放网络流。
 // 代码注释使用中文。
 import 'dart:async';
 
@@ -13,7 +11,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 
-/// 全屏媒体查看器。medias 为可切换的媒体列表（通常传当前目录排序后的列表）。
+/// 全屏媒体查看器：播放器、同目录视频列表、媒体详情。
 class MediaViewer extends StatefulWidget {
   final List<Media> medias;
   final int initialIndex;
@@ -31,40 +29,56 @@ class MediaViewer extends StatefulWidget {
 }
 
 class _MediaViewerState extends State<MediaViewer> {
-  late int _index = widget.initialIndex;
+  late List<Media> _queue;
+  late int _index;
+
   VideoController? _videoController;
   bool _videoError = false;
   StreamSubscription<String>? _errorSub;
   StreamSubscription<double>? _rateSub;
-
-  // 播放倍速：以 mpv 实际上报速率为准（ValueNotifier，ValueListenableBuilder 驱动
-  // 按钮文字，不依赖外层控制栏重建，避免显示停在 1x）
   late final ValueNotifier<double> _rate = ValueNotifier(1.0);
-  static const List<double> _speedSteps = [
-    0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0,
-  ];
-  // 倍速按钮本次点击的全局坐标（锚定菜单用）。不用 GlobalKey：全屏模式下
-  // normal/fullscreen 两份控制栏会同时挂载，共享同一 GlobalKey 会触发
-  // "Duplicate GlobalKey" 异常。
-  Offset? _speedMenuAnchor;
 
-  static String _speedLabelFor(double s) {
-    final v = s.toStringAsFixed(2).replaceFirst(RegExp(r'\.?0+$'), '');
-    return '${v}x';
+  List<Media> _directoryVideos = [];
+  bool _directoryLoading = true;
+  Offset? _speedMenuAnchor;
+  final ScrollController _pageScrollController = ScrollController();
+
+  static const List<double> _speedSteps = [
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    1.5,
+    1.75,
+    2.0,
+  ];
+
+  static String _speedLabelFor(double speed) {
+    final value = speed.toStringAsFixed(2).replaceFirst(RegExp(r'\.?0+$'), '');
+    return '${value}x';
   }
 
-  Media get _media => widget.medias[_index];
+  Media? get _currentMedia => _queue.isEmpty ? null : _queue[_index];
+  Media get _media => _queue[_index];
   String get _url => widget.api.mediaFileUrl(_media.id);
-  String get _fileName =>
-      _media.relativePath.split('/').last.split('\\').last;
+  String get _fileName => _fileNameOf(_media);
 
   @override
   void initState() {
     super.initState();
+    _queue = List<Media>.of(widget.medias);
+    _index = _initialIndex(_queue, widget.initialIndex);
+    _directoryVideos = _videosInDirectory(_queue, _currentMedia);
     mk.MediaKit.ensureInitialized();
-    if (widget.medias[_index].kind == 'video') {
-      _loadVideo();
-    }
+    if (_currentMedia?.kind == 'video') _loadVideo();
+    _loadDirectoryQueue();
+  }
+
+  int _initialIndex(List<Media> items, int requested) {
+    if (items.isEmpty) return 0;
+    if (requested < 0) return 0;
+    if (requested >= items.length) return items.length - 1;
+    return requested;
   }
 
   @override
@@ -72,6 +86,7 @@ class _MediaViewerState extends State<MediaViewer> {
     _errorSub?.cancel();
     _rateSub?.cancel();
     _rate.dispose();
+    _pageScrollController.dispose();
     _disposeVideo();
     super.dispose();
   }
@@ -81,34 +96,64 @@ class _MediaViewerState extends State<MediaViewer> {
     _errorSub = null;
     _rateSub?.cancel();
     _rateSub = null;
-    final c = _videoController;
+    final controller = _videoController;
     _videoController = null;
-    if (c != null) {
-      await c.player.dispose();
+    if (controller != null) {
+      await controller.player.dispose();
+    }
+  }
+
+  Future<void> _loadDirectoryQueue() async {
+    final current = _currentMedia;
+    if (current == null) {
+      if (mounted) setState(() => _directoryLoading = false);
+      return;
+    }
+    try {
+      final files = await widget.api.getFiles(
+        current.libraryId,
+        path: _parentDirectory(current.relativePath),
+      );
+      if (!mounted) return;
+      if (files.isEmpty) {
+        setState(() => _directoryLoading = false);
+        return;
+      }
+      final index = files.indexWhere((m) => m.id == current.id);
+      if (index < 0) return;
+      setState(() {
+        _queue = files;
+        _index = index;
+        _directoryVideos = _videosInDirectory(files, current);
+        _directoryLoading = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _directoryVideos = _videosInDirectory(_queue, _currentMedia);
+          _directoryLoading = false;
+        });
+      }
     }
   }
 
   Future<void> _loadVideo() async {
+    if (!mounted || _currentMedia?.kind != 'video') return;
     setState(() {
       _videoError = false;
       _videoController = null;
     });
     try {
       final player = mk.Player();
-      // 必须先把 VideoController 挂接到 Player 上再 open：视频输出（texture）在
-      // 挂接时注册，Windows 上先 open 后挂接会丢失首帧/渲染初始化导致黑屏。
-      // 个别 GPU 驱动硬解黑屏时可将 VideoController 改为
-      // VideoController(player, configuration: VideoControllerConfiguration(
-      //   enableHardwareAcceleration: false)) 复测。
+      // 必须先挂接 VideoController 再 open，避免 Windows 首帧渲染黑屏。
       final controller = VideoController(player);
       _errorSub?.cancel();
       _errorSub = player.stream.error.listen((_) {
         if (mounted) setState(() => _videoError = true);
       });
-      // 外部（快捷键等）改变倍速时同步按钮文案（以 mpv 上报为准）
       _rateSub?.cancel();
-      _rateSub = player.stream.rate.listen((r) {
-        if (r > 0) _rate.value = r;
+      _rateSub = player.stream.rate.listen((rate) {
+        if (rate > 0) _rate.value = rate;
       });
       _rate.value = player.state.rate > 0 ? player.state.rate : 1.0;
       if (!mounted) {
@@ -123,19 +168,39 @@ class _MediaViewerState extends State<MediaViewer> {
   }
 
   Future<void> _goTo(int next) async {
-    if (widget.medias.isEmpty) return;
-    final n = (next % widget.medias.length + widget.medias.length) %
-        widget.medias.length;
-    if (n == _index) return;
+    if (_queue.isEmpty) return;
+    final normalized = (next % _queue.length + _queue.length) % _queue.length;
+    if (normalized == _index) return;
+    final nextMedia = _queue[normalized];
     await _disposeVideo();
     if (!mounted) return;
     setState(() {
-      _index = n;
-      _videoController = null;
+      _index = normalized;
       _videoError = false;
     });
-    if (_media.kind == 'video') {
-      _loadVideo();
+    if (nextMedia.kind == 'video') _loadVideo();
+  }
+
+  Future<void> _goAdjacentVideo(int delta) async {
+    if (_directoryVideos.isEmpty) {
+      await _goTo(_index + delta);
+      return;
+    }
+    final currentVideoIndex =
+        _directoryVideos.indexWhere((m) => m.id == _media.id);
+    if (currentVideoIndex < 0) return;
+    final next = (currentVideoIndex + delta) % _directoryVideos.length;
+    final normalized = (next + _directoryVideos.length) %
+        _directoryVideos.length;
+    final targetId = _directoryVideos[normalized].id;
+    final queueIndex = _queue.indexWhere((m) => m.id == targetId);
+    if (queueIndex >= 0) await _goTo(queueIndex);
+  }
+
+  Future<void> _selectPlaylistMedia(Media media) async {
+    final index = _queue.indexWhere((m) => m.id == media.id);
+    if (index >= 0) {
+      await _goTo(index);
     }
   }
 
@@ -146,23 +211,22 @@ class _MediaViewerState extends State<MediaViewer> {
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.space) {
-      // 空格播放/暂停
-      final p = _videoController?.player;
-      if (p != null) {
-        if (p.state.playing) {
-          p.pause();
+      final player = _videoController?.player;
+      if (player != null) {
+        if (player.state.playing) {
+          player.pause();
         } else {
-          p.play();
+          player.play();
         }
       }
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-      _goTo(_index - 1);
+      _goAdjacentVideo(-1);
       return KeyEventResult.handled;
     }
     if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-      _goTo(_index + 1);
+      _goAdjacentVideo(1);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
@@ -170,113 +234,417 @@ class _MediaViewerState extends State<MediaViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final current = _currentMedia;
+    if (current == null) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0F0F0F),
+        body: Center(
+          child: Text('没有可查看的媒体', style: TextStyle(color: Colors.white70)),
+        ),
+      );
+    }
     final cs = Theme.of(context).colorScheme;
-    final isVideo = _media.kind == 'video';
-
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFF0F0F0F),
       body: Focus(
         autofocus: true,
         onKeyEvent: _onKey,
-        child: Stack(
-          children: [
-            // 主内容
-            Positioned.fill(
-              child: isVideo ? _buildVideo() : _buildImage(),
-            ),
-            // 图片无播放栏，保留侧边导航；视频的上一/下一个在播放栏内
-            if (!isVideo && widget.medias.length > 1) ...[
-              Positioned(
-                left: 12,
-                top: 0,
-                bottom: 0,
-                child: Center(
-                  child: _navButton(Icons.chevron_left, () => _goTo(_index - 1)),
-                ),
-              ),
-              Positioned(
-                right: 12,
-                top: 0,
-                bottom: 0,
-                child: Center(
-                  child: _navButton(Icons.chevron_right, () => _goTo(_index + 1)),
+        child: SafeArea(
+          child: Column(
+            children: [
+              _buildHeader(),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    if (constraints.maxWidth >= 900) {
+                      return _buildWideLayout(cs, constraints);
+                    }
+                    return _buildNarrowLayout(cs);
+                  },
                 ),
               ),
             ],
-            // 顶栏
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: _buildTopBar(cs),
-            ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildTopBar(ColorScheme cs) {
+  Widget _buildHeader() {
     return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withValues(alpha: 0.75),
-            Colors.transparent,
-          ],
-        ),
-      ),
-      padding: const EdgeInsets.fromLTRB(8, 8, 12, 40),
+      height: 54,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      color: const Color(0xFF181818),
       child: Row(
         children: [
           IconButton(
             tooltip: '关闭 (Esc)',
-            icon: const Icon(Icons.close, color: Colors.white, size: 22),
+            icon: const Icon(Icons.close, color: Colors.white),
             onPressed: () => Navigator.of(context).pop(),
           ),
+          const SizedBox(width: 6),
+          const Icon(Icons.play_circle_fill, color: Color(0xFFFF0033)),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
               _fileName,
-              style: const TextStyle(fontSize: 13, color: Colors.white),
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
-          if (widget.medias.length > 1)
+          if (_queue.length > 1)
             Text(
-              '${_index + 1}/${widget.medias.length}',
-              style: const TextStyle(fontSize: 12, color: Colors.white70),
+              '${_index + 1}/${_queue.length}',
+              style: const TextStyle(color: Colors.white60, fontSize: 12),
             ),
           IconButton(
             tooltip: '用系统默认程序打开',
-            icon: const Icon(Icons.open_in_new, color: Colors.white, size: 20),
-            onPressed: () => _openSystem(),
+            icon: const Icon(Icons.open_in_new, color: Colors.white70),
+            onPressed: _openSystem,
           ),
           IconButton(
             tooltip: '打开文件所在目录',
-            icon: const Icon(Icons.folder_open, color: Colors.white, size: 20),
-            onPressed: () => _openDirectory(),
+            icon: const Icon(Icons.folder_open, color: Colors.white70),
+            onPressed: _openDirectory,
           ),
         ],
       ),
     );
   }
 
-  Widget _navButton(IconData icon, VoidCallback onTap) {
-    return IconButton(
-      onPressed: onTap,
-      icon: Icon(icon, color: Colors.white, size: 36),
-      style: IconButton.styleFrom(
-        backgroundColor: Colors.black.withValues(alpha: 0.35),
+  Widget _buildWideLayout(ColorScheme cs, BoxConstraints viewport) {
+    return Scrollbar(
+      controller: _pageScrollController,
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        controller: _pageScrollController,
+        padding: const EdgeInsets.all(18),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minWidth: viewport.maxWidth - 36,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildPlayerFrame(),
+                    _buildDetails(cs),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 18),
+              SizedBox(width: 340, child: _buildPlaylist(cs)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNarrowLayout(ColorScheme cs) {
+    return Scrollbar(
+      controller: _pageScrollController,
+      thumbVisibility: true,
+      child: SingleChildScrollView(
+        controller: _pageScrollController,
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildPlayerFrame(),
+            _buildDetails(cs),
+            const SizedBox(height: 12),
+            _buildPlaylist(cs),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayerFrame() {
+    const ratio = 16 / 9;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        return SizedBox(
+          width: double.infinity,
+          height: width / ratio,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.black,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: _media.kind == 'video' ? _buildVideo() : _buildImage(),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDetails(ColorScheme cs) {
+    final media = _media;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 16, 2, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _fileName,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            media.relativePath,
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _detailChip('类型', media.kind == 'video' ? '视频' : '图片'),
+              if (media.format != null && media.format!.isNotEmpty)
+                _detailChip('格式', media.format!),
+              if (media.width != null && media.height != null)
+                _detailChip('分辨率', '${media.width} × ${media.height}'),
+              _detailChip('大小', _formatBytes(media.fileSize)),
+              if (media.durationMs != null && media.durationMs! > 0)
+                _detailChip('时长', _formatDuration(media.durationMs!)),
+              if (media.bitRate != null && media.bitRate! > 0)
+                _detailChip('比特率', _formatBitRate(media.bitRate!)),
+              if (media.frameRate != null && media.frameRate! > 0)
+                _detailChip('帧率', '${_formatFrameRate(media.frameRate!)} fps'),
+              if (media.videoCodec != null && media.videoCodec!.isNotEmpty)
+                _detailChip('视频编码', media.videoCodec!),
+              if (media.audioCodec != null && media.audioCodec!.isNotEmpty)
+                _detailChip('音频编码', media.audioCodec!),
+              if (media.mtime != null)
+                _detailChip('修改时间', _formatDate(media.mtime!)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _detailChip(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: const Color(0xFF202020),
+        borderRadius: BorderRadius.circular(7),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: RichText(
+        text: TextSpan(
+          style: const TextStyle(fontSize: 12),
+          children: [
+            TextSpan(
+              text: '$label  ',
+              style: const TextStyle(color: Colors.white38),
+            ),
+            TextSpan(
+              text: value,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlaylist(ColorScheme cs) {
+    return Container(
+      color: const Color(0xFF181818),
+      padding: const EdgeInsets.fromLTRB(14, 14, 10, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '同目录视频',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                _directoryLoading
+                    ? '加载中…'
+                    : '${_directoryVideos.length} 个',
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _directoryVideos.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 32),
+                  child: Text(
+                    _directoryLoading ? '正在读取目录…' : '该目录没有其他视频',
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                    textAlign: TextAlign.center,
+                  ),
+                )
+              : ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: _directoryVideos.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (_, index) => _buildPlaylistItem(
+                    _directoryVideos[index],
+                    index,
+                  ),
+                ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPlaylistItem(Media media, int index) {
+    final active = media.id == _media.id;
+    final thumbnail = media.thumbnailPath == null
+        ? null
+        : widget.api.thumbnailUrl('video', media.thumbnailPath!);
+    return Material(
+      color: active ? const Color(0xFF3A2025) : Colors.transparent,
+      borderRadius: BorderRadius.circular(7),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(7),
+        onTap: () => _selectPlaylistMedia(media),
+        child: Container(
+          padding: const EdgeInsets.all(5),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(
+              color: active ? const Color(0xFFFF0033) : Colors.transparent,
+            ),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 112,
+                height: 64,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(5),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      thumbnail == null
+                          ? Container(
+                              color: const Color(0xFF303030),
+                              child: const Icon(
+                                Icons.videocam_outlined,
+                                color: Colors.white38,
+                              ),
+                            )
+                          : Image.network(
+                              thumbnail,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) => Container(
+                                color: const Color(0xFF303030),
+                                child: const Icon(
+                                  Icons.videocam_outlined,
+                                  color: Colors.white38,
+                                ),
+                              ),
+                            ),
+                      if (media.durationMs != null && media.durationMs! > 0)
+                        Positioned(
+                          right: 4,
+                          bottom: 4,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 2,
+                            ),
+                            color: Colors.black.withValues(alpha: 0.75),
+                            child: Text(
+                              _formatDuration(media.durationMs!),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _fileNameOf(media),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: active ? Colors.white : Colors.white70,
+                        fontSize: 12,
+                        fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    Text(
+                      media.format ?? '视频',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+              if (active)
+                const Padding(
+                  padding: EdgeInsets.only(left: 4, top: 3),
+                  child: Icon(
+                    Icons.equalizer,
+                    size: 16,
+                    color: Color(0xFFFF0033),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
   Widget _buildImage() {
     return InteractiveViewer(
+      constrained: true,
+      minScale: 1,
       maxScale: 8,
-      child: Center(
+      child: SizedBox.expand(
+        child: Center(
         child: Image.network(
           _url,
           fit: BoxFit.contain,
@@ -291,38 +659,34 @@ class _MediaViewerState extends State<MediaViewer> {
           },
           errorBuilder: (_, __, ___) => _unsupportedHint(),
         ),
+        ),
       ),
     );
   }
 
   Widget _buildVideo() {
-    final c = _videoController;
-    if (_videoError) {
-      return _unsupportedHint();
-    }
-    if (c == null) {
+    final controller = _videoController;
+    if (_videoError) return _unsupportedHint();
+    if (controller == null) {
       return const Center(
         child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
       );
     }
-    // 自定义播放栏：上一个/快退10s/播放暂停/快进10s/下一个/倍速 + 默认音量/进度/全屏
     final bar = <Widget>[
-      _barButton(Icons.skip_previous, '上一个', () => _goTo(_index - 1)),
+      _barButton(Icons.skip_previous, '上一个', () => _goAdjacentVideo(-1)),
       const MaterialDesktopPlayOrPauseButton(),
-      _barButton(Icons.skip_next, '下一个', () => _goTo(_index + 1)),
+      _barButton(Icons.skip_next, '下一个', () => _goAdjacentVideo(1)),
       _barButton(Icons.replay_10, '快退 10 秒', _rewind),
       _barButton(Icons.forward_10, '快进 10 秒', _forward),
       const MaterialDesktopVolumeButton(),
       const MaterialDesktopPositionIndicator(),
       const Spacer(),
-      // 倍速按钮：文字以 mpv 实际速率为准（ValueListenableBuilder 独立刷新）；
-      // Listener 捕获点击坐标供菜单锚定（不参与手势竞技场，不影响按钮点击）
       Builder(
         builder: (ctx) => Listener(
-          onPointerDown: (e) {
+          onPointerDown: (event) {
             final box = ctx.findRenderObject() as RenderBox?;
             if (box != null) {
-              _speedMenuAnchor = box.localToGlobal(e.position);
+              _speedMenuAnchor = box.localToGlobal(event.position);
             }
           },
           child: Tooltip(
@@ -331,11 +695,11 @@ class _MediaViewerState extends State<MediaViewer> {
               onPressed: _showSpeedDialog,
               icon: ValueListenableBuilder<double>(
                 valueListenable: _rate,
-                builder: (_, r, __) => Text(
-                  _speedLabelFor(r),
+                builder: (_, rate, __) => Text(
+                  _speedLabelFor(rate),
                   style: const TextStyle(
-                    fontSize: 12,
                     color: Colors.white,
+                    fontSize: 12,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
@@ -349,7 +713,6 @@ class _MediaViewerState extends State<MediaViewer> {
       const MaterialDesktopFullscreenButton(),
     ];
     return MaterialDesktopVideoControlsTheme(
-      // playAndPauseOnTap：点击视频画面播放/暂停（按钮区域点击仍走按钮）
       normal: MaterialDesktopVideoControlsThemeData(
         playAndPauseOnTap: true,
         bottomButtonBar: bar,
@@ -358,11 +721,10 @@ class _MediaViewerState extends State<MediaViewer> {
         playAndPauseOnTap: true,
         bottomButtonBar: bar,
       ),
-      child: Video(controller: c),
+      child: Video(controller: controller, fit: BoxFit.contain),
     );
   }
 
-  /// 播放栏按钮（白图标 + 提示）
   Widget _barButton(
     IconData icon,
     String tooltip,
@@ -381,47 +743,41 @@ class _MediaViewerState extends State<MediaViewer> {
   }
 
   Future<void> _rewind() async {
-    final p = _videoController?.player;
-    if (p == null) return;
-    final pos = p.state.position - const Duration(seconds: 10);
-    await p.seek(pos < Duration.zero ? Duration.zero : pos);
+    final player = _videoController?.player;
+    if (player == null) return;
+    final position = player.state.position - const Duration(seconds: 10);
+    await player.seek(position < Duration.zero ? Duration.zero : position);
   }
 
   Future<void> _forward() async {
-    final p = _videoController?.player;
-    if (p == null) return;
-    final dur = p.state.duration;
-    final pos = p.state.position + const Duration(seconds: 10);
-    await p.seek(dur > Duration.zero && pos > dur ? dur : pos);
+    final player = _videoController?.player;
+    if (player == null) return;
+    final duration = player.state.duration;
+    final position = player.state.position + const Duration(seconds: 10);
+    await player.seek(
+      duration > Duration.zero && position > duration ? duration : position,
+    );
   }
 
-  /// 倍速菜单：锚定在倍速按钮上方弹出（按钮在底部控制栏），
-  /// 半透明背景（可透见视频）。选中后 setRate，按钮文字由 mpv 速率流驱动刷新。
   Future<void> _showSpeedDialog() async {
-    final p = _videoController?.player;
-    if (p == null) return;
+    final player = _videoController?.player;
     final anchor = _speedMenuAnchor;
-    if (anchor == null) return;
-    final overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox;
-    // 菜单置于按钮上方：顶部 = 锚点上方一个菜单高度；右缘对齐按钮中心
-    const menuW = 120.0;
-    const rowH = 34.0;
-    final menuH = _speedSteps.length * rowH + 8;
-    var top = anchor.dy - menuH - 6;
-    if (top < 8) top = 8; // 顶部空间不足时贴顶（仍在按钮附近）
-    final left = anchor.dx - menuW + 28;
-    final position = RelativeRect.fromLTRB(
-      left,
-      top,
-      overlay.size.width - left,
-      overlay.size.height - top,
-    );
-
+    if (player == null || anchor == null) return;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    const menuWidth = 120.0;
+    const rowHeight = 34.0;
+    final menuHeight = _speedSteps.length * rowHeight + 8;
+    final top = (anchor.dy - menuHeight - 6).clamp(8.0, overlay.size.height);
+    final left = anchor.dx - menuWidth + 28;
     final selected = await showMenu<double>(
       context: context,
-      position: position,
-      constraints: const BoxConstraints(minWidth: menuW),
+      position: RelativeRect.fromLTRB(
+        left,
+        top,
+        overlay.size.width - left,
+        overlay.size.height - top,
+      ),
+      constraints: const BoxConstraints(minWidth: menuWidth),
       color: Colors.black.withValues(alpha: 0.5),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
@@ -429,40 +785,56 @@ class _MediaViewerState extends State<MediaViewer> {
       ),
       elevation: 8,
       items: [
-        for (final s in _speedSteps)
+        for (final speed in _speedSteps)
           PopupMenuItem<double>(
-            value: s,
-            height: 34,
+            value: speed,
+            height: rowHeight,
             child: Row(
               children: [
                 Text(
-                  _speedLabelFor(s),
+                  _speedLabelFor(speed),
                   style: TextStyle(
-                    fontSize: 13,
-                    color: (s - _rate.value).abs() < 0.01
+                    color: (speed - _rate.value).abs() < 0.01
                         ? const Color(0xFFFF5252)
                         : Colors.white,
-                    fontWeight: (s - _rate.value).abs() < 0.01
+                    fontSize: 13,
+                    fontWeight: (speed - _rate.value).abs() < 0.01
                         ? FontWeight.w700
                         : FontWeight.w400,
                   ),
                 ),
                 const Spacer(),
-                if ((s - _rate.value).abs() < 0.01)
-                  const Icon(
-                    Icons.check,
-                    size: 16,
-                    color: Color(0xFFFF5252),
-                  ),
+                if ((speed - _rate.value).abs() < 0.01)
+                  const Icon(Icons.check, size: 16, color: Color(0xFFFF5252)),
               ],
             ),
           ),
       ],
     );
-    if (selected == null || !mounted) return;
-    final player = _videoController?.player;
-    if (player == null) return;
-    await player.setRate(selected);
+    if (selected != null && mounted) await player.setRate(selected);
+  }
+
+  Widget _unsupportedHint() {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.image_not_supported_outlined,
+              size: 56, color: Colors.white38),
+          const SizedBox(height: 12),
+          const Text(
+            '此格式无法在应用内预览（如 HEIC/CR2）',
+            style: TextStyle(fontSize: 13, color: Colors.white70),
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: _openSystem,
+            icon: const Icon(Icons.open_in_new, size: 16),
+            label: const Text('用系统默认程序打开'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _openSystem() async {
@@ -489,26 +861,67 @@ class _MediaViewerState extends State<MediaViewer> {
     }
   }
 
-  Widget _unsupportedHint() {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.image_not_supported_outlined,
-              size: 56, color: Colors.white38),
-          const SizedBox(height: 12),
-          const Text(
-            '此格式无法在应用内预览（如 HEIC/CR2）',
-            style: TextStyle(fontSize: 13, color: Colors.white70),
-          ),
-          const SizedBox(height: 8),
-          TextButton.icon(
-            onPressed: _openSystem,
-            icon: const Icon(Icons.open_in_new, size: 16),
-            label: const Text('用系统默认程序打开'),
-          ),
-        ],
-      ),
-    );
+  List<Media> _videosInDirectory(List<Media> items, Media? current) {
+    if (current == null) return [];
+    final directory = _parentDirectory(current.relativePath);
+    return items
+        .where((m) =>
+            m.kind == 'video' && _parentDirectory(m.relativePath) == directory)
+        .toList();
+  }
+
+  static String _parentDirectory(String path) {
+    final normalized = path.replaceAll('\\', '/');
+    final index = normalized.lastIndexOf('/');
+    return index < 0 ? '' : normalized.substring(0, index);
+  }
+
+  static String _fileNameOf(Media media) {
+    final normalized = media.relativePath.replaceAll('\\', '/');
+    return normalized.substring(normalized.lastIndexOf('/') + 1);
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  static String _formatDuration(int milliseconds) {
+    final seconds = (milliseconds / 1000).round();
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
+    final remainder = seconds % 60;
+    if (hours > 0) {
+      return '$hours:${minutes.toString().padLeft(2, '0')}:${remainder.toString().padLeft(2, '0')}';
+    }
+    return '$minutes:${remainder.toString().padLeft(2, '0')}';
+  }
+
+  static String _formatBitRate(int bitsPerSecond) {
+    if (bitsPerSecond >= 1000 * 1000 * 1000) {
+      return '${(bitsPerSecond / (1000 * 1000 * 1000)).toStringAsFixed(2)} Gbps';
+    }
+    if (bitsPerSecond >= 1000 * 1000) {
+      return '${(bitsPerSecond / (1000 * 1000)).toStringAsFixed(2)} Mbps';
+    }
+    if (bitsPerSecond >= 1000) {
+      return '${(bitsPerSecond / 1000).toStringAsFixed(1)} Kbps';
+    }
+    return '$bitsPerSecond bps';
+  }
+
+  static String _formatFrameRate(double value) {
+    if ((value - value.round()).abs() < 0.01) return value.round().toString();
+    return value.toStringAsFixed(2);
+  }
+
+  static String _formatDate(DateTime value) {
+    final local = value.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
   }
 }

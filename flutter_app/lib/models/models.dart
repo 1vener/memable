@@ -48,9 +48,14 @@ class Media {
   final String? sha1;
   final String? phash;
   final String? thumbnailPath;
+  final String? format;
   final int? width;
   final int? height;
   final int? durationMs;
+  final String? videoCodec;
+  final String? audioCodec;
+  final double? frameRate;
+  final int? bitRate;
   final DateTime? mtime;
 
   Media({
@@ -62,9 +67,14 @@ class Media {
     this.sha1,
     this.phash,
     this.thumbnailPath,
+    this.format,
     this.width,
     this.height,
     this.durationMs,
+    this.videoCodec,
+    this.audioCodec,
+    this.frameRate,
+    this.bitRate,
     this.mtime,
   });
 
@@ -78,9 +88,14 @@ class Media {
       sha1: json['sha1'] as String?,
       phash: json['phash'] as String?,
       thumbnailPath: json['thumbnail_path'] as String?,
+      format: json['format'] as String?,
       width: (json['width'] as num?)?.toInt(),
       height: (json['height'] as num?)?.toInt(),
       durationMs: (json['duration_ms'] as num?)?.toInt(),
+      videoCodec: json['video_codec'] as String?,
+      audioCodec: json['audio_codec'] as String?,
+      frameRate: (json['frame_rate'] as num?)?.toDouble(),
+      bitRate: (json['bit_rate'] as num?)?.toInt(),
       mtime: json['mtime'] != null
           ? DateTime.tryParse(json['mtime'] as String)
           : null,
