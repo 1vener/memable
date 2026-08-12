@@ -5,10 +5,12 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
+import '../widgets/media_viewer.dart';
 import '../widgets/path_dialog.dart';
 import '../widgets/resizable_split.dart';
 
@@ -550,11 +552,35 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   List<Media> _files = [];
   bool _loadingFiles = false;
   String? _typeFilter; // null=全部, image=图片, video=视频
+  // 排序：''=默认, name=名称, size=大小, duration=时长；_sortAscending=是否升序
+  String _sortField = '';
+  bool _sortAscending = true;
 
   @override
   void initState() {
     super.initState();
     _loadRootChildren();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FileTreePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 切换收藏库时重置面板状态并重载目录树；
+    // 无此处理时 State 被复用（无 key），树仍显示旧库数据。
+    if (oldWidget.library.id != widget.library.id) {
+      _rootChildren = [];
+      _loadingTree = true;
+      _error = null;
+      _expandedPaths.clear();
+      _expandedChildren.clear();
+      _loadingPaths.clear();
+      _selectedDir = '';
+      _files = [];
+      _typeFilter = null;
+      _sortField = '';
+      _sortAscending = true;
+      _loadRootChildren();
+    }
   }
 
   @override
@@ -1201,10 +1227,14 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   }
 
   Widget _buildThumbnailGrid(ColorScheme cs) {
-    final displayFiles = _filterFiles();
+    final displayFiles = _sortedFiles();
     final totalSize = displayFiles.fold<int>(
       0,
       (s, m) => s + (m.fileSize > 0 ? m.fileSize : 0),
+    );
+    final totalVideoMs = displayFiles.fold<int>(
+      0,
+      (s, m) => s + (m.durationMs ?? 0),
     );
     final imageCount = displayFiles.where((m) => m.kind == 'image').length;
     final videoCount = displayFiles.where((m) => m.kind == 'video').length;
@@ -1255,6 +1285,80 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                     color: const Color(0xFF7C3AED),
                     onTap: () => setState(() => _typeFilter = 'video'),
                   ),
+                  const Spacer(),
+                  // 排序：默认/名称/大小/时长 × 升/降
+                  PopupMenuButton<String>(
+                    tooltip: '排序',
+                    initialValue: _sortField == ''
+                        ? 'default'
+                        : '${_sortField}_${_sortAscending ? 'asc' : 'desc'}',
+                    onSelected: (v) {
+                      if (v == 'default') {
+                        setState(() {
+                          _sortField = '';
+                          _sortAscending = true;
+                        });
+                      } else {
+                        final parts = v.split('_');
+                        setState(() {
+                          _sortField = parts[0];
+                          _sortAscending = parts[1] == 'asc';
+                        });
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: 'default',
+                        child: _sortItem('默认', null),
+                      ),
+                      const PopupMenuDivider(),
+                      PopupMenuItem(
+                        value: 'name_asc',
+                        child: _sortItem('名称 ↑', Icons.arrow_upward),
+                      ),
+                      PopupMenuItem(
+                        value: 'name_desc',
+                        child: _sortItem('名称 ↓', Icons.arrow_downward),
+                      ),
+                      PopupMenuItem(
+                        value: 'size_asc',
+                        child: _sortItem('大小 ↑', Icons.arrow_upward),
+                      ),
+                      PopupMenuItem(
+                        value: 'size_desc',
+                        child: _sortItem('大小 ↓', Icons.arrow_downward),
+                      ),
+                      PopupMenuItem(
+                        value: 'duration_asc',
+                        child: _sortItem('时长 ↑', Icons.arrow_upward),
+                      ),
+                      PopupMenuItem(
+                        value: 'duration_desc',
+                        child: _sortItem('时长 ↓', Icons.arrow_downward),
+                      ),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 2,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.sort_rounded,
+                              size: 15, color: cs.outline),
+                          const SizedBox(width: 3),
+                          Text(
+                            _sortLabel(),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: cs.outline,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1277,7 +1381,8 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                   return _MediaThumbCard(
                     media: m,
                     thumbUrl: thumbUrl,
-                    onOpenFile: () => _openMediaFile(m.id, context),
+                    onOpenFile: () => _openInViewer(displayFiles, index),
+                    onOpenSystem: () => _openMediaFile(m.id, context),
                     onOpenDirectory: () => _openMediaDirectory(m.id, context),
                   );
                 },
@@ -1330,6 +1435,22 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                       ),
                     ),
                   ],
+                  if (totalVideoMs > 0) ...[
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.schedule_rounded,
+                      size: 13,
+                      color: Color(0xFF7C3AED),
+                    ),
+                    const SizedBox(width: 3),
+                    Text(
+                      _MediaThumbCard.formatDuration(totalVideoMs),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   Text(
                     _formatBytes(totalSize),
@@ -1344,9 +1465,63 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     );
   }
 
-  List<Media> _filterFiles() {
-    if (_typeFilter == null) return _files;
-    return _files.where((m) => m.kind == _typeFilter).toList();
+  /// 过滤（类型）+ 排序后的文件列表：''=默认（保持数据库顺序），
+  /// name=按文件名（不区分大小写），size=按文件大小，
+  /// duration=按时长（无时长的媒体如图片恒定排在末尾）；_sortAscending 控制升降序。
+  List<Media> _sortedFiles() {
+    var list = _typeFilter == null
+        ? List<Media>.of(_files)
+        : _files.where((m) => m.kind == _typeFilter).toList();
+    final field = _sortField;
+    if (field == 'name') {
+      list.sort(
+        (a, b) => a.relativePath
+            .toLowerCase()
+            .compareTo(b.relativePath.toLowerCase()),
+      );
+      if (!_sortAscending) list = list.reversed.toList();
+    } else if (field == 'size') {
+      list.sort((a, b) => a.fileSize.compareTo(b.fileSize));
+      if (!_sortAscending) list = list.reversed.toList();
+    } else if (field == 'duration') {
+      final dir = _sortAscending ? 1 : -1;
+      list.sort((a, b) {
+        final da = a.durationMs;
+        final db = b.durationMs;
+        if (da == null && db == null) return 0;
+        if (da == null) return 1;
+        if (db == null) return -1;
+        return da.compareTo(db) * dir;
+      });
+    }
+    return list;
+  }
+
+  /// 排序下拉当前项文案
+  String _sortLabel() {
+    if (_sortField == '') return '排序';
+    final arrow = _sortAscending ? '↑' : '↓';
+    final label = switch (_sortField) {
+      'name' => '名称',
+      'size' => '大小',
+      'duration' => '时长',
+      _ => _sortField,
+    };
+    return '$label$arrow';
+  }
+
+  /// 排序下拉菜单项
+  Widget _sortItem(String label, IconData? icon) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: 14),
+          const SizedBox(width: 6),
+        ],
+        Text(label, style: const TextStyle(fontSize: 12)),
+      ],
+    );
   }
 
   String _formatBytes(int bytes) {
@@ -1356,6 +1531,20 @@ class _FileTreePanelState extends State<_FileTreePanel> {
       return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     }
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  /// 应用内查看器：传当前排序/筛选后的列表，支持左右切换
+  void _openInViewer(List<Media> list, int index) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => MediaViewer(
+          medias: list,
+          initialIndex: index,
+          api: widget.api,
+        ),
+      ),
+    );
   }
 
   Future<void> _openMediaFile(int mediaId, BuildContext context) async {
@@ -2017,12 +2206,14 @@ class _MediaThumbCard extends StatelessWidget {
   final Media media;
   final String? thumbUrl;
   final VoidCallback? onOpenFile;
+  final VoidCallback? onOpenSystem;
   final VoidCallback? onOpenDirectory;
 
   const _MediaThumbCard({
     required this.media,
     required this.thumbUrl,
     this.onOpenFile,
+    this.onOpenSystem,
     this.onOpenDirectory,
   });
 
@@ -2197,8 +2388,13 @@ class _MediaThumbCard extends StatelessWidget {
               media.kind == 'video'
                   ? Icons.play_circle_outline
                   : Icons.image_outlined,
-          label: media.kind == 'video' ? '打开视频' : '打开图片',
+          label: '应用内查看',
           onTap: onOpenFile,
+        ),
+        ContextMenuItem(
+          icon: Icons.open_in_new,
+          label: '用系统默认程序打开',
+          onTap: onOpenSystem,
         ),
         ContextMenuItem(
           icon: Icons.folder_open,
@@ -2210,7 +2406,12 @@ class _MediaThumbCard extends StatelessWidget {
           icon: Icons.copy,
           label: '复制文件路径',
           onTap: () {
-            // 使用 flutter 的 Clipboard
+            Clipboard.setData(ClipboardData(text: media.relativePath));
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('路径已复制')),
+              );
+            }
           },
         ),
       ],

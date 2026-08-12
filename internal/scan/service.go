@@ -397,7 +397,13 @@ func (s *Service) collect(ctx context.Context, libraryID int64, sessionID string
 		if err != nil {
 			return nil, fmt.Errorf("计算视频 oshash %q: %w", e.AbsPath, err)
 		}
-		m.Format = &meta.Format
+		// ffprobe 的 format_name 是容器别名列表（如 mov,mp4,m4a,3gp,3g2,mj2），
+		// 不适合作为展示格式；改用文件扩展名（小写、去点），无扩展名时回退 ffprobe 名称。
+		format := strings.TrimPrefix(strings.ToLower(filepath.Ext(e.RelativePath)), ".")
+		if format == "" {
+			format = meta.Format
+		}
+		m.Format = &format
 		m.Width = &meta.Width
 		m.Height = &meta.Height
 		m.DurationMs = &meta.DurationMs

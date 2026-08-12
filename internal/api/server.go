@@ -146,7 +146,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// 媒体操作
 	mux.HandleFunc("POST /api/media/{id}/open", s.handleOpenMedia)
+	mux.HandleFunc("GET /api/media/{id}/file", s.handleMediaFile)
+	mux.HandleFunc("GET /api/media/{id}/path", s.handleMediaPath)
 	mux.HandleFunc("POST /api/media/delete", s.handleDeleteMedia)
+
+	// 转码兜底（解码器不支持的格式，如 ProRes）
+	mux.HandleFunc("POST /api/media/{id}/transcode", s.handleTranscode)
+	mux.HandleFunc("GET /api/media/{id}/transcode-status", s.handleTranscodeStatus)
+	mux.HandleFunc("GET /api/transcode/{name}", s.handleTranscodeFile)
 
 	// 健康检查
 	mux.HandleFunc("GET /api/health", s.handleHealth)
