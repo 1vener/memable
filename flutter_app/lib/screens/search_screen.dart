@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
+import '../widgets/image_viewer.dart';
 import '../widgets/media_viewer.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -484,17 +485,26 @@ class _SearchScreenState extends State<SearchScreen> {
 
   // ===== 结果操作（右键菜单/双击） =====
 
-  /// 应用内查看：传整个结果列表，支持左右切换
+  /// 应用内查看：传整个结果列表，支持左右切换；
+  /// 图片走 ImageViewer（图片专用查看器），视频走 MediaViewer
   void _openViewer(SearchResult r) {
     final idx = _results.indexOf(r);
+    final medias = _results.map((e) => e.media).toList();
+    final media = idx >= 0 && idx < medias.length ? medias[idx] : null;
     Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => MediaViewer(
-          medias: _results.map((e) => e.media).toList(),
-          initialIndex: idx < 0 ? 0 : idx,
-          api: widget.api,
-        ),
+        builder: (_) => media != null && media.kind == 'image'
+            ? ImageViewer(
+                medias: medias,
+                initialIndex: idx < 0 ? 0 : idx,
+                api: widget.api,
+              )
+            : MediaViewer(
+                medias: medias,
+                initialIndex: idx < 0 ? 0 : idx,
+                api: widget.api,
+              ),
       ),
     );
   }

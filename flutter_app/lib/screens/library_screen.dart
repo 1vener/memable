@@ -10,6 +10,7 @@ import 'package:file_picker/file_picker.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
+import '../widgets/image_viewer.dart';
 import '../widgets/media_viewer.dart';
 import '../widgets/path_dialog.dart';
 import '../widgets/resizable_split.dart';
@@ -1533,16 +1534,25 @@ class _FileTreePanelState extends State<_FileTreePanel> {
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
-  /// 应用内查看器：传当前排序/筛选后的列表，支持左右切换
+  /// 应用内查看器：传当前排序/筛选后的列表，支持左右切换；
+  /// 图片走 ImageViewer（图片专用查看器），视频走 MediaViewer
   void _openInViewer(List<Media> list, int index) {
+    final media =
+        index >= 0 && index < list.length ? list[index] : null;
     Navigator.of(context).push(
       MaterialPageRoute(
         fullscreenDialog: true,
-        builder: (_) => MediaViewer(
-          medias: list,
-          initialIndex: index,
-          api: widget.api,
-        ),
+        builder: (_) => media != null && media.kind == 'image'
+            ? ImageViewer(
+                medias: list,
+                initialIndex: index,
+                api: widget.api,
+              )
+            : MediaViewer(
+                medias: list,
+                initialIndex: index,
+                api: widget.api,
+              ),
       ),
     );
   }
