@@ -33,6 +33,12 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
+  <script>
+<!-- 禁止主页面右键-->
+document.addEventListener('contextmenu', function(e) {
+    e.preventDefault();
+});
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

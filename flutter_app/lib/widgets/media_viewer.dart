@@ -11,6 +11,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../models/models.dart';
 import '../services/api_service.dart';
+import 'native_fullscreen.dart';
 
 /// 全屏媒体查看器：播放器、同目录视频列表、媒体详情。
 class MediaViewer extends StatefulWidget {
@@ -915,7 +916,14 @@ class _MediaViewerState extends State<MediaViewer> {
         playAndPauseOnTap: true,
         bottomButtonBar: bar,
       ),
-      child: Video(controller: controller, fit: BoxFit.contain),
+      child: Video(
+        controller: controller,
+        fit: BoxFit.contain,
+        onEnterFullscreen:
+            kIsWeb ? _enterFullscreenWeb : defaultEnterNativeFullscreen,
+        onExitFullscreen:
+            kIsWeb ? _exitFullscreenWeb : defaultExitNativeFullscreen,
+      ),
     );
   }
 
@@ -1081,6 +1089,29 @@ class _MediaViewerState extends State<MediaViewer> {
     } catch (e) {
       debugPrint('[MediaViewer] 设置旋转失败: $e');
     }
+  }
+
+  /// Web 端进入全屏：media_kit 在浏览器原生全屏切换时会暂停 HTML5 video
+  /// （上游 issue #935），进入后恢复播放。
+  Future<void> _enterFullscreenWeb() async {
+    await defaultEnterNativeFullscreen();
+    _resumePlaybackAfterFullscreen();
+  }
+
+  /// Web 端退出全屏：同上，退出后恢复播放。
+  Future<void> _exitFullscreenWeb() async {
+    await guardedExitNativeFullscreen();
+    _resumePlaybackAfterFullscreen();
+  }
+
+  /// 全屏切换后若视频本在播放但被浏览器暂停，延迟恢复（仅 Web 端调用）。
+  void _resumePlaybackAfterFullscreen() {
+    final player = _videoController?.player;
+    if (player == null || !player.state.playing) return;
+    Timer(const Duration(milliseconds: 150), () {
+      final p = _videoController?.player;
+      if (p != null && !p.state.playing) p.play();
+    });
   }
 
   Widget _transcodingHint() {
