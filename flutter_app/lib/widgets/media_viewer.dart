@@ -46,9 +46,13 @@ class _MediaViewerState extends State<MediaViewer> {
   int? _transcodeTarget; // 正在转码/已转码的媒体 id，防重复触发与切换竞态
   late final ValueNotifier<double> _rate = ValueNotifier(1.0);
 
+  // 视频旋转（mpv video-rotate 属性：0/90/180/270，仅桌面端生效）
+  final ValueNotifier<int> _rotation = ValueNotifier(0);
+
   List<Media> _directoryVideos = [];
   bool _directoryLoading = true;
   Offset? _speedMenuAnchor;
+  Offset? _rotationMenuAnchor;
   final ScrollController _pageScrollController = ScrollController();
 
   static const List<double> _speedSteps = [
@@ -95,6 +99,7 @@ class _MediaViewerState extends State<MediaViewer> {
     _playingSub?.cancel();
     _rateSub?.cancel();
     _rate.dispose();
+    _rotation.dispose();
     _pageScrollController.dispose();
     _disposeVideo();
     super.dispose();
@@ -221,6 +226,10 @@ class _MediaViewerState extends State<MediaViewer> {
         return;
       }
       await player.open(playbackMedia);
+      // 转码重载/重复加载后重新应用旋转
+      if (_rotation.value != 0) {
+        await _applyRotation(player, _rotation.value);
+      }
     } catch (e) {
       debugPrint('[MediaViewer] 加载视频失败: $e');
       if (mounted) {
@@ -326,6 +335,7 @@ class _MediaViewerState extends State<MediaViewer> {
       _transcodeError = null;
       _transcodeTarget = null;
     });
+    _rotation.value = 0;
     if (nextMedia.kind == 'video') _loadVideo();
   }
 
@@ -840,7 +850,7 @@ class _MediaViewerState extends State<MediaViewer> {
           onPointerDown: (event) {
             final box = ctx.findRenderObject() as RenderBox?;
             if (box != null) {
-              _speedMenuAnchor = box.localToGlobal(event.position);
+              _speedMenuAnchor = box.localToGlobal(event.localPosition);
             }
           },
           child: Tooltip(
@@ -864,6 +874,36 @@ class _MediaViewerState extends State<MediaViewer> {
           ),
         ),
       ),
+      if (!kIsWeb)
+        Builder(
+          builder: (ctx) => Listener(
+            onPointerDown: (event) {
+              final box = ctx.findRenderObject() as RenderBox?;
+              if (box != null) {
+                _rotationMenuAnchor = box.localToGlobal(event.localPosition);
+              }
+            },
+            child: Tooltip(
+              message: '旋转',
+              child: IconButton(
+                onPressed: _showRotationMenu,
+                icon: ValueListenableBuilder<int>(
+                  valueListenable: _rotation,
+                  builder: (_, angle, __) => Text(
+                    '$angle°',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                iconSize: 28,
+                color: Colors.white,
+              ),
+            ),
+          ),
+        ),
       const MaterialDesktopFullscreenButton(),
     ];
     return MaterialDesktopVideoControlsTheme(
@@ -922,16 +962,16 @@ class _MediaViewerState extends State<MediaViewer> {
     const rowHeight = 34.0;
     final menuHeight = _speedSteps.length * rowHeight + 8;
     final top = (anchor.dy - menuHeight - 6).clamp(8.0, overlay.size.height);
-    final left = anchor.dx - menuWidth + 28;
+    final left = anchor.dx - menuWidth / 2;
     final selected = await showMenu<double>(
       context: context,
       position: RelativeRect.fromLTRB(
         left,
         top,
-        overlay.size.width - left,
+        overlay.size.width - left - menuWidth,
         overlay.size.height - top,
       ),
-      constraints: const BoxConstraints(minWidth: menuWidth),
+      constraints: const BoxConstraints(minWidth: menuWidth, maxWidth: menuWidth),
       color: Colors.black.withValues(alpha: 0.5),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
@@ -966,6 +1006,81 @@ class _MediaViewerState extends State<MediaViewer> {
       ],
     );
     if (selected != null && mounted) await player.setRate(selected);
+  }
+
+  /// 旋转视频画面（mpv video-rotate 属性，0/90/180/270 度）。
+  Future<void> _showRotationMenu() async {
+    final player = _videoController?.player;
+    final anchor = _rotationMenuAnchor;
+    if (player == null || anchor == null) return;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+    const menuWidth = 110.0;
+    const rowHeight = 34.0;
+    const angles = [0, 90, 180, 270];
+    final menuHeight = angles.length * rowHeight + 8;
+    final top = (anchor.dy - menuHeight - 6).clamp(8.0, overlay.size.height);
+    final left = anchor.dx - menuWidth / 2;
+    final selected = await showMenu<int>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        left,
+        top,
+        overlay.size.width - left - menuWidth,
+        overlay.size.height - top,
+      ),
+      constraints: const BoxConstraints(minWidth: menuWidth, maxWidth: menuWidth),
+      color: Colors.black.withValues(alpha: 0.5),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.white.withValues(alpha: 0.15)),
+      ),
+      elevation: 8,
+      items: [
+        for (final angle in angles)
+          PopupMenuItem<int>(
+            value: angle,
+            height: rowHeight,
+            child: Row(
+              children: [
+                Text(
+                  '$angle°',
+                  style: TextStyle(
+                    color: _rotation.value == angle
+                        ? const Color(0xFFFF5252)
+                        : Colors.white,
+                    fontSize: 13,
+                    fontWeight: _rotation.value == angle
+                        ? FontWeight.w700
+                        : FontWeight.w400,
+                  ),
+                ),
+                const Spacer(),
+                if (_rotation.value == angle)
+                  const Icon(Icons.check, size: 16, color: Color(0xFFFF5252)),
+              ],
+            ),
+          ),
+      ],
+    );
+    if (selected != null && mounted) await _rotate(player, selected);
+  }
+
+  /// 设置旋转角度并同步到 mpv（NativePlayer 暴露 setProperty，Web 端无此能力）。
+  Future<void> _rotate(mk.Player player, int angle) async {
+    _rotation.value = angle;
+    await _applyRotation(player, angle);
+  }
+
+  Future<void> _applyRotation(mk.Player player, int angle) async {
+    if (kIsWeb) return; // Web 端 HTML5 video 不支持 mpv 属性
+    final platform = player.platform;
+    if (platform == null) return;
+    try {
+      // dynamic 调用：Web 端 NativePlayer 为 stub 类无此方法，但运行时只在桌面端执行
+      await (platform as dynamic).setProperty('video-rotate', '$angle');
+    } catch (e) {
+      debugPrint('[MediaViewer] 设置旋转失败: $e');
+    }
   }
 
   Widget _transcodingHint() {
