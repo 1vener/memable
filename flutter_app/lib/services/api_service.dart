@@ -224,6 +224,21 @@ class ApiService {
     return jsonDecode(res.body);
   }
 
+  /// 库内文件搜索（跨全部正式收藏库）：
+  /// 返回目录级结果 —— 目录名命中返回目录本身，文件名命中汇总父目录。
+  Future<List<LibrarySearchResult>> searchLibraries(String query) async {
+    final uri = Uri.parse(
+      '$baseUrl/api/libraries/search',
+    ).replace(queryParameters: {'q': query});
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('搜索失败: ${res.body}');
+    final data = jsonDecode(res.body);
+    final results = (data['results'] as List<dynamic>?) ?? <dynamic>[];
+    return results
+        .map((e) => LibrarySearchResult.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<Map<String, dynamic>> scanTemporary(String path) async {
     final res = await http.post(
       Uri.parse('$baseUrl/api/scan/temporary'),

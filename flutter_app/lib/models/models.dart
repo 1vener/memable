@@ -174,9 +174,41 @@ class SearchResult {
   }
 }
 
+/// 库内文件搜索结果（目录级条目，Windows 搜索语义）：
+/// 目录名命中返回目录本身（matchType=dir）；文件名命中汇总父目录（matchType=file）。
+class LibrarySearchResult {
+  final int libraryId;
+  final String libraryName;
+  final String dirPath; // 相对目录路径（'' = 库根）
+  final String dirName; // 目录名（库根为 ''）
+  final String matchType; // 'dir'=目录名命中 / 'file'=文件名命中
+  final int matchCount; // file 类型：命中文件数
+
+  LibrarySearchResult({
+    required this.libraryId,
+    required this.libraryName,
+    required this.dirPath,
+    required this.dirName,
+    required this.matchType,
+    this.matchCount = 0,
+  });
+
+  factory LibrarySearchResult.fromJson(Map<String, dynamic> json) {
+    return LibrarySearchResult(
+      libraryId: (json['library_id'] as num?)?.toInt() ?? 0,
+      libraryName: (json['library_name'] as String?) ?? '',
+      dirPath: (json['dir_path'] as String?) ?? '',
+      dirName: (json['dir_name'] as String?) ?? '',
+      matchType: (json['match_type'] as String?) ?? 'file',
+      matchCount: (json['match_count'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  bool get isDirMatch => matchType == 'dir';
+}
+
 /// 文件树节点
-class FileTreeNode {
-  final String name;
+class FileTreeNode {  final String name;
   final String path;
   final bool isDir;
   final int size;

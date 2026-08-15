@@ -108,6 +108,13 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _userCollapsed = false;
   final bool _autoCollapseThreshold = true;
 
+  // 收藏库页文件搜索状态（工具栏搜索框 + 详情页结果面板）
+  final TextEditingController _libSearchCtrl = TextEditingController();
+  String _libSearchQuery = '';
+  List<LibrarySearchResult> _libSearchResults = [];
+  bool _libSearchLoading = false;
+  Timer? _libSearchDebounce;
+
   ApiService get api => widget.api;
 
   @override
@@ -121,6 +128,8 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _taskTimer?.cancel();
+    _libSearchDebounce?.cancel();
+    _libSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -182,6 +191,62 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  /// 收藏库搜索框输入：防抖 350ms 后发起搜索；清空时立即复位。
+  void _onLibSearchChanged(String text) {
+    _libSearchDebounce?.cancel();
+    final q = text.trim();
+    if (q.isEmpty) {
+      setState(() {
+        _libSearchQuery = '';
+        _libSearchResults = [];
+        _libSearchLoading = false;
+      });
+      return;
+    }
+    _libSearchDebounce = Timer(const Duration(milliseconds: 350), () {
+      _runLibrarySearch(q);
+    });
+  }
+
+  /// 执行收藏库文件搜索（防抖触发 / 回车立即）。
+  Future<void> _runLibrarySearch(String q) async {
+    setState(() {
+      _libSearchQuery = q;
+      _libSearchLoading = true;
+    });
+    try {
+      final results = await api.searchLibraries(q);
+      if (!mounted || _libSearchCtrl.text.trim() != q) return; // 输入已变化，丢弃过期结果
+      setState(() {
+        _libSearchResults = results;
+        _libSearchLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _libSearchResults = [];
+        _libSearchLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('搜索失败: $e'),
+          backgroundColor: const Color(0xFFEF4444),
+        ),
+      );
+    }
+  }
+
+  /// 退出搜索模式：清空搜索框与结果（点击搜索结果跳转后调用）。
+  void _exitLibrarySearch() {
+    _libSearchDebounce?.cancel();
+    _libSearchCtrl.clear();
+    setState(() {
+      _libSearchQuery = '';
+      _libSearchResults = [];
+      _libSearchLoading = false;
+    });
+  }
+
   /// 当前页面标题
   String get _currentPageTitle {
     if (_selectedIndex < _destinations.length) {
@@ -197,6 +262,10 @@ class _HomeScreenState extends State<HomeScreen> {
       0 => LibraryScreen(
         api: api,
         onLibrarySelected: _onLibrarySelected,
+        searchQuery: _libSearchQuery,
+        searchResults: _libSearchResults,
+        searchLoading: _libSearchLoading,
+        onSearchExit: _exitLibrarySearch,
       ),
       1 => ScanScreen(api: api, currentLibrary: _currentLibrary),
       2 => TaskScreen(api: api),
@@ -551,12 +620,12 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(width: 20),
-          // 刷新按钮
-          IconButton(
-            icon: const Icon(Icons.refresh, size: 20),
-            tooltip: '刷新 (F5)',
-            onPressed: _checkApi,
-          ),
+   
+          // 收藏库页：文件搜索框（Windows 10 风格，仅当前页显示）
+          if (_selectedIndex == 0) ...[
+            _buildLibrarySearchField(cs),
+            const SizedBox(width: 12),
+          ],
           const Spacer(),
           // 主题切换快捷按钮
           IconButton(
@@ -570,6 +639,53 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () => themeNotifier.toggle(),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 收藏库页文件搜索框：圆角胶囊 + 搜索图标 + 加载/清除后缀。
+  Widget _buildLibrarySearchField(ColorScheme cs) {
+    final hasText = _libSearchCtrl.text.isNotEmpty;
+    return SizedBox(
+      width: 320,
+      height: 36,
+      child: TextField(
+        controller: _libSearchCtrl,
+        onChanged: _onLibSearchChanged,
+        onSubmitted: _runLibrarySearch,
+        textInputAction: TextInputAction.search,
+        style: TextStyle(fontSize: 13, color: cs.onSurface),
+        decoration: InputDecoration(
+          hintText: '搜索文件名或文件夹',
+          hintStyle: TextStyle(fontSize: 13, color: cs.outline),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(vertical: 8),
+          // border: InputBorder.none,
+          prefixIcon: Icon(Icons.search, size: 18, color: cs.outline),
+          suffixIcon:
+              _libSearchLoading
+                  ? Padding(
+                    padding: const EdgeInsets.all(9),
+                    child: SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.8,
+                        color: cs.primary,
+                      ),
+                    ),
+                  )
+                  : hasText
+                  ? IconButton(
+                      icon: Icon(Icons.close, size: 16, color: cs.outline),
+                      tooltip: '清除',
+                      onPressed: () {
+                        _libSearchCtrl.clear();
+                        _onLibSearchChanged('');
+                      },
+                    )
+                  : null,
+        ),
       ),
     );
   }

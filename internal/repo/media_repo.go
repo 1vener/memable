@@ -5,6 +5,7 @@ package repo
 import (
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -332,6 +333,131 @@ func (r *MediaRepo) DeleteByDirectory(libraryID int64, relDir string) (int, []Th
 		return nil
 	})
 	return deleted, thumbRefs, err
+}
+
+// LibrarySearchHit 库内文件名/目录名搜索的目录级命中条目。
+type LibrarySearchHit struct {
+	LibraryID   int64  `json:"library_id"`
+	LibraryName string `json:"library_name"`
+	DirPath     string `json:"dir_path"`    // 相对目录路径（''=库根）
+	DirName     string `json:"dir_name"`    // 目录名（库根为 ''）
+	MatchType   string `json:"match_type"`  // "dir"=目录名命中 / "file"=文件名命中（汇总父目录）
+	MatchCount  int    `json:"match_count"` // file 类型：命中文件数
+}
+
+// SearchLibraries 跨全部正式收藏库搜索文件名/目录名，返回目录级命中（对齐
+// Windows 文件搜索语义）：
+//   - 目录名命中 → 直接返回该目录（match_type=dir）；
+//   - 文件名命中 → 汇总到其父目录，只返回父目录（match_type=file，match_count=命中文件数）。
+//
+// 先按 relative_path LIKE 粗筛（LIMIT 限制原始行数），再在 Go 侧逐段判定并聚合。
+func (r *MediaRepo) SearchLibraries(query string, limit int) ([]LibrarySearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []LibrarySearchHit{}, nil
+	}
+	if limit <= 0 {
+		limit = 2000
+	}
+	rows, err := r.db.Query(
+		`SELECT m.library_id, m.relative_path, l.name
+		 FROM media m
+		 JOIN libraries l ON l.id = m.library_id
+		 LEFT JOIN scan_sessions s ON s.id = m.scan_session_id
+		 WHERE COALESCE(s.is_temporary, 0) = 0
+		   AND m.relative_path LIKE ? ESCAPE '\'
+		 ORDER BY m.library_id, m.relative_path
+		 LIMIT ?`,
+		"%"+escapeLike(query)+"%", limit,
+	)
+	if err != nil {
+		return nil, errx.Wrapf(err, "搜索文件名/目录名 %q", query)
+	}
+	defer rows.Close()
+
+	// 目录命中 map：key=(libID|dirPath)；文件命中 map：key=(libID|dirPath) -> 计数
+	type key struct {
+		libID int64
+		dir   string
+	}
+	dirHits := make(map[key]string) // key -> 库名
+	fileHits := make(map[key]int)   // key -> 命中文件数
+	libNames := make(map[int64]string)
+	q := strings.ToLower(query)
+
+	for rows.Next() {
+		var libID int64
+		var relPath, libName string
+		if err := rows.Scan(&libID, &relPath, &libName); err != nil {
+			return nil, errx.Wrapf(err, "扫描搜索结果行")
+		}
+		libNames[libID] = libName
+		parts := strings.Split(relPath, "/")
+		for i, seg := range parts {
+			if !strings.Contains(strings.ToLower(seg), q) {
+				continue
+			}
+			if i == len(parts)-1 {
+				// 文件名命中：汇总父目录（父目录可为空 = 库根）
+				parent := ""
+				if len(parts) > 1 {
+					parent = strings.Join(parts[:len(parts)-1], "/")
+				}
+				fileHits[key{libID, parent}]++
+			} else {
+				// 目录名命中：直接返回该目录
+				dir := strings.Join(parts[:i+1], "/")
+				dirHits[key{libID, dir}] = libName
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errx.Wrapf(err, "遍历搜索结果行")
+	}
+
+	out := make([]LibrarySearchHit, 0, len(dirHits)+len(fileHits))
+	// 目录名命中优先；同一目录若同时命中文件名，以 dir 类型展示（更具体）
+	for k, name := range dirHits {
+		out = append(out, LibrarySearchHit{
+			LibraryID:   k.libID,
+			LibraryName: name,
+			DirPath:     k.dir,
+			DirName:     dirNameOf(k.dir),
+			MatchType:   "dir",
+			MatchCount:  fileHits[k],
+		})
+		delete(fileHits, k)
+	}
+	for k, n := range fileHits {
+		out = append(out, LibrarySearchHit{
+			LibraryID:   k.libID,
+			LibraryName: libNames[k.libID],
+			DirPath:     k.dir,
+			DirName:     dirNameOf(k.dir),
+			MatchType:   "file",
+			MatchCount:  n,
+		})
+	}
+	// 排序：库名 → 目录路径（目录命中在前）
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LibraryName != out[j].LibraryName {
+			return out[i].LibraryName < out[j].LibraryName
+		}
+		if out[i].MatchType != out[j].MatchType {
+			return out[i].MatchType < out[j].MatchType // "dir" < "file"
+		}
+		return out[i].DirPath < out[j].DirPath
+	})
+	return out, nil
+}
+
+// dirNameOf 返回目录路径的最后一段（库根返回空串）。
+func dirNameOf(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	parts := strings.Split(dir, "/")
+	return parts[len(parts)-1]
 }
 
 // SearchByPath 全路径模糊搜索（拼接 library.path 后匹配）。

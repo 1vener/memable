@@ -175,3 +175,128 @@ func TestListDirChildren(t *testing.T) {
 	assertChildren(t, "日期", map[string]bool{"【合集】❤️精选": true})
 	assertChildren(t, "日期/【合集】❤️精选", map[string]bool{"子目录": false})
 }
+
+// TestSearchLibraries 验证库内文件名/目录名搜索的目录级聚合语义：
+// 目录名命中直接返回该目录；文件名命中汇总父目录并计数；根级文件父目录为空串；
+// 跨多个库返回（带库名）；临时扫描库排除；排序为 库名→目录路径（dir 类型在前）。
+func TestSearchLibraries(t *testing.T) {
+	dbh, err := db.Open(&config.Config{Database: config.DatabaseConfig{Path: ":memory:"}})
+	if err != nil {
+		t.Fatalf("打开测试数据库: %v", err)
+	}
+	t.Cleanup(func() { _ = dbh.Close() })
+	if err := db.Migrate(dbh); err != nil {
+		t.Fatalf("迁移测试数据库: %v", err)
+	}
+	lr := NewLibraryRepo(dbh)
+	libA := &Library{Name: "A库", Path: "C:/media", Kind: "mixed"}
+	libB := &Library{Name: "B库", Path: "D:/影集", Kind: "mixed"}
+	if err := lr.Create(libA); err != nil {
+		t.Fatalf("创建库 A: %v", err)
+	}
+	if err := lr.Create(libB); err != nil {
+		t.Fatalf("创建库 B: %v", err)
+	}
+	mr := NewMediaRepo(dbh)
+	now := time.Now().UTC()
+	upsert := func(libID int64, rel string, sessionID string) {
+		t.Helper()
+		var sid *string
+		if sessionID != "" {
+			sid = &sessionID
+		}
+		if err := mr.Upsert(&Media{LibraryID: libID, ScanSessionID: sid, Kind: "image", RelativePath: rel, FileSize: 1, Mtime: now}); err != nil {
+			t.Fatalf("写入媒体 %q: %v", rel, err)
+		}
+	}
+	for _, rel := range []string{"a/1.jpg", "a/b/2.jpg", "a/bc/3.jpg", "other/4.jpg", "root.jpg"} {
+		upsert(libA.ID, rel, "")
+	}
+	for _, rel := range []string{"2024/新年.jpg", "2024/1月/海边.mp4"} {
+		upsert(libB.ID, rel, "")
+	}
+
+	// 临时扫描库：media 带 is_temporary=1 会话，不应出现在结果中
+	if _, err := dbh.Exec(`INSERT INTO scan_sessions (id, is_temporary, status) VALUES ('tmp1', 1, 'running')`); err != nil {
+		t.Fatalf("插入临时会话: %v", err)
+	}
+	upsert(libA.ID, "tmpdir/临时文件.jpg", "tmp1")
+
+	find := func(hits []LibrarySearchHit, libName, dir, mtype string) *LibrarySearchHit {
+		t.Helper()
+		for i := range hits {
+			h := &hits[i]
+			if h.LibraryName == libName && h.DirPath == dir && h.MatchType == mtype {
+				return h
+			}
+		}
+		return nil
+	}
+
+	// 1. 目录名命中：bc → 目录 a/bc
+	hits, err := mr.SearchLibraries("bc", 0)
+	if err != nil {
+		t.Fatalf("SearchLibraries(bc): %v", err)
+	}
+	h := find(hits, "A库", "a/bc", "dir")
+	if h == nil {
+		t.Fatalf("bc 应命中目录 a/bc，实际 %+v", hits)
+	}
+	if h.DirName != "bc" {
+		t.Fatalf("DirName = %q, want bc", h.DirName)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("bc 命中数量 = %d, want 1，实际 %+v", len(hits), hits)
+	}
+
+	// 2. 文件名命中：3 → 汇总父目录 a/bc，计数 1
+	hits, err = mr.SearchLibraries("3", 0)
+	if err != nil {
+		t.Fatalf("SearchLibraries(3): %v", err)
+	}
+	h = find(hits, "A库", "a/bc", "file")
+	if h == nil {
+		t.Fatalf("3 应汇总到目录 a/bc，实际 %+v", hits)
+	}
+	if h.MatchCount != 1 {
+		t.Fatalf("a/bc 命中计数 = %d, want 1", h.MatchCount)
+	}
+
+	// 3. 根级文件命中：root.jpg → 父目录为空串（库根）
+	hits, err = mr.SearchLibraries("root", 0)
+	if err != nil {
+		t.Fatalf("SearchLibraries(root): %v", err)
+	}
+	h = find(hits, "A库", "", "file")
+	if h == nil {
+		t.Fatalf("root 应汇总到库根，实际 %+v", hits)
+	}
+	if h.DirName != "" {
+		t.Fatalf("库根 DirName = %q, want 空串", h.DirName)
+	}
+
+	// 4. 跨库 + 临时库排除：jpg 命中 A库 5 个父目录（含库根）、B库 1 个，
+	//    临时会话的 tmpdir 不出现
+	hits, err = mr.SearchLibraries("jpg", 0)
+	if err != nil {
+		t.Fatalf("SearchLibraries(jpg): %v", err)
+	}
+	if find(hits, "A库", "tmpdir", "file") != nil || find(hits, "A库", "tmpdir", "dir") != nil {
+		t.Fatalf("临时扫描库不应出现在结果中，实际 %+v", hits)
+	}
+	if find(hits, "A库", "a", "file") == nil || find(hits, "A库", "a/b", "file") == nil ||
+		find(hits, "A库", "a/bc", "file") == nil || find(hits, "A库", "other", "file") == nil ||
+		find(hits, "A库", "", "file") == nil || find(hits, "B库", "2024", "file") == nil {
+		t.Fatalf("jpg 命中集合不完整，实际 %+v", hits)
+	}
+	// 排序：A库(文件按路径) 在 B库 前
+	names := make([]string, 0, len(hits))
+	for i := range hits {
+		names = append(names, hits[i].LibraryName+"/"+hits[i].DirPath)
+	}
+	for i := 1; i < len(names); i++ {
+		if names[i-1] > names[i] {
+			t.Fatalf("结果未按库名+路径排序：%v", names)
+		}
+	}
+}

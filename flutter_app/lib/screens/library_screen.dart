@@ -18,11 +18,19 @@ import '../widgets/resizable_split.dart';
 class LibraryScreen extends StatefulWidget {
   final ApiService api;
   final ValueChanged<String> onLibrarySelected;
+  final String searchQuery; // 工具栏搜索框当前查询（非空时右侧显示搜索结果面板）
+  final List<LibrarySearchResult> searchResults;
+  final bool searchLoading;
+  final VoidCallback onSearchExit; // 退出搜索模式（清空搜索框与结果）
 
   const LibraryScreen({
     super.key,
     required this.api,
     required this.onLibrarySelected,
+    required this.searchQuery,
+    required this.searchResults,
+    required this.searchLoading,
+    required this.onSearchExit,
   });
 
   @override
@@ -35,10 +43,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _loading = true;
   String? _error;
 
+  // 目录树面板的全局 key：搜索结果点击后经它定位目录（revealDir）
+  final GlobalKey<_FileTreePanelState> _fileTreeKey = GlobalKey<_FileTreePanelState>();
+
   @override
   void initState() {
     super.initState();
     _loadLibraries();
+  }
+
+  @override
+  void didUpdateWidget(covariant LibraryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 工具栏搜索框输入/结果变化时刷新右侧面板
+    if (oldWidget.searchQuery != widget.searchQuery ||
+        oldWidget.searchResults != widget.searchResults ||
+        oldWidget.searchLoading != widget.searchLoading) {
+      setState(() {});
+    }
   }
 
   Future<void> _loadLibraries() async {
@@ -354,7 +376,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ],
       ),
       right:
-          _selected == null
+          widget.searchQuery.isNotEmpty
+              ? _SearchResultsPanel(
+                  query: widget.searchQuery,
+                  results: widget.searchResults,
+                  loading: widget.searchLoading,
+                  onTap: _onSearchResultTap,
+                )
+              : _selected == null
               ? Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -372,8 +401,33 @@ class _LibraryScreenState extends State<LibraryScreen> {
                   ],
                 ),
               )
-              : _FileTreePanel(library: _selected!, api: widget.api),
+              : _FileTreePanel(
+                  key: _fileTreeKey,
+                  library: _selected!,
+                  api: widget.api,
+                ),
     );
+  }
+
+  /// 点击搜索结果：自动切换收藏库 → 定位目录树到命中目录 → 退出搜索模式。
+  void _onSearchResultTap(LibrarySearchResult result) {
+    Library? lib;
+    for (final l in _libraries) {
+      if (l.id == result.libraryId) {
+        lib = l;
+        break;
+      }
+    }
+    if (lib != null && lib.id != _selected?.id) {
+      setState(() => _selected = lib);
+    }
+    // 退出搜索模式（HomeScreen 清空搜索框与结果），右侧恢复目录树视图
+    widget.onSearchExit();
+    // 等一帧让目录树随新库重建完成（didUpdateWidget 重置状态）后，
+    // 再逐层展开祖先链并选中命中目录
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _fileTreeKey.currentState?.revealDir(result.dirPath);
+    });
   }
 }
 
@@ -524,12 +578,241 @@ class _LibraryCard extends StatelessWidget {
   }
 }
 
+/// 收藏库文件搜索结果面板：目录级条目列表（Windows 搜索语义）。
+class _SearchResultsPanel extends StatelessWidget {
+  final String query;
+  final List<LibrarySearchResult> results;
+  final bool loading;
+  final ValueChanged<LibrarySearchResult> onTap;
+
+  const _SearchResultsPanel({
+    required this.query,
+    required this.results,
+    required this.loading,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // 头部：结果统计
+        Container(
+          height: 52,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
+            ),
+          ),
+          child: Row(
+            children: [
+              Text(
+                '搜索结果 (${results.length})',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurface,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  '「$query」',
+                  style: TextStyle(fontSize: 12, color: cs.outline),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child:
+              loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : results.isEmpty
+                  ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.search_off,
+                          size: 48,
+                          color: cs.outline.withValues(alpha: 0.5),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          '未找到匹配的文件或文件夹',
+                          style: TextStyle(fontSize: 14, color: cs.outline),
+                        ),
+                      ],
+                    ),
+                  )
+                  : ListView.separated(
+                    padding: const EdgeInsets.all(8),
+                    itemCount: results.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 2),
+                    itemBuilder: (context, index) {
+                      final r = results[index];
+                      return _SearchResultTile(
+                        result: r,
+                        query: query,
+                        onTap: () => onTap(r),
+                      );
+                    },
+                  ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 单个搜索结果条目：目录图标 + 目录名（高亮命中文字）+ 路径·库名 + 匹配数角标。
+class _SearchResultTile extends StatelessWidget {
+  final LibrarySearchResult result;
+  final String query;
+  final VoidCallback onTap;
+
+  const _SearchResultTile({
+    required this.result,
+    required this.query,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isRoot = result.dirPath.isEmpty;
+    final title = isRoot ? '库根目录' : result.dirName;
+    final subtitle = isRoot
+        ? result.libraryName
+        : '${result.dirPath} · ${result.libraryName}';
+    final baseStyle = TextStyle(fontSize: 13, color: cs.onSurface);
+    return Tooltip(
+      message: isRoot
+          ? result.libraryName
+          : '${result.libraryName} / ${result.dirPath}',
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: [
+                Icon(
+                  result.isDirMatch ? Icons.folder : Icons.folder_outlined,
+                  size: 20,
+                  color: result.isDirMatch ? cs.primary : cs.outline,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _HighlightedText(
+                        text: title,
+                        query: query,
+                        style: baseStyle,
+                        highlightStyle: baseStyle.copyWith(
+                          color: cs.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: TextStyle(fontSize: 11, color: cs.outline),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                if (result.matchCount > 0) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: cs.primary.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      '${result.matchCount} 个文件匹配',
+                      style: TextStyle(fontSize: 11, color: cs.primary),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+                Icon(Icons.chevron_right, size: 16, color: cs.outlineVariant),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 匹配文字高亮：大小写不敏感切分 query 命中段并高亮。
+class _HighlightedText extends StatelessWidget {
+  final String text;
+  final String query;
+  final TextStyle style;
+  final TextStyle highlightStyle;
+
+  const _HighlightedText({
+    required this.text,
+    required this.query,
+    required this.style,
+    required this.highlightStyle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (query.isEmpty) {
+      return Text(text, style: style, overflow: TextOverflow.ellipsis);
+    }
+    final lower = text.toLowerCase();
+    final q = query.toLowerCase();
+    final spans = <TextSpan>[];
+    var start = 0;
+    while (start < text.length) {
+      final idx = lower.indexOf(q, start);
+      if (idx < 0) {
+        spans.add(TextSpan(text: text.substring(start), style: style));
+        break;
+      }
+      if (idx > start) {
+        spans.add(TextSpan(text: text.substring(start, idx), style: style));
+      }
+      spans.add(
+        TextSpan(
+          text: text.substring(idx, idx + q.length),
+          style: highlightStyle,
+        ),
+      );
+      start = idx + q.length;
+    }
+    return Text.rich(
+      TextSpan(children: spans),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+}
+
 /// 文件树 + 缩略图浏览面板（IDEA 风格懒加载）
 class _FileTreePanel extends StatefulWidget {
   final Library library;
   final ApiService api;
 
-  const _FileTreePanel({required this.library, required this.api});
+  const _FileTreePanel({super.key, required this.library, required this.api});
 
   @override
   State<_FileTreePanel> createState() => _FileTreePanelState();
@@ -663,6 +946,31 @@ class _FileTreePanelState extends State<_FileTreePanel> {
           _loadingFiles = false;
         });
     }
+  }
+
+  /// 定位到指定目录：逐层展开祖先链（懒加载）并选中该目录，供搜索结果跳转。
+  /// 库根（空路径）直接选中根目录。
+  Future<void> revealDir(String dirPath) async {
+    final parts = dirPath.split('/').where((s) => s.isNotEmpty).toList();
+    var path = '';
+    for (var i = 0; i < parts.length; i++) {
+      path = i == 0 ? parts[i] : '$path/${parts[i]}';
+      if (_expandedPaths.contains(path)) continue;
+      try {
+        final children = await widget.api.getFileTree(
+          widget.library.id,
+          path: path,
+        );
+        if (!mounted) return;
+        setState(() {
+          _expandedChildren[path] = children;
+          _expandedPaths.add(path);
+        });
+      } catch (_) {
+        return; // 祖先链读取失败则放弃定位
+      }
+    }
+    await _selectDir(dirPath);
   }
 
   Future<void> _showDeleteDialog(String dirPath, String dirName, bool hasChildren) async {

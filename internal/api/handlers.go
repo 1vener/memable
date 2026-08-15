@@ -273,6 +273,26 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, medias)
 }
 
+// handleLibrarySearch 库内文件搜索（跨全部正式收藏库）：
+// 返回目录级命中 —— 目录名命中返回该目录本身（match_type=dir）；
+// 文件名命中汇总到其父目录（match_type=file，match_count=命中文件数）。
+func (s *Server) handleLibrarySearch(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, 200, map[string]any{"query": q, "results": []repo.LibrarySearchHit{}})
+		return
+	}
+	hits, err := s.media.SearchLibraries(q, 0)
+	if err != nil {
+		writeError(w, 500, "搜索失败: "+err.Error())
+		return
+	}
+	if hits == nil {
+		hits = []repo.LibrarySearchHit{}
+	}
+	writeJSON(w, 200, map[string]any{"query": q, "results": hits})
+}
+
 // ===== 目录删除 =====
 
 type deleteDirReq struct {

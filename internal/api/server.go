@@ -105,6 +105,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/libraries/{id}", s.handleDeleteLibrary)
 	mux.HandleFunc("GET /api/libraries/{id}/tree", s.handleFileTree)
 	mux.HandleFunc("GET /api/libraries/{id}/files", s.handleListFiles)
+	mux.HandleFunc("GET /api/libraries/search", s.handleLibrarySearch)
 	mux.HandleFunc("DELETE /api/libraries/{id}/directories", s.handleDeleteDirectory)
 	mux.HandleFunc("POST /api/libraries/{id}/directories/rename", s.handleRenameDirectory)
 	mux.HandleFunc("POST /api/libraries/{id}/directories/move", s.handleMoveDirectory)
