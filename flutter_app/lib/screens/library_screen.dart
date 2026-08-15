@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../widgets/context_menu.dart';
@@ -839,11 +840,37 @@ class _FileTreePanelState extends State<_FileTreePanel> {
   // 排序：''=默认, name=名称, size=大小, duration=时长；_sortAscending=是否升序
   String _sortField = '';
   bool _sortAscending = true;
+  // 缩略图卡片大小（网格 maxCrossAxisExtent），SharedPreferences 持久化
+  double _thumbExtent = 180.0;
+  static const double _thumbExtentMin = 110;
+  static const double _thumbExtentMax = 320;
 
   @override
   void initState() {
     super.initState();
     _loadRootChildren();
+    _loadThumbExtentPref();
+  }
+
+  /// 读取持久化的卡片大小偏好并钳制到有效范围。
+  Future<void> _loadThumbExtentPref() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final v = prefs.getDouble('ui.library_thumb_extent') ?? 180.0;
+      if (mounted) {
+        setState(() {
+          _thumbExtent = v.clamp(_thumbExtentMin, _thumbExtentMax);
+        });
+      }
+    } catch (_) {}
+  }
+
+  /// 滑杆拖动结束时写回偏好。
+  Future<void> _saveThumbExtentPref(double v) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('ui.library_thumb_extent', v);
+    } catch (_) {}
   }
 
   @override
@@ -1668,14 +1695,57 @@ class _FileTreePanelState extends State<_FileTreePanel> {
                       ),
                     ),
                   ),
+                  const SizedBox(width: 12),
+                  // 卡片大小调节：内联滑杆，拖动实时生效，松手持久化
+                  Tooltip(
+                    message: '卡片大小',
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.photo_size_select_large,
+                          size: 15,
+                          color: cs.outline,
+                        ),
+                        const SizedBox(width: 6),
+                        SizedBox(
+                          width: 110,
+                          height: 24,
+                          child: SliderTheme(
+                            data: SliderThemeData(
+                              trackHeight: 2,
+                              activeTrackColor: cs.primary,
+                              inactiveTrackColor: cs.outlineVariant,
+                              thumbColor: cs.primary,
+                              overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 10,
+                              ),
+                              thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 6,
+                              ),
+                            ),
+                            child: Slider(
+                              value: _thumbExtent,
+                              min: _thumbExtentMin,
+                              max: _thumbExtentMax,
+                              divisions: 21,
+                              onChanged: (v) =>
+                                  setState(() => _thumbExtent = v),
+                              onChangeEnd: _saveThumbExtentPref,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
             // 网格
             Expanded(
               child: GridView.builder(
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 180,
+                gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: _thumbExtent,
                   crossAxisSpacing: 12,
                   mainAxisSpacing: 12,
                   childAspectRatio: 0.88,
