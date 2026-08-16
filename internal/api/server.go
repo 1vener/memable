@@ -146,6 +146,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/thumbnails/{kind}/", s.handleThumbnail)
 
 	// 媒体操作
+	mux.HandleFunc("GET /api/media", s.handleListMedia)
+	mux.HandleFunc("GET /api/media/groups", s.handleListMediaGroups)
+	mux.HandleFunc("GET /api/media/statistics", s.handleMediaStatistics)
 	mux.HandleFunc("POST /api/media/{id}/open", s.handleOpenMedia)
 	mux.HandleFunc("GET /api/media/{id}/file", s.handleMediaFile)
 	mux.HandleFunc("GET /api/media/{id}/path", s.handleMediaPath)

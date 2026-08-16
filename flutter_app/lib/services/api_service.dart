@@ -75,10 +75,7 @@ class ApiService {
     );
     if (res.statusCode != 200) throw Exception('验证失败: ${res.body}');
     final data = jsonDecode(res.body) as Map<String, dynamic>;
-    return (
-      data['valid'] == true,
-      (data['error'] as String?) ?? '',
-    );
+    return (data['valid'] == true, (data['error'] as String?) ?? '');
   }
 
   /// CD2 目录树懒加载：返回指定路径的直属子目录。
@@ -122,6 +119,47 @@ class ApiService {
     return list
         .map((e) => Library.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  /// 获取按修改时间倒序的媒体分页。
+  Future<MediaPage> getMediaPage(String kind, int page, int pageSize) async {
+    final uri = Uri.parse('$baseUrl/api/media').replace(
+      queryParameters: {
+        'kind': kind,
+        'page': '$page',
+        'page_size': '$pageSize',
+      },
+    );
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('获取媒体分页失败: ${res.body}');
+    return MediaPage.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  /// 获取首页库目录分组。
+  Future<MediaGroupPage> getMediaGroups(
+    int depth,
+    int offset,
+    int limit,
+  ) async {
+    final uri = Uri.parse('$baseUrl/api/media/groups').replace(
+      queryParameters: {
+        'depth': '$depth',
+        'offset': '$offset',
+        'limit': '$limit',
+      },
+    );
+    final res = await http.get(uri);
+    if (res.statusCode != 200) throw Exception('获取媒体分组失败: ${res.body}');
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    return MediaGroupPage.fromJson(data);
+  }
+
+  Future<MediaStatistics> getMediaStatistics() async {
+    final res = await http.get(Uri.parse('$baseUrl/api/media/statistics'));
+    if (res.statusCode != 200) throw Exception('获取媒体统计失败: ${res.body}');
+    return MediaStatistics.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
   }
 
   Future<Library> createLibrary(
@@ -632,11 +670,13 @@ class ApiService {
   }) async {
     final uri = Uri.parse(
       '$baseUrl/api/reports/directory-compare/groups',
-    ).replace(queryParameters: {
-      'page': '$page',
-      'page_size': '$pageSize',
-      if (kind.isNotEmpty && kind != 'all') 'kind': kind,
-    });
+    ).replace(
+      queryParameters: {
+        'page': '$page',
+        'page_size': '$pageSize',
+        if (kind.isNotEmpty && kind != 'all') 'kind': kind,
+      },
+    );
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('读取目录对比分组失败: ${res.body}');
     return DirCompareGroupPage.fromJson(
@@ -648,9 +688,9 @@ class ApiService {
   Future<List<DuplicateTreeNode>> getDirCompareTree({String kind = ''}) async {
     final uri = Uri.parse(
       '$baseUrl/api/reports/directory-compare/tree',
-    ).replace(queryParameters: {
-      if (kind.isNotEmpty && kind != 'all') 'kind': kind,
-    });
+    ).replace(
+      queryParameters: {if (kind.isNotEmpty && kind != 'all') 'kind': kind},
+    );
     final res = await http.get(uri);
     if (res.statusCode != 200) throw Exception('读取目录对比目录树失败: ${res.body}');
     final list = jsonDecode(res.body) as List<dynamic>;

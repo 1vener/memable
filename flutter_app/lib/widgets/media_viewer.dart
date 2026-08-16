@@ -18,12 +18,14 @@ class MediaViewer extends StatefulWidget {
   final List<Media> medias;
   final int initialIndex;
   final ApiService api;
+  final bool preserveQueue;
 
   const MediaViewer({
     super.key,
     required this.medias,
     required this.initialIndex,
     required this.api,
+    this.preserveQueue = false,
   });
 
   @override
@@ -84,7 +86,11 @@ class _MediaViewerState extends State<MediaViewer> {
     _directoryVideos = _videosInDirectory(_queue, _currentMedia);
     mk.MediaKit.ensureInitialized();
     if (_currentMedia?.kind == 'video') _loadVideo();
-    _loadDirectoryQueue();
+    if (widget.preserveQueue) {
+      _directoryLoading = false;
+    } else {
+      _loadDirectoryQueue();
+    }
   }
 
   int _initialIndex(List<Media> items, int requested) {
@@ -217,9 +223,10 @@ class _MediaViewerState extends State<MediaViewer> {
         return;
       }
       setState(() => _videoController = controller);
-      final playbackMedia = localPath != null
-          ? mk.Media(localPath)
-          : httpUrl != null
+      final playbackMedia =
+          localPath != null
+              ? mk.Media(localPath)
+              : httpUrl != null
               ? mk.Media(httpUrl)
               : await _resolvePlaybackMedia();
       if (!mounted) {
@@ -245,7 +252,8 @@ class _MediaViewerState extends State<MediaViewer> {
   /// 解码器错误时自动启动转码（同一媒体只自动触发一次）。
   void _maybeAutoTranscode(String message) {
     final m = message.toLowerCase();
-    final isDecoderIssue = m.contains('decoder') ||
+    final isDecoderIssue =
+        m.contains('decoder') ||
         m.contains('failed to initialize') ||
         m.contains('unknown codec') ||
         m.contains('no decoder');
@@ -345,12 +353,13 @@ class _MediaViewerState extends State<MediaViewer> {
       await _goTo(_index + delta);
       return;
     }
-    final currentVideoIndex =
-        _directoryVideos.indexWhere((m) => m.id == _media.id);
+    final currentVideoIndex = _directoryVideos.indexWhere(
+      (m) => m.id == _media.id,
+    );
     if (currentVideoIndex < 0) return;
     final next = (currentVideoIndex + delta) % _directoryVideos.length;
-    final normalized = (next + _directoryVideos.length) %
-        _directoryVideos.length;
+    final normalized =
+        (next + _directoryVideos.length) % _directoryVideos.length;
     final targetId = _directoryVideos[normalized].id;
     final queueIndex = _queue.indexWhere((m) => m.id == targetId);
     if (queueIndex >= 0) await _goTo(queueIndex);
@@ -489,19 +498,14 @@ class _MediaViewerState extends State<MediaViewer> {
         controller: _pageScrollController,
         padding: const EdgeInsets.all(18),
         child: ConstrainedBox(
-          constraints: BoxConstraints(
-            minWidth: viewport.maxWidth - 36,
-          ),
+          constraints: BoxConstraints(minWidth: viewport.maxWidth - 36),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _buildPlayerFrame(),
-                    _buildDetails(cs),
-                  ],
+                  children: [_buildPlayerFrame(), _buildDetails(cs)],
                 ),
               ),
               const SizedBox(width: 18),
@@ -657,9 +661,7 @@ class _MediaViewerState extends State<MediaViewer> {
                 ),
               ),
               Text(
-                _directoryLoading
-                    ? '加载中…'
-                    : '${_directoryVideos.length} 个',
+                _directoryLoading ? '加载中…' : '${_directoryVideos.length} 个',
                 style: const TextStyle(color: Colors.white54, fontSize: 12),
               ),
             ],
@@ -667,23 +669,22 @@ class _MediaViewerState extends State<MediaViewer> {
           const SizedBox(height: 12),
           _directoryVideos.isEmpty
               ? Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 32),
-                  child: Text(
-                    _directoryLoading ? '正在读取目录…' : '该目录没有其他视频',
-                    style: const TextStyle(color: Colors.white38, fontSize: 12),
-                    textAlign: TextAlign.center,
-                  ),
-                )
-              : ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: _directoryVideos.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 8),
-                  itemBuilder: (_, index) => _buildPlaylistItem(
-                    _directoryVideos[index],
-                    index,
-                  ),
+                padding: const EdgeInsets.symmetric(vertical: 32),
+                child: Text(
+                  _directoryLoading ? '正在读取目录…' : '该目录没有其他视频',
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  textAlign: TextAlign.center,
                 ),
+              )
+              : ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _directoryVideos.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder:
+                    (_, index) =>
+                        _buildPlaylistItem(_directoryVideos[index], index),
+              ),
         ],
       ),
     );
@@ -691,9 +692,10 @@ class _MediaViewerState extends State<MediaViewer> {
 
   Widget _buildPlaylistItem(Media media, int index) {
     final active = media.id == _media.id;
-    final thumbnail = media.thumbnailPath == null
-        ? null
-        : widget.api.thumbnailUrl('video', media.thumbnailPath!);
+    final thumbnail =
+        media.thumbnailPath == null
+            ? null
+            : widget.api.thumbnailUrl('video', media.thumbnailPath!);
     return Material(
       color: active ? const Color(0xFF3A2025) : Colors.transparent,
       borderRadius: BorderRadius.circular(7),
@@ -721,23 +723,24 @@ class _MediaViewerState extends State<MediaViewer> {
                     children: [
                       thumbnail == null
                           ? Container(
-                              color: const Color(0xFF303030),
-                              child: const Icon(
-                                Icons.videocam_outlined,
-                                color: Colors.white38,
-                              ),
-                            )
-                          : Image.network(
-                              thumbnail,
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => Container(
-                                color: const Color(0xFF303030),
-                                child: const Icon(
-                                  Icons.videocam_outlined,
-                                  color: Colors.white38,
-                                ),
-                              ),
+                            color: const Color(0xFF303030),
+                            child: const Icon(
+                              Icons.videocam_outlined,
+                              color: Colors.white38,
                             ),
+                          )
+                          : Image.network(
+                            thumbnail,
+                            fit: BoxFit.cover,
+                            errorBuilder:
+                                (_, __, ___) => Container(
+                                  color: const Color(0xFF303030),
+                                  child: const Icon(
+                                    Icons.videocam_outlined,
+                                    color: Colors.white38,
+                                  ),
+                                ),
+                          ),
                       if (media.durationMs != null && media.durationMs! > 0)
                         Positioned(
                           right: 4,
@@ -781,7 +784,10 @@ class _MediaViewerState extends State<MediaViewer> {
                       media.format ?? '视频',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 11,
+                      ),
                     ),
                   ],
                 ),
@@ -809,20 +815,20 @@ class _MediaViewerState extends State<MediaViewer> {
       maxScale: 8,
       child: SizedBox.expand(
         child: Center(
-        child: Image.network(
-          _url,
-          fit: BoxFit.contain,
-          loadingBuilder: (_, child, progress) {
-            if (progress == null) return child;
-            return const Center(
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.white70,
-              ),
-            );
-          },
-          errorBuilder: (_, __, ___) => _unsupportedHint(),
-        ),
+          child: Image.network(
+            _url,
+            fit: BoxFit.contain,
+            loadingBuilder: (_, child, progress) {
+              if (progress == null) return child;
+              return const Center(
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white70,
+                ),
+              );
+            },
+            errorBuilder: (_, __, ___) => _unsupportedHint(),
+          ),
         ),
       ),
     );
@@ -847,63 +853,69 @@ class _MediaViewerState extends State<MediaViewer> {
       const MaterialDesktopPositionIndicator(),
       const Spacer(),
       Builder(
-        builder: (ctx) => Listener(
-          onPointerDown: (event) {
-            final box = ctx.findRenderObject() as RenderBox?;
-            if (box != null) {
-              _speedMenuAnchor = box.localToGlobal(event.localPosition);
-            }
-          },
-          child: Tooltip(
-            message: '倍速',
-            child: IconButton(
-              onPressed: _showSpeedDialog,
-              icon: ValueListenableBuilder<double>(
-                valueListenable: _rate,
-                builder: (_, rate, __) => Text(
-                  _speedLabelFor(rate),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
+        builder:
+            (ctx) => Listener(
+              onPointerDown: (event) {
+                final box = ctx.findRenderObject() as RenderBox?;
+                if (box != null) {
+                  _speedMenuAnchor = box.localToGlobal(event.localPosition);
+                }
+              },
+              child: Tooltip(
+                message: '倍速',
+                child: IconButton(
+                  onPressed: _showSpeedDialog,
+                  icon: ValueListenableBuilder<double>(
+                    valueListenable: _rate,
+                    builder:
+                        (_, rate, __) => Text(
+                          _speedLabelFor(rate),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
                   ),
+                  iconSize: 28,
+                  color: Colors.white,
                 ),
               ),
-              iconSize: 28,
-              color: Colors.white,
             ),
-          ),
-        ),
       ),
       if (!kIsWeb)
         Builder(
-          builder: (ctx) => Listener(
-            onPointerDown: (event) {
-              final box = ctx.findRenderObject() as RenderBox?;
-              if (box != null) {
-                _rotationMenuAnchor = box.localToGlobal(event.localPosition);
-              }
-            },
-            child: Tooltip(
-              message: '旋转',
-              child: IconButton(
-                onPressed: _showRotationMenu,
-                icon: ValueListenableBuilder<int>(
-                  valueListenable: _rotation,
-                  builder: (_, angle, __) => Text(
-                    '$angle°',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
+          builder:
+              (ctx) => Listener(
+                onPointerDown: (event) {
+                  final box = ctx.findRenderObject() as RenderBox?;
+                  if (box != null) {
+                    _rotationMenuAnchor = box.localToGlobal(
+                      event.localPosition,
+                    );
+                  }
+                },
+                child: Tooltip(
+                  message: '旋转',
+                  child: IconButton(
+                    onPressed: _showRotationMenu,
+                    icon: ValueListenableBuilder<int>(
+                      valueListenable: _rotation,
+                      builder:
+                          (_, angle, __) => Text(
+                            '$angle°',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
                     ),
+                    iconSize: 28,
+                    color: Colors.white,
                   ),
                 ),
-                iconSize: 28,
-                color: Colors.white,
               ),
-            ),
-          ),
         ),
       const MaterialDesktopFullscreenButton(),
     ];
@@ -979,7 +991,10 @@ class _MediaViewerState extends State<MediaViewer> {
         overlay.size.width - left - menuWidth,
         overlay.size.height - top,
       ),
-      constraints: const BoxConstraints(minWidth: menuWidth, maxWidth: menuWidth),
+      constraints: const BoxConstraints(
+        minWidth: menuWidth,
+        maxWidth: menuWidth,
+      ),
       color: Colors.black.withValues(alpha: 0.5),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
@@ -996,13 +1011,15 @@ class _MediaViewerState extends State<MediaViewer> {
                 Text(
                   _speedLabelFor(speed),
                   style: TextStyle(
-                    color: (speed - _rate.value).abs() < 0.01
-                        ? const Color(0xFFFF5252)
-                        : Colors.white,
+                    color:
+                        (speed - _rate.value).abs() < 0.01
+                            ? const Color(0xFFFF5252)
+                            : Colors.white,
                     fontSize: 13,
-                    fontWeight: (speed - _rate.value).abs() < 0.01
-                        ? FontWeight.w700
-                        : FontWeight.w400,
+                    fontWeight:
+                        (speed - _rate.value).abs() < 0.01
+                            ? FontWeight.w700
+                            : FontWeight.w400,
                   ),
                 ),
                 const Spacer(),
@@ -1036,7 +1053,10 @@ class _MediaViewerState extends State<MediaViewer> {
         overlay.size.width - left - menuWidth,
         overlay.size.height - top,
       ),
-      constraints: const BoxConstraints(minWidth: menuWidth, maxWidth: menuWidth),
+      constraints: const BoxConstraints(
+        minWidth: menuWidth,
+        maxWidth: menuWidth,
+      ),
       color: Colors.black.withValues(alpha: 0.5),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
@@ -1053,13 +1073,15 @@ class _MediaViewerState extends State<MediaViewer> {
                 Text(
                   '$angle°',
                   style: TextStyle(
-                    color: _rotation.value == angle
-                        ? const Color(0xFFFF5252)
-                        : Colors.white,
+                    color:
+                        _rotation.value == angle
+                            ? const Color(0xFFFF5252)
+                            : Colors.white,
                     fontSize: 13,
-                    fontWeight: _rotation.value == angle
-                        ? FontWeight.w700
-                        : FontWeight.w400,
+                    fontWeight:
+                        _rotation.value == angle
+                            ? FontWeight.w700
+                            : FontWeight.w400,
                   ),
                 ),
                 const Spacer(),
@@ -1134,14 +1156,17 @@ class _MediaViewerState extends State<MediaViewer> {
   Widget _unsupportedHint() {
     final isDecoderIssue =
         _videoErrorMessage.toLowerCase().contains('decoder') ||
-            _videoErrorMessage.toLowerCase().contains('failed to initialize') ||
-            _videoErrorMessage.toLowerCase().contains('unknown codec');
+        _videoErrorMessage.toLowerCase().contains('failed to initialize') ||
+        _videoErrorMessage.toLowerCase().contains('unknown codec');
     return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.image_not_supported_outlined,
-              size: 56, color: Colors.white38),
+          const Icon(
+            Icons.image_not_supported_outlined,
+            size: 56,
+            color: Colors.white38,
+          ),
           const SizedBox(height: 12),
           Text(
             isDecoderIssue ? '此编码无法直接播放（如 ProRes）' : '此格式无法在应用内预览（如 HEIC/CR2）',
@@ -1195,9 +1220,9 @@ class _MediaViewerState extends State<MediaViewer> {
       await widget.api.openMediaFile(_media.id);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('打开失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('打开失败: $e')));
       }
     }
   }
@@ -1227,9 +1252,9 @@ class _MediaViewerState extends State<MediaViewer> {
       await widget.api.openMediaDirectory(_media.id);
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('打开目录失败: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('打开目录失败: $e')));
       }
     }
   }
@@ -1238,8 +1263,11 @@ class _MediaViewerState extends State<MediaViewer> {
     if (current == null) return [];
     final directory = _parentDirectory(current.relativePath);
     return items
-        .where((m) =>
-            m.kind == 'video' && _parentDirectory(m.relativePath) == directory)
+        .where(
+          (m) =>
+              m.kind == 'video' &&
+              _parentDirectory(m.relativePath) == directory,
+        )
         .toList();
   }
 

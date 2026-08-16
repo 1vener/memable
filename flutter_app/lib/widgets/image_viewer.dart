@@ -22,12 +22,14 @@ class ImageViewer extends StatefulWidget {
   final List<Media> medias;
   final int initialIndex;
   final ApiService api;
+  final bool preserveQueue;
 
   const ImageViewer({
     super.key,
     required this.medias,
     required this.initialIndex,
     required this.api,
+    this.preserveQueue = false,
   });
 
   @override
@@ -68,14 +70,22 @@ class _ImageViewerState extends State<ImageViewer> {
     super.initState();
     _queue = widget.medias.where((m) => m.kind == 'image').toList();
     final requested = widget.initialIndex;
-    final targetId = requested >= 0 && requested < widget.medias.length
-        ? widget.medias[requested].id
-        : null;
+    final targetId =
+        requested >= 0 && requested < widget.medias.length
+            ? widget.medias[requested].id
+            : null;
     _index = targetId == null ? 0 : _queue.indexWhere((m) => m.id == targetId);
     if (_index < 0) _index = 0;
     _transform.addListener(_onTransformChanged);
     _showBarBriefly();
-    _loadDirectoryImages();
+    if (widget.preserveQueue) {
+      _loading = false;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _scrollThumbTo(_index),
+      );
+    } else {
+      _loadDirectoryImages();
+    }
   }
 
   @override
@@ -155,10 +165,11 @@ class _ImageViewerState extends State<ImageViewer> {
     if ((target - current).abs() < 0.001) return;
     final f = target / current;
     final center = Offset(size.width / 2, size.height / 2);
-    final matrix = Matrix4.identity()
-      ..translate(center.dx, center.dy)
-      ..scale(f)
-      ..translate(-center.dx, -center.dy);
+    final matrix =
+        Matrix4.identity()
+          ..translate(center.dx, center.dy)
+          ..scale(f)
+          ..translate(-center.dx, -center.dy);
     _transform.value = matrix * _transform.value;
   }
 
@@ -317,33 +328,35 @@ class _ImageViewerState extends State<ImageViewer> {
     return Container(
       width: _thumbWidth,
       color: const Color(0xFF101010),
-      child: _loading
-          ? const Center(
-              child: SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white38,
+      child:
+          _loading
+              ? const Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white38,
+                  ),
                 ),
-              ),
-            )
-          : _queue.isEmpty
+              )
+              : _queue.isEmpty
               ? const SizedBox.shrink()
               : ListView.builder(
-                  controller: _thumbScroll,
-                  itemExtent: _thumbItemExtent,
-                  itemCount: _queue.length,
-                  itemBuilder: (_, i) => _buildThumbItem(_queue[i], i),
-                ),
+                controller: _thumbScroll,
+                itemExtent: _thumbItemExtent,
+                itemCount: _queue.length,
+                itemBuilder: (_, i) => _buildThumbItem(_queue[i], i),
+              ),
     );
   }
 
   Widget _buildThumbItem(Media m, int i) {
     final active = i == _index;
-    final thumb = m.thumbnailPath == null
-        ? null
-        : widget.api.thumbnailUrl('image', m.thumbnailPath!);
+    final thumb =
+        m.thumbnailPath == null
+            ? null
+            : widget.api.thumbnailUrl('image', m.thumbnailPath!);
     return Padding(
       padding: const EdgeInsets.all(5),
       child: AspectRatio(
@@ -360,13 +373,14 @@ class _ImageViewerState extends State<ImageViewer> {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(4),
-              child: thumb == null
-                  ? _thumbPlaceholder()
-                  : Image.network(
-                      thumb,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => _thumbPlaceholder(),
-                    ),
+              child:
+                  thumb == null
+                      ? _thumbPlaceholder()
+                      : Image.network(
+                        thumb,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _thumbPlaceholder(),
+                      ),
             ),
           ),
         ),
@@ -458,9 +472,10 @@ class _ImageViewerState extends State<ImageViewer> {
           ),
         );
       },
-      errorBuilder: (_, __, ___) => const Center(
-        child: Text('图片加载失败', style: TextStyle(color: Colors.white38)),
-      ),
+      errorBuilder:
+          (_, __, ___) => const Center(
+            child: Text('图片加载失败', style: TextStyle(color: Colors.white38)),
+          ),
     );
     if (turns == 0) return img;
     // Transform.rotate 不改变布局尺寸（SizedBox 已是旋转后的尺寸），鸟瞰图映射保持一致
@@ -538,8 +553,9 @@ class _ImageViewerState extends State<ImageViewer> {
                     child: Image.network(
                       widget.api.mediaFileUrl(_media!.id),
                       fit: BoxFit.fill,
-                      errorBuilder: (_, __, ___) =>
-                          Container(color: const Color(0xFF222222)),
+                      errorBuilder:
+                          (_, __, ___) =>
+                              Container(color: const Color(0xFF222222)),
                     ),
                   ),
                 ),
@@ -582,7 +598,11 @@ class _ImageViewerState extends State<ImageViewer> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _barButton(Icons.chevron_left, '上一张 (←)', () => _goTo(_index - 1)),
+              _barButton(
+                Icons.chevron_left,
+                '上一张 (←)',
+                () => _goTo(_index - 1),
+              ),
               _barButton(Icons.zoom_out, '缩小 (↓)', () => _zoomBy(0.8)),
               _barButton(Icons.zoom_in, '放大 (↑)', () => _zoomBy(1.25)),
               _barButton(
@@ -592,7 +612,9 @@ class _ImageViewerState extends State<ImageViewer> {
               ),
               _barButton(Icons.rotate_90_degrees_cw, '旋转', _rotate),
               _barButton(
-                _thumbVisible ? Icons.view_sidebar : Icons.view_sidebar_outlined,
+                _thumbVisible
+                    ? Icons.view_sidebar
+                    : Icons.view_sidebar_outlined,
                 _thumbVisible ? '隐藏左侧列表' : '显示左侧列表',
                 () => setState(() => _thumbVisible = !_thumbVisible),
               ),
@@ -606,7 +628,11 @@ class _ImageViewerState extends State<ImageViewer> {
                 _fullscreen ? '退出全屏' : '全屏',
                 () => _toggleFullscreen(),
               ),
-              _barButton(Icons.chevron_right, '下一张 (→)', () => _goTo(_index + 1)),
+              _barButton(
+                Icons.chevron_right,
+                '下一张 (→)',
+                () => _goTo(_index + 1),
+              ),
               _barButton(Icons.close, '关闭 (Esc)', _close),
             ],
           ),
@@ -656,7 +682,11 @@ class _ImageViewerState extends State<ImageViewer> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.close, size: 18, color: Colors.white54),
+                  icon: const Icon(
+                    Icons.close,
+                    size: 18,
+                    color: Colors.white54,
+                  ),
                   onPressed: () => setState(() => _detailsOpen = false),
                 ),
               ],
@@ -764,12 +794,14 @@ Matrix4 clampMatrixToImage(Matrix4 matrix, Size viewport, Size ds) {
     maxY = math.max(maxY, c.dy);
   }
   final w = maxX - minX, h = maxY - minY;
-  final desiredMinX = w > ds.width
-      ? imgLeft + (ds.width - w) / 2
-      : math.min(math.max(minX, imgLeft), imgRight - w);
-  final desiredMinY = h > ds.height
-      ? imgTop + (ds.height - h) / 2
-      : math.min(math.max(minY, imgTop), imgBottom - h);
+  final desiredMinX =
+      w > ds.width
+          ? imgLeft + (ds.width - w) / 2
+          : math.min(math.max(minX, imgLeft), imgRight - w);
+  final desiredMinY =
+      h > ds.height
+          ? imgTop + (ds.height - h) / 2
+          : math.min(math.max(minY, imgTop), imgBottom - h);
   final dx = desiredMinX - minX, dy = desiredMinY - minY;
   if (dx.abs() < 0.001 && dy.abs() < 0.001) return matrix.clone();
   // 可见包围盒平移 (dx, dy) 等价于矩阵右乘 (-dx, -dy) 的平移

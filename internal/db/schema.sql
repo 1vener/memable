@@ -79,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_media_lib    ON media(library_id);
 CREATE INDEX IF NOT EXISTS idx_media_oshash ON media(oshash) WHERE oshash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_media_scan_session_kind ON media(scan_session_id, kind);
 CREATE INDEX IF NOT EXISTS idx_media_kind_created ON media(kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_media_kind_mtime_id ON media(kind, mtime DESC, id DESC);
 
 -- ============================================================
 -- 4. 后台任务（统一任务队列）

@@ -70,6 +70,45 @@ type Media struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+// MediaPage 媒体分页结果。
+type MediaPage struct {
+	Total      int     `json:"total"`
+	Page       int     `json:"page"`
+	PageSize   int     `json:"page_size"`
+	TotalPages int     `json:"total_pages"`
+	Items      []Media `json:"items"`
+}
+
+// MediaGroup 按目录层级聚合的媒体组。
+type MediaGroup struct {
+	LibraryID   int64     `json:"library_id"`
+	LibraryName string    `json:"library_name"`
+	GroupPath   string    `json:"group_path"`
+	LatestMtime time.Time `json:"latest_mtime"`
+	Total       int       `json:"total"`
+	Items       []Media   `json:"items"`
+}
+
+// MediaStatistics 媒体首页统计信息。
+type MediaStatistics struct {
+	Image     MediaKindStatistics `json:"image"`
+	Video     VideoStatistics     `json:"video"`
+	TotalSize int64               `json:"total_size"`
+}
+
+// MediaKindStatistics 单一媒体类型的数量、大小和视频时长统计。
+type MediaKindStatistics struct {
+	Count int64 `json:"count"`
+	Size  int64 `json:"size"`
+}
+
+// VideoStatistics 视频数量、大小和总时长统计。
+type VideoStatistics struct {
+	Count      int64 `json:"count"`
+	Size       int64 `json:"size"`
+	DurationMs int64 `json:"duration_ms"`
+}
+
 // ThumbRef 缩略图引用（删除媒体时收集，用于按类型解析根目录后清理物理文件）。
 type ThumbRef struct {
 	Kind string // image / video

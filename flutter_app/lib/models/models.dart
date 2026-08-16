@@ -57,6 +57,7 @@ class Media {
   final double? frameRate;
   final int? bitRate;
   final DateTime? mtime;
+  final DateTime? createdAt;
 
   Media({
     required this.id,
@@ -76,6 +77,7 @@ class Media {
     this.frameRate,
     this.bitRate,
     this.mtime,
+    this.createdAt,
   });
 
   factory Media.fromJson(Map<String, dynamic> json) {
@@ -96,11 +98,156 @@ class Media {
       audioCodec: json['audio_codec'] as String?,
       frameRate: (json['frame_rate'] as num?)?.toDouble(),
       bitRate: (json['bit_rate'] as num?)?.toInt(),
-      mtime: json['mtime'] != null
-          ? DateTime.tryParse(json['mtime'] as String)
-          : null,
+      mtime:
+          json['mtime'] != null
+              ? DateTime.tryParse(json['mtime'] as String)
+              : null,
+      createdAt:
+          json['created_at'] != null
+              ? DateTime.tryParse(json['created_at'] as String)
+              : null,
     );
   }
+}
+
+/// 首页媒体分页结果。
+class MediaPage {
+  final int total;
+  final int page;
+  final int pageSize;
+  final int totalPages;
+  final List<Media> items;
+
+  const MediaPage({
+    required this.total,
+    required this.page,
+    required this.pageSize,
+    required this.totalPages,
+    required this.items,
+  });
+
+  factory MediaPage.fromJson(Map<String, dynamic> json) => MediaPage(
+    total: (json['total'] as num?)?.toInt() ?? 0,
+    page: (json['page'] as num?)?.toInt() ?? 1,
+    pageSize: (json['page_size'] as num?)?.toInt() ?? 20,
+    totalPages: (json['total_pages'] as num?)?.toInt() ?? 0,
+    items:
+        (json['items'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(Media.fromJson)
+            .toList(),
+  );
+}
+
+/// 首页按库和目录聚合的媒体组。
+class MediaGroup {
+  final int libraryId;
+  final String libraryName;
+  final String groupPath;
+  final DateTime? latestMtime;
+  final int total;
+  final List<Media> items;
+
+  const MediaGroup({
+    required this.libraryId,
+    required this.libraryName,
+    required this.groupPath,
+    this.latestMtime,
+    required this.total,
+    required this.items,
+  });
+
+  factory MediaGroup.fromJson(Map<String, dynamic> json) => MediaGroup(
+    libraryId: (json['library_id'] as num?)?.toInt() ?? 0,
+    libraryName: json['library_name'] as String? ?? '',
+    groupPath: json['group_path'] as String? ?? '',
+    latestMtime:
+        json['latest_mtime'] == null
+            ? null
+            : DateTime.tryParse(json['latest_mtime'] as String),
+    total: (json['total'] as num?)?.toInt() ?? 0,
+    items:
+        (json['items'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(Media.fromJson)
+            .toList(),
+  );
+}
+
+/// 首页媒体分组分页结果。
+class MediaGroupPage {
+  final int total;
+  final int offset;
+  final int limit;
+  final List<MediaGroup> items;
+
+  const MediaGroupPage({
+    required this.total,
+    required this.offset,
+    required this.limit,
+    required this.items,
+  });
+
+  factory MediaGroupPage.fromJson(Map<String, dynamic> json) => MediaGroupPage(
+    total: (json['total'] as num?)?.toInt() ?? 0,
+    offset: (json['offset'] as num?)?.toInt() ?? 0,
+    limit: (json['limit'] as num?)?.toInt() ?? 20,
+    items:
+        (json['items'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .map(MediaGroup.fromJson)
+            .toList(),
+  );
+}
+
+/// 首页媒体统计。
+class MediaStatistics {
+  final MediaKindStatistics image;
+  final VideoStatistics video;
+  final int totalSize;
+
+  const MediaStatistics({
+    required this.image,
+    required this.video,
+    required this.totalSize,
+  });
+
+  factory MediaStatistics.fromJson(Map<String, dynamic> json) =>
+      MediaStatistics(
+        image: MediaKindStatistics.fromJson(
+          (json['image'] as Map?)?.cast<String, dynamic>() ?? {},
+        ),
+        video: VideoStatistics.fromJson(
+          (json['video'] as Map?)?.cast<String, dynamic>() ?? {},
+        ),
+        totalSize: (json['total_size'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class MediaKindStatistics {
+  final int count;
+  final int size;
+  const MediaKindStatistics({required this.count, required this.size});
+  factory MediaKindStatistics.fromJson(Map<String, dynamic> json) =>
+      MediaKindStatistics(
+        count: (json['count'] as num?)?.toInt() ?? 0,
+        size: (json['size'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class VideoStatistics extends MediaKindStatistics {
+  final int durationMs;
+  const VideoStatistics({
+    required super.count,
+    required super.size,
+    required this.durationMs,
+  });
+  factory VideoStatistics.fromJson(Map<String, dynamic> json) =>
+      VideoStatistics(
+        count: (json['count'] as num?)?.toInt() ?? 0,
+        size: (json['size'] as num?)?.toInt() ?? 0,
+        durationMs: (json['duration_ms'] as num?)?.toInt() ?? 0,
+      );
 }
 
 /// 扫描会话模型
@@ -208,7 +355,8 @@ class LibrarySearchResult {
 }
 
 /// 文件树节点
-class FileTreeNode {  final String name;
+class FileTreeNode {
+  final String name;
   final String path;
   final bool isDir;
   final int size;
@@ -324,9 +472,10 @@ class DuplicateItem {
     width: (json['width'] as num?)?.toInt(),
     height: (json['height'] as num?)?.toInt(),
     durationMs: (json['duration_ms'] as num?)?.toInt(),
-    mtime: json['mtime'] != null
-        ? DateTime.tryParse(json['mtime'] as String)
-        : null,
+    mtime:
+        json['mtime'] != null
+            ? DateTime.tryParse(json['mtime'] as String)
+            : null,
     duplicatePaths:
         (json['duplicate_paths'] as List<dynamic>? ?? []).cast<String>(),
     isTarget: json['is_target'] as bool? ?? false,
@@ -357,7 +506,8 @@ class NetdriveDirEntry {
 }
 
 /// 后台任务模型
-class BackgroundTask {  final String id;
+class BackgroundTask {
+  final String id;
   final String kind;
   final String status;
   final String title;
@@ -719,7 +869,8 @@ class ReportSummary {
     totalFiles: (json['total_files'] as num?)?.toInt() ?? 0,
     imageThreshold: (json['image_threshold'] as num?)?.toInt() ?? 90,
     videoPhashDistance: (json['video_phash_distance'] as num?)?.toInt() ?? 12,
-    videoDurationDiffMs: (json['video_duration_diff_ms'] as num?)?.toInt() ?? 3000,
+    videoDurationDiffMs:
+        (json['video_duration_diff_ms'] as num?)?.toInt() ?? 3000,
     oshashFilter: json['oshash_filter'] == 1 || json['oshash_filter'] == true,
     includeSha1: json['include_sha1'] == 1 || json['include_sha1'] == true,
     createdAt: json['created_at'] as String?,
@@ -745,9 +896,10 @@ class DuplicateGroupPage {
   });
 
   factory DuplicateGroupPage.fromJson(Map<String, dynamic> json) {
-    final items = (json['items'] as List<dynamic>? ?? [])
-        .map((e) => DuplicateGroupItem.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final items =
+        (json['items'] as List<dynamic>? ?? [])
+            .map((e) => DuplicateGroupItem.fromJson(e as Map<String, dynamic>))
+            .toList();
     return DuplicateGroupPage(
       total: (json['total'] as num?)?.toInt() ?? items.length,
       page: (json['page'] as num?)?.toInt() ?? 1,
@@ -777,9 +929,10 @@ class DuplicateGroupItem {
   });
 
   factory DuplicateGroupItem.fromJson(Map<String, dynamic> json) {
-    final items = (json['items'] as List<dynamic>? ?? [])
-        .map((e) => DuplicateItem.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final items =
+        (json['items'] as List<dynamic>? ?? [])
+            .map((e) => DuplicateItem.fromJson(e as Map<String, dynamic>))
+            .toList();
     return DuplicateGroupItem(
       id: (json['id'] as num?)?.toInt() ?? 0,
       groupType: (json['group_type'] as String?) ?? '',
@@ -819,9 +972,10 @@ class DuplicateTreeNode {
   });
 
   factory DuplicateTreeNode.fromJson(Map<String, dynamic> json) {
-    final children = (json['children'] as List<dynamic>? ?? [])
-        .map((e) => DuplicateTreeNode.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final children =
+        (json['children'] as List<dynamic>? ?? [])
+            .map((e) => DuplicateTreeNode.fromJson(e as Map<String, dynamic>))
+            .toList();
     return DuplicateTreeNode(
       name: (json['name'] as String?) ?? '',
       path: (json['path'] as String?) ?? '',
@@ -935,9 +1089,12 @@ class DirCompareSummary {
 
   factory DirCompareSummary.fromJson(Map<String, dynamic> json) =>
       DirCompareSummary(
-        report: json['report'] == null
-            ? null
-            : DirCompareReport.fromJson(json['report'] as Map<String, dynamic>),
+        report:
+            json['report'] == null
+                ? null
+                : DirCompareReport.fromJson(
+                  json['report'] as Map<String, dynamic>,
+                ),
         freedBytes: (json['freed_bytes'] as num?)?.toInt() ?? 0,
       );
 }
@@ -961,9 +1118,10 @@ class DirCompareGroupItem {
   });
 
   factory DirCompareGroupItem.fromJson(Map<String, dynamic> json) {
-    final items = (json['items'] as List<dynamic>? ?? [])
-        .map((e) => DuplicateItem.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final items =
+        (json['items'] as List<dynamic>? ?? [])
+            .map((e) => DuplicateItem.fromJson(e as Map<String, dynamic>))
+            .toList();
     return DirCompareGroupItem(
       id: (json['id'] as num?)?.toInt() ?? 0,
       groupType: json['group_type'] as String? ?? '',
@@ -1004,9 +1162,10 @@ class DirCompareGroupPage {
   });
 
   factory DirCompareGroupPage.fromJson(Map<String, dynamic> json) {
-    final items = (json['items'] as List<dynamic>? ?? [])
-        .map((e) => DirCompareGroupItem.fromJson(e as Map<String, dynamic>))
-        .toList();
+    final items =
+        (json['items'] as List<dynamic>? ?? [])
+            .map((e) => DirCompareGroupItem.fromJson(e as Map<String, dynamic>))
+            .toList();
     return DirCompareGroupPage(
       total: (json['total'] as num?)?.toInt() ?? items.length,
       page: (json['page'] as num?)?.toInt() ?? 1,

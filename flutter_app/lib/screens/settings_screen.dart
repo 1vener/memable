@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import '../main.dart';
 import '../services/api_service.dart';
+import '../services/display_preferences.dart';
 
 class SettingsScreen extends StatefulWidget {
   final ApiService api;
@@ -44,6 +45,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _syncHex();
     _loadPaths();
     _loadNetdriveConfig();
+    displayPreferences.load();
   }
 
   @override
@@ -88,8 +90,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _netdriveVerifyResult = null;
     });
     try {
-      final (valid, error) = await widget.api
-          .verifyNetdriveCD2(address: address, token: token);
+      final (valid, error) = await widget.api.verifyNetdriveCD2(
+        address: address,
+        token: token,
+      );
       if (mounted) {
         setState(() {
           _netdriveVerifyResult = valid ? 'ok' : '失败：$error';
@@ -124,7 +128,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+          SnackBar(
+            content: Text('保存失败: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
         );
       }
     }
@@ -146,7 +153,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('清除失败: $e'), backgroundColor: const Color(0xFFEF4444)),
+          SnackBar(
+            content: Text('清除失败: $e'),
+            backgroundColor: const Color(0xFFEF4444),
+          ),
         );
       }
     }
@@ -188,9 +198,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final color = _parseHex(_hexCtrl.text);
     if (color == null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('颜色格式无效，请输入 #RRGGBB')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('颜色格式无效，请输入 #RRGGBB')));
       }
       return;
     }
@@ -262,7 +272,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('主题', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: cs.onSurface)),
+                    Text(
+                      '主题',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: cs.onSurface,
+                      ),
+                    ),
                     const SizedBox(height: 12),
                     _ThemeOption(
                       label: '亮色',
@@ -320,7 +337,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       children: [
                         for (final c in _presetColors)
                           Tooltip(
-                            message: '#${c.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
+                            message:
+                                '#${c.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
                             child: InkWell(
                               borderRadius: BorderRadius.circular(20),
                               onTap: () {
@@ -333,22 +351,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 decoration: BoxDecoration(
                                   color: c,
                                   shape: BoxShape.circle,
-                                  border: themeNotifier.seedColor.toARGB32() ==
-                                          c.toARGB32()
-                                      ? Border.all(
-                                          color: cs.onSurface,
-                                          width: 2,
-                                        )
-                                      : null,
+                                  border:
+                                      themeNotifier.seedColor.toARGB32() ==
+                                              c.toARGB32()
+                                          ? Border.all(
+                                            color: cs.onSurface,
+                                            width: 2,
+                                          )
+                                          : null,
                                 ),
-                                child: themeNotifier.seedColor.toARGB32() ==
-                                        c.toARGB32()
-                                    ? const Icon(
-                                        Icons.check,
-                                        size: 18,
-                                        color: Colors.white,
-                                      )
-                                    : null,
+                                child:
+                                    themeNotifier.seedColor.toARGB32() ==
+                                            c.toARGB32()
+                                        ? const Icon(
+                                          Icons.check,
+                                          size: 18,
+                                          color: Colors.white,
+                                        )
+                                        : null,
                               ),
                             ),
                           ),
@@ -386,6 +406,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: 32),
 
+            // ========== 显示 ==========
+            _SectionTitle(
+              title: '显示',
+              icon: Icons.view_module_outlined,
+              cs: cs,
+            ),
+            const SizedBox(height: 16),
+            AnimatedBuilder(
+              animation: displayPreferences,
+              builder:
+                  (context, _) => Column(
+                    children: [
+                      _DisplayCard(
+                        title: '库',
+                        children: [
+                          _IntPreference(
+                            label: '分组层级',
+                            value: displayPreferences.libraryGroupDepth,
+                            values: const [1, 2, 3, 4, 5, 6],
+                            onChanged: displayPreferences.setLibraryGroupDepth,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      _DisplayCard(
+                        title: '视频',
+                        children: [
+                          _IntPreference(
+                            label: '每页数量',
+                            value: displayPreferences.videoPageSize,
+                            values: const [10, 20, 50, 100],
+                            onChanged: displayPreferences.setVideoPageSize,
+                          ),
+                          _ExtentPreference(
+                            label: '缩略图大小',
+                            value: displayPreferences.videoThumbExtent,
+                            onChanged: displayPreferences.setVideoThumbExtent,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      _DisplayCard(
+                        title: '照片',
+                        children: [
+                          _IntPreference(
+                            label: '每页数量',
+                            value: displayPreferences.imagePageSize,
+                            values: const [10, 20, 50, 100],
+                            onChanged: displayPreferences.setImagePageSize,
+                          ),
+                          _ExtentPreference(
+                            label: '缩略图大小',
+                            value: displayPreferences.imageThumbExtent,
+                            onChanged: displayPreferences.setImageThumbExtent,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+            ),
+            const SizedBox(height: 32),
+
             // ========== 连接 ==========
             _SectionTitle(title: '连接', icon: Icons.wifi_outlined, cs: cs),
             const SizedBox(height: 16),
@@ -395,7 +477,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('API 地址', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: cs.onSurface)),
+                    Text(
+                      'API 地址',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: cs.onSurface,
+                      ),
+                    ),
                     const SizedBox(height: 12),
                     Row(
                       children: [
@@ -411,12 +500,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         const SizedBox(width: 12),
                         FilledButton.icon(
                           onPressed: _testLoading ? null : _testConnection,
-                          icon: _testLoading
-                              ? const SizedBox(
-                                  width: 16, height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.wifi_find, size: 18),
+                          icon:
+                              _testLoading
+                                  ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                  : const Icon(Icons.wifi_find, size: 18),
                           label: Text(_testLoading ? '测试中...' : '测试连接'),
                         ),
                       ],
@@ -426,19 +519,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       Container(
                         padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: _testResult == 'ok'
-                              ? const Color(0xFF22C55E).withValues(alpha: 0.1)
-                              : const Color(0xFFEF4444).withValues(alpha: 0.1),
+                          color:
+                              _testResult == 'ok'
+                                  ? const Color(
+                                    0xFF22C55E,
+                                  ).withValues(alpha: 0.1)
+                                  : const Color(
+                                    0xFFEF4444,
+                                  ).withValues(alpha: 0.1),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
                           children: [
                             Icon(
-                              _testResult == 'ok' ? Icons.check_circle : Icons.error,
+                              _testResult == 'ok'
+                                  ? Icons.check_circle
+                                  : Icons.error,
                               size: 18,
-                              color: _testResult == 'ok'
-                                  ? const Color(0xFF22C55E)
-                                  : const Color(0xFFEF4444),
+                              color:
+                                  _testResult == 'ok'
+                                      ? const Color(0xFF22C55E)
+                                      : const Color(0xFFEF4444),
                             ),
                             const SizedBox(width: 8),
                             Expanded(
@@ -446,9 +547,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 _testResult == 'ok' ? '连接成功' : _testResult!,
                                 style: TextStyle(
                                   fontSize: 13,
-                                  color: _testResult == 'ok'
-                                      ? const Color(0xFF22C55E)
-                                      : const Color(0xFFEF4444),
+                                  color:
+                                      _testResult == 'ok'
+                                          ? const Color(0xFF22C55E)
+                                          : const Color(0xFFEF4444),
                                 ),
                               ),
                             ),
@@ -577,16 +679,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         labelText: 'API Token',
                         hintText: '粘贴 CloudDrive2 API Token',
                         border: const OutlineInputBorder(),
-                        suffixIcon: _netdriveTokenSet
-                            ? const Tooltip(
-                                message: '已保存',
-                                child: Icon(
-                                  Icons.check_circle,
-                                  size: 18,
-                                  color: Color(0xFF22C55E),
-                                ),
-                              )
-                            : null,
+                        suffixIcon:
+                            _netdriveTokenSet
+                                ? const Tooltip(
+                                  message: '已保存',
+                                  child: Icon(
+                                    Icons.check_circle,
+                                    size: 18,
+                                    color: Color(0xFF22C55E),
+                                  ),
+                                )
+                                : null,
                       ),
                     ),
                     if (_netdriveVerifyResult != null) ...[
@@ -597,9 +700,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             : _netdriveVerifyResult!,
                         style: TextStyle(
                           fontSize: 12,
-                          color: _netdriveVerifyResult == 'ok'
-                              ? const Color(0xFF22C55E)
-                              : cs.error,
+                          color:
+                              _netdriveVerifyResult == 'ok'
+                                  ? const Color(0xFF22C55E)
+                                  : cs.error,
                         ),
                       ),
                     ],
@@ -608,13 +712,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       children: [
                         FilledButton.tonalIcon(
                           onPressed: _netdriveLoading ? null : _verifyNetdrive,
-                          icon: _netdriveLoading
-                              ? const SizedBox(
-                                  width: 14,
-                                  height: 14,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.verified_outlined, size: 16),
+                          icon:
+                              _netdriveLoading
+                                  ? const SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                  : const Icon(
+                                    Icons.verified_outlined,
+                                    size: 16,
+                                  ),
                           label: const Text('验证'),
                         ),
                         const SizedBox(width: 8),
@@ -667,7 +777,11 @@ class _SectionTitle extends StatelessWidget {
   final IconData icon;
   final ColorScheme cs;
 
-  const _SectionTitle({required this.title, required this.icon, required this.cs});
+  const _SectionTitle({
+    required this.title,
+    required this.icon,
+    required this.cs,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -686,6 +800,89 @@ class _SectionTitle extends StatelessWidget {
       ],
     );
   }
+}
+
+class _DisplayCard extends StatelessWidget {
+  final String title;
+  final List<Widget> children;
+  const _DisplayCard({required this.title, required this.children});
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          ...children,
+        ],
+      ),
+    ),
+  );
+}
+
+class _IntPreference extends StatelessWidget {
+  final String label;
+  final int value;
+  final List<int> values;
+  final ValueChanged<int> onChanged;
+  const _IntPreference({
+    required this.label,
+    required this.value,
+    required this.values,
+    required this.onChanged,
+  });
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Expanded(child: Text(label)),
+      DropdownButton<int>(
+        value: values.contains(value) ? value : values.first,
+        items:
+            values
+                .map((v) => DropdownMenuItem(value: v, child: Text('$v')))
+                .toList(),
+        onChanged: (v) {
+          if (v != null) onChanged(v);
+        },
+      ),
+    ],
+  );
+}
+
+class _ExtentPreference extends StatelessWidget {
+  final String label;
+  final double value;
+  final ValueChanged<double> onChanged;
+  const _ExtentPreference({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      SizedBox(width: 90, child: Text(label)),
+      Expanded(
+        child: Slider(
+          value: value.clamp(120, 320),
+          min: 120,
+          max: 320,
+          divisions: 20,
+          label: '${value.round()} px',
+          onChanged: onChanged,
+        ),
+      ),
+      SizedBox(
+        width: 54,
+        child: Text('${value.round()} px', textAlign: TextAlign.end),
+      ),
+    ],
+  );
 }
 
 class _ThemeOption extends StatelessWidget {
@@ -716,13 +913,23 @@ class _ThemeOption extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: selected ? cs.primary.withValues(alpha: 0.1) : Colors.transparent,
+            color:
+                selected
+                    ? cs.primary.withValues(alpha: 0.1)
+                    : Colors.transparent,
             borderRadius: BorderRadius.circular(8),
-            border: selected ? Border.all(color: cs.primary.withValues(alpha: 0.3)) : null,
+            border:
+                selected
+                    ? Border.all(color: cs.primary.withValues(alpha: 0.3))
+                    : null,
           ),
           child: Row(
             children: [
-              Icon(icon, size: 18, color: selected ? cs.primary : cs.onSurfaceVariant),
+              Icon(
+                icon,
+                size: 18,
+                color: selected ? cs.primary : cs.onSurfaceVariant,
+              ),
               const SizedBox(width: 10),
               Text(label, style: TextStyle(fontSize: 14, color: cs.onSurface)),
               const Spacer(),
@@ -752,7 +959,11 @@ class _AboutRow extends StatelessWidget {
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: Text(value, style: TextStyle(fontSize: 13, color: cs.onSurface), overflow: TextOverflow.ellipsis),
+          child: Text(
+            value,
+            style: TextStyle(fontSize: 13, color: cs.onSurface),
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
       ],
     );
@@ -763,7 +974,11 @@ class _PathRow extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
-  const _PathRow({required this.icon, required this.label, required this.value});
+  const _PathRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -777,7 +992,10 @@ class _PathRow extends StatelessWidget {
           const SizedBox(width: 8),
           SizedBox(
             width: 90,
-            child: Text(label, style: TextStyle(fontSize: 12, color: cs.outline)),
+            child: Text(
+              label,
+              style: TextStyle(fontSize: 12, color: cs.outline),
+            ),
           ),
           const SizedBox(width: 8),
           Expanded(

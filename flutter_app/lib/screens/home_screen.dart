@@ -17,6 +17,8 @@ import 'report_screen.dart';
 import 'dir_compare_screen.dart';
 import 'settings_screen.dart';
 import 'tool_screen.dart';
+import 'dashboard_screen.dart';
+import '../services/display_preferences.dart';
 
 /// 侧边栏导航项
 class _NavDestination {
@@ -37,53 +39,60 @@ class _NavDestination {
 
 const _destinations = [
   _NavDestination(
+    icon: Icons.home_outlined,
+    selectedIcon: Icons.home,
+    label: '首页',
+    tooltip: '浏览全部正式媒体',
+    shortcut: 'Ctrl+1',
+  ),
+  _NavDestination(
     icon: Icons.folder_outlined,
     selectedIcon: Icons.folder,
     label: '收藏库',
     tooltip: '管理媒体收藏库',
-    shortcut: 'Ctrl+1',
+    shortcut: 'Ctrl+2',
   ),
   _NavDestination(
     icon: Icons.play_circle_outline,
     selectedIcon: Icons.play_circle,
     label: '扫描',
     tooltip: '扫描媒体文件',
-    shortcut: 'Ctrl+2',
+    shortcut: 'Ctrl+3',
   ),
   _NavDestination(
     icon: Icons.queue_outlined,
     selectedIcon: Icons.queue,
     label: '任务',
     tooltip: '任务队列与进度',
-    shortcut: 'Ctrl+3',
+    shortcut: 'Ctrl+4',
   ),
   _NavDestination(
     icon: Icons.search,
     selectedIcon: Icons.search,
     label: '搜索',
     tooltip: '文字搜索 / 以图搜图',
-    shortcut: 'Ctrl+4',
+    shortcut: 'Ctrl+5',
   ),
   _NavDestination(
     icon: Icons.assessment_outlined,
     selectedIcon: Icons.assessment,
     label: '报告',
     tooltip: '重复检测报告',
-    shortcut: 'Ctrl+5',
+    shortcut: 'Ctrl+6',
   ),
   _NavDestination(
     icon: Icons.folder_copy_outlined,
     selectedIcon: Icons.folder_copy,
     label: '目录对比',
     tooltip: '所选目录与存量数据对比',
-    shortcut: 'Ctrl+6',
+    shortcut: 'Ctrl+7',
   ),
   _NavDestination(
     icon: Icons.build_outlined,
     selectedIcon: Icons.build,
     label: '工具',
     tooltip: '文件统计等实用工具',
-    shortcut: 'Ctrl+7',
+    shortcut: 'Ctrl+8',
   ),
 ];
 
@@ -97,6 +106,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
+  String _dashboardTab = 'library';
   String? _currentLibrary;
   String? _scanProgress;
   String _apiStatus = 'unknown';
@@ -157,7 +167,9 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final prefs = await SharedPreferences.getInstance();
       if (mounted) {
-        setState(() => _userCollapsed = prefs.getBool('ui.sidebar_collapsed') ?? false);
+        setState(
+          () => _userCollapsed = prefs.getBool('ui.sidebar_collapsed') ?? false,
+        );
       }
     } catch (_) {}
   }
@@ -184,10 +196,17 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _selectedIndex = index);
   }
 
+  void _selectDashboardTab(String tab) {
+    setState(() {
+      _selectedIndex = 0;
+      _dashboardTab = tab;
+    });
+  }
+
   void _onLibrarySelected(String name) {
     setState(() {
       _currentLibrary = name;
-      _selectedIndex = 1; // 切换到扫描页
+      _selectedIndex = 2; // 切换到扫描页
     });
   }
 
@@ -252,14 +271,20 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_selectedIndex < _destinations.length) {
       return _destinations[_selectedIndex].label;
     }
-    if (_selectedIndex == 6) return '设置';
+    if (_selectedIndex == _destinations.length) return '设置';
     return '';
   }
 
   /// 当前页面内容
   Widget _buildContent() {
     return switch (_selectedIndex) {
-      0 => LibraryScreen(
+      0 => DashboardScreen(
+        api: api,
+        activeTab: _dashboardTab,
+        onTabChanged: _selectDashboardTab,
+        onOpenScan: () => _onSelectPage(2),
+      ),
+      1 => LibraryScreen(
         api: api,
         onLibrarySelected: _onLibrarySelected,
         searchQuery: _libSearchQuery,
@@ -267,13 +292,13 @@ class _HomeScreenState extends State<HomeScreen> {
         searchLoading: _libSearchLoading,
         onSearchExit: _exitLibrarySearch,
       ),
-      1 => ScanScreen(api: api, currentLibrary: _currentLibrary),
-      2 => TaskScreen(api: api),
-      3 => SearchScreen(api: api),
-      4 => ReportScreen(api: api),
-      5 => DirCompareScreen(api: api),
-      6 => ToolScreen(api: api),
-      7 => SettingsScreen(api: api),
+      2 => ScanScreen(api: api, currentLibrary: _currentLibrary),
+      3 => TaskScreen(api: api),
+      4 => SearchScreen(api: api),
+      5 => ReportScreen(api: api),
+      6 => DirCompareScreen(api: api),
+      7 => ToolScreen(api: api),
+      8 => SettingsScreen(api: api),
       _ => const SizedBox.shrink(),
     };
   }
@@ -285,20 +310,38 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Shortcuts(
       shortcuts: const {
-        SingleActivator(LogicalKeyboardKey.digit1, control: true):
-            _SelectPageIntent(0),
-        SingleActivator(LogicalKeyboardKey.digit2, control: true):
-            _SelectPageIntent(1),
-        SingleActivator(LogicalKeyboardKey.digit3, control: true):
-            _SelectPageIntent(2),
-        SingleActivator(LogicalKeyboardKey.digit4, control: true):
-            _SelectPageIntent(3),
-        SingleActivator(LogicalKeyboardKey.digit5, control: true):
-            _SelectPageIntent(4),
-        SingleActivator(LogicalKeyboardKey.digit6, control: true):
-            _SelectPageIntent(5),
-        SingleActivator(LogicalKeyboardKey.digit7, control: true):
-            _SelectPageIntent(6),
+        SingleActivator(
+          LogicalKeyboardKey.digit1,
+          control: true,
+        ): _SelectPageIntent(0),
+        SingleActivator(
+          LogicalKeyboardKey.digit2,
+          control: true,
+        ): _SelectPageIntent(1),
+        SingleActivator(
+          LogicalKeyboardKey.digit3,
+          control: true,
+        ): _SelectPageIntent(2),
+        SingleActivator(
+          LogicalKeyboardKey.digit4,
+          control: true,
+        ): _SelectPageIntent(3),
+        SingleActivator(
+          LogicalKeyboardKey.digit5,
+          control: true,
+        ): _SelectPageIntent(4),
+        SingleActivator(
+          LogicalKeyboardKey.digit6,
+          control: true,
+        ): _SelectPageIntent(5),
+        SingleActivator(
+          LogicalKeyboardKey.digit7,
+          control: true,
+        ): _SelectPageIntent(6),
+        SingleActivator(
+          LogicalKeyboardKey.digit8,
+          control: true,
+        ): _SelectPageIntent(7),
         SingleActivator(LogicalKeyboardKey.f5): _RefreshIntent(),
       },
       child: Actions(
@@ -321,7 +364,8 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Scaffold(
             body: LayoutBuilder(
               builder: (context, constraints) {
-                final collapsed = _userCollapsed ||
+                final collapsed =
+                    _userCollapsed ||
                     (constraints.maxWidth < 900 && _autoCollapseThreshold);
                 return Row(
                   children: [
@@ -358,64 +402,61 @@ class _HomeScreenState extends State<HomeScreen> {
       width: collapsed ? _sidebarCollapsedWidth : _sidebarExpandedWidth,
       decoration: BoxDecoration(
         color: cs.surfaceContainerLow,
-        border: Border(
-          right: BorderSide(color: cs.outlineVariant, width: 0.5),
-        ),
+        border: Border(right: BorderSide(color: cs.outlineVariant, width: 0.5)),
       ),
       child: Column(
         children: [
           // 标题区
           Container(
             height: 56,
-            padding: EdgeInsets.symmetric(
-              horizontal: collapsed ? 16 : 20,
-            ),
+            padding: EdgeInsets.symmetric(horizontal: collapsed ? 16 : 20),
             alignment: Alignment.centerLeft,
-            child: collapsed
-                ? Tooltip(
-                    message: '展开导航栏',
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: _toggleSidebar,
-                      child: Icon(
-                        Icons.grid_view_rounded,
-                        size: 22,
-                        color: cs.primary,
-                      ),
-                    ),
-                  )
-                : Row(
-                    children: [
-                      Icon(
-                        Icons.grid_view_rounded,
-                        size: 22,
-                        color: cs.primary,
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        'memable',
-                        style: TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w700,
-                          color: cs.onSurface,
-                          letterSpacing: -0.3,
+            child:
+                collapsed
+                    ? Tooltip(
+                      message: '展开导航栏',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(8),
+                        onTap: _toggleSidebar,
+                        child: Icon(
+                          Icons.grid_view_rounded,
+                          size: 22,
+                          color: cs.primary,
                         ),
                       ),
-                      const Spacer(),
-                      Tooltip(
-                        message: '收起导航栏',
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: _toggleSidebar,
-                          child: Icon(
-                            Icons.chevron_left,
-                            size: 18,
-                            color: cs.outline,
+                    )
+                    : Row(
+                      children: [
+                        Icon(
+                          Icons.grid_view_rounded,
+                          size: 22,
+                          color: cs.primary,
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          'memable',
+                          style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            color: cs.onSurface,
+                            letterSpacing: -0.3,
                           ),
                         ),
-                      ),
-                    ],
-                  ),
+                        const Spacer(),
+                        Tooltip(
+                          message: '收起导航栏',
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: _toggleSidebar,
+                            child: Icon(
+                              Icons.chevron_left,
+                              size: 18,
+                              color: cs.outline,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
           ),
           const SizedBox(height: 8),
           // 导航项
@@ -432,9 +473,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 _buildBottomItem(
                   icon: Icons.settings_outlined,
                   label: '设置',
-                  selected: _selectedIndex == 7,
+                  selected: _selectedIndex == _destinations.length,
                   cs: cs,
-                  onTap: () => _onSelectPage(7),
+                  onTap: () => _onSelectPage(_destinations.length),
                   collapsed: collapsed,
                 ),
               ],
@@ -446,8 +487,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// 构建侧边栏导航项
-  Widget _buildNavItem(int index, ColorScheme cs, bool isDark,
-      {bool collapsed = false}) {
+  Widget _buildNavItem(
+    int index,
+    ColorScheme cs,
+    bool isDark, {
+    bool collapsed = false,
+  }) {
     final dest = _destinations[index];
     final selected = _selectedIndex == index;
 
@@ -458,7 +503,9 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: Tooltip(
         message:
-            collapsed ? '${dest.tooltip} (${dest.shortcut})' : '${dest.tooltip} (${dest.shortcut})',
+            collapsed
+                ? '${dest.tooltip} (${dest.shortcut})'
+                : '${dest.tooltip} (${dest.shortcut})',
         child: Material(
           color: Colors.transparent,
           borderRadius: BorderRadius.circular(8),
@@ -493,52 +540,55 @@ class _HomeScreenState extends State<HomeScreen> {
                 vertical: 10,
               ),
               decoration: BoxDecoration(
-                color: selected
-                    ? cs.primary.withValues(alpha: isDark ? 0.15 : 0.1)
-                    : Colors.transparent,
+                color:
+                    selected
+                        ? cs.primary.withValues(alpha: isDark ? 0.15 : 0.1)
+                        : Colors.transparent,
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: collapsed
-                  ? Center(
-                      child: Icon(
-                        selected ? dest.selectedIcon : dest.icon,
-                        size: 20,
-                        color:
-                            selected ? cs.primary : cs.onSurfaceVariant,
-                      ),
-                    )
-                  : Row(
-                      children: [
-                        Icon(
+              child:
+                  collapsed
+                      ? Center(
+                        child: Icon(
                           selected ? dest.selectedIcon : dest.icon,
                           size: 20,
-                          color:
-                              selected ? cs.primary : cs.onSurfaceVariant,
+                          color: selected ? cs.primary : cs.onSurfaceVariant,
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            dest.label,
-                            style: TextStyle(
-                              fontSize: 14,
-                              fontWeight:
-                                  selected ? FontWeight.w600 : FontWeight.w400,
-                              color:
-                                  selected ? cs.primary : cs.onSurfaceVariant,
+                      )
+                      : Row(
+                        children: [
+                          Icon(
+                            selected ? dest.selectedIcon : dest.icon,
+                            size: 20,
+                            color: selected ? cs.primary : cs.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              dest.label,
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight:
+                                    selected
+                                        ? FontWeight.w600
+                                        : FontWeight.w400,
+                                color:
+                                    selected ? cs.primary : cs.onSurfaceVariant,
+                              ),
                             ),
                           ),
-                        ),
-                        Text(
-                          dest.shortcut.replaceAll('Ctrl+', ''),
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: selected
-                                ? cs.primary.withValues(alpha: 0.6)
-                                : cs.outline,
+                          Text(
+                            dest.shortcut.replaceAll('Ctrl+', ''),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color:
+                                  selected
+                                      ? cs.primary.withValues(alpha: 0.6)
+                                      : cs.outline,
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
+                        ],
+                      ),
             ),
           ),
         ),
@@ -566,21 +616,24 @@ class _HomeScreenState extends State<HomeScreen> {
             horizontal: collapsed ? 0 : 14,
             vertical: 10,
           ),
-          child: collapsed
-              ? Center(
-                  child: Icon(icon, size: 20, color: cs.onSurfaceVariant),
-                )
-              : Row(
-                  children: [
-                    Icon(icon, size: 20, color: cs.onSurfaceVariant),
-                    const SizedBox(width: 12),
-                    Text(
-                      label,
-                      style:
-                          TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
-                    ),
-                  ],
-                ),
+          child:
+              collapsed
+                  ? Center(
+                    child: Icon(icon, size: 20, color: cs.onSurfaceVariant),
+                  )
+                  : Row(
+                    children: [
+                      Icon(icon, size: 20, color: cs.onSurfaceVariant),
+                      const SizedBox(width: 12),
+                      Text(
+                        label,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
         ),
       ),
     );
@@ -593,7 +646,9 @@ class _HomeScreenState extends State<HomeScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 24),
       decoration: BoxDecoration(
         color: Theme.of(context).scaffoldBackgroundColor,
-        border: Border(bottom: BorderSide(color: cs.outlineVariant, width: 0.5)),
+        border: Border(
+          bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
+        ),
       ),
       child: Row(
         children: [
@@ -607,26 +662,30 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(width: 8),
           ],
-          // 页面标题
-          Expanded(
-            child: Text(
-              _currentPageTitle,
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: cs.onSurface,
+          if (_selectedIndex == 0)
+            _buildDashboardTabs(cs)
+          else
+            Expanded(
+              child: Text(
+                _currentPageTitle,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurface,
+                ),
+                overflow: TextOverflow.ellipsis,
               ),
-              overflow: TextOverflow.ellipsis,
             ),
-          ),
-          const SizedBox(width: 20),
-   
+          const SizedBox(width: 16),
+
           // 收藏库页：文件搜索框（Windows 10 风格，仅当前页显示）
-          if (_selectedIndex == 0) ...[
+          if (_selectedIndex == 1) ...[
             _buildLibrarySearchField(cs),
             const SizedBox(width: 12),
           ],
-          const Spacer(),
+          if (_selectedIndex == 0 && _dashboardTab == 'library')
+            _buildLibraryLayoutMenu(cs),
+          const SizedBox(width: 8),
           // 主题切换快捷按钮
           IconButton(
             icon: Icon(
@@ -640,6 +699,80 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildDashboardTabs(ColorScheme cs) {
+    const tabs = <String, String>{
+      'library': '库',
+      'video': '视频',
+      'image': '照片',
+      'statistics': '统计',
+    };
+    final compact = MediaQuery.sizeOf(context).width < 820;
+    return Expanded(
+      child: SegmentedButton<String>(
+        segments: [
+          for (final entry in tabs.entries)
+            ButtonSegment<String>(
+              value: entry.key,
+              label: compact ? null : Text(entry.value),
+              icon: Icon(switch (entry.key) {
+                'library' => Icons.folder_outlined,
+                'video' => Icons.movie_outlined,
+                'image' => Icons.image_outlined,
+                _ => Icons.query_stats_outlined,
+              }),
+            ),
+        ],
+        selected: {_dashboardTab},
+        onSelectionChanged: (value) => _selectDashboardTab(value.first),
+        showSelectedIcon: false,
+        style: ButtonStyle(
+          visualDensity: VisualDensity.compact,
+          textStyle: const WidgetStatePropertyAll(
+            TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+          ),
+          foregroundColor: WidgetStatePropertyAll(cs.onSurface),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLibraryLayoutMenu(ColorScheme cs) {
+    final layout = displayPreferences.libraryLayout;
+    return PopupMenuButton<String>(
+      tooltip: '库布局',
+      initialValue: layout,
+      onSelected: displayPreferences.setLibraryLayout,
+      icon: Icon(Icons.view_quilt_outlined, color: cs.onSurfaceVariant),
+      itemBuilder:
+          (context) => const [
+            PopupMenuItem(
+              value: 'masonry',
+              child: ListTile(
+                leading: Icon(Icons.view_column_outlined),
+                title: Text('瀑布流'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            PopupMenuItem(
+              value: 'square',
+              child: ListTile(
+                leading: Icon(Icons.grid_view_outlined),
+                title: Text('网格正切'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+            PopupMenuItem(
+              value: 'adaptive',
+              child: ListTile(
+                leading: Icon(Icons.dashboard_outlined),
+                title: Text('网格自适应'),
+                contentPadding: EdgeInsets.zero,
+              ),
+            ),
+          ],
     );
   }
 
@@ -677,13 +810,13 @@ class _HomeScreenState extends State<HomeScreen> {
                   )
                   : hasText
                   ? IconButton(
-                      icon: Icon(Icons.close, size: 16, color: cs.outline),
-                      tooltip: '清除',
-                      onPressed: () {
-                        _libSearchCtrl.clear();
-                        _onLibSearchChanged('');
-                      },
-                    )
+                    icon: Icon(Icons.close, size: 16, color: cs.outline),
+                    tooltip: '清除',
+                    onPressed: () {
+                      _libSearchCtrl.clear();
+                      _onLibSearchChanged('');
+                    },
+                  )
                   : null,
         ),
       ),

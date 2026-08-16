@@ -39,8 +39,11 @@ var migrationV7SQL string
 //go:embed migrations/008_netdrive.sql
 var migrationV8SQL string
 
+//go:embed migrations/009_media_home_indexes.sql
+var migrationV9SQL string
+
 // schemaVersion 当前数据库结构版本。
-const schemaVersion = 8
+const schemaVersion = 9
 
 // Open 建立带 WAL/foreign_keys/busy_timeout 的 SQLite 连接。
 // synchronous=NORMAL 在 WAL 模式下兼顾安全与写入性能；cache_size/mmap_size 提高大批量扫描时的读缓存。
@@ -102,6 +105,7 @@ func Migrate(db *sql.DB) error {
 		{version: 6, sql: migrationV6SQL},
 		{version: 7, sql: migrationV7SQL, skip: columnExists("media", "cover_phash")},
 		{version: 8, sql: migrationV8SQL},
+		{version: 9, sql: migrationV9SQL},
 	}
 	cur, err := SchemaVersion(db)
 	if err != nil {
