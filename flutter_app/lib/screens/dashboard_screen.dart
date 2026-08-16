@@ -4,14 +4,20 @@ import 'dart:math' as math;
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import '../models/models.dart';
 import '../services/api_service.dart';
 import '../services/display_preferences.dart';
 import '../widgets/context_menu.dart';
 import '../widgets/image_viewer.dart';
+import '../widgets/masonry_sliver.dart';
 import '../widgets/media_viewer.dart';
+
+/// 媒体网格间隔常量：统一调整图片间距时只需修改这里。
+const double kMediaCrossSpacing = 2; // 列间距（网格/瀑布流/骨架屏）
+const double kMediaMainSpacing = 2; // 行间距（网格/瀑布流/骨架屏）
+const double kMediaJustifiedGap = 2; // 自适应（justified）布局行内间隙
+const double kMediaJustifiedMainGap = 2; // 自适应（justified）布局行间距
 
 class DashboardScreen extends StatefulWidget {
   final ApiService api;
@@ -43,7 +49,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     displayPreferences.addListener(_preferencesChanged);
-    _libraryScroll.addListener(_loadMoreGroups);
     _initializeGroups();
     _loadStatistics();
   }
@@ -73,11 +78,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _loadGroups({bool refresh = false}) async {
     if (_groupsLoading) return;
     if (!refresh && _groups.length >= _groupTotal && _groupTotal != 0) return;
-    // 记录当前滚动位置：refresh 会清空重载导致内容高度骤变，
-    // ScrollPosition 会把像素 clamp 到新的内容范围（通常趋近 0），
-    // 加载完成后需恢复原位置，避免"回到起点"。
-    final savedOffset =
-        _libraryScroll.hasClients ? _libraryScroll.position.pixels : 0.0;
     setState(() => _groupsLoading = true);
     try {
       final result = await widget.api.getMediaGroups(
@@ -91,17 +91,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _groupTotal = result.total;
         _groups.addAll(result.items);
       });
-      if (savedOffset > 0) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_libraryScroll.hasClients) return;
-          final maxExtent = _libraryScroll.position.maxScrollExtent;
-          if (maxExtent <= 0) return;
-          // 触底加载后原位置已超出新内容范围时停在底部，否则恢复原位置
-          _libraryScroll.jumpTo(
-            savedOffset > maxExtent ? maxExtent : savedOffset,
-          );
-        });
-      }
     } catch (e) {
       if (mounted) _showError(e);
     } finally {
@@ -109,8 +98,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  void _loadMoreGroups() {
-    if (_libraryScroll.position.extentAfter < 500) _loadGroups();
+  bool _onLibraryScroll(ScrollNotification notification) {
+    // 拖动滚动条期间不能扩展 Masonry sliver：内容高度变化会使正在
+    // 使用的 thumb metrics 失效。仅在用户停止滚动后触发下一批加载。
+    if (notification is ScrollEndNotification &&
+        notification.metrics.extentAfter < 800) {
+      _loadGroups();
+    }
+    return false;
   }
 
   Future<void> _loadStatistics() async {
@@ -169,97 +164,108 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Expanded(
           child: RefreshIndicator(
             onRefresh: () => _loadGroups(refresh: true),
-            child: Scrollbar(
-              controller: _libraryScroll,
-              thumbVisibility: false,
-              thickness: 6,
-              radius: const Radius.circular(3),
-              child: _LayoutFade(
-                layout: displayPreferences.libraryLayout,
-                child: CustomScrollView(
+            child: ScrollConfiguration(
+              // 桌面端 ScrollBehavior 会自动注入滚动条；此处关闭自动注入，
+              // 只保留下面这一条显式滚动条，避免双滚动条争用同一位置。
+              behavior: ScrollConfiguration.of(
+                context,
+              ).copyWith(scrollbars: false),
+              child: NotificationListener<ScrollNotification>(
+                onNotification: _onLibraryScroll,
+                child: Scrollbar(
                   controller: _libraryScroll,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  slivers: [
-                    const SliverPadding(padding: EdgeInsets.only(top: 18)),
-                    for (int i = 0; i < _groups.length; i++) ...[
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 2, 20, 10),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  '${_groups[i].libraryName}${_groups[i].groupPath.isEmpty ? '' : ' / ${_groups[i].groupPath}'}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context).textTheme.titleSmall
-                                      ?.copyWith(fontWeight: FontWeight.w700),
+                  thumbVisibility: false,
+                  thickness: 6,
+                  radius: const Radius.circular(3),
+                  child: CustomScrollView(
+                    controller: _libraryScroll,
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    slivers: [
+                      const SliverPadding(padding: EdgeInsets.only(top: 18)),
+                      for (int i = 0; i < _groups.length; i++) ...[
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(20, 2, 20, 10),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    '${_groups[i].libraryName}${_groups[i].groupPath.isEmpty ? '' : ' / ${_groups[i].groupPath}'}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
                                 ),
-                              ),
-                              Text(
-                                '${_groups[i].total} 项',
-                                style: Theme.of(context).textTheme.labelSmall
-                                    ?.copyWith(color: cs.outline),
-                              ),
-                            ],
+                                Text(
+                                  '${_groups[i].total} 项',
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(color: cs.outline),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                      _buildLibraryGroup(_groups[i]),
-                      const SliverPadding(padding: EdgeInsets.only(bottom: 26)),
+                        _buildLibraryGroup(_groups[i]),
+                        const SliverPadding(
+                          padding: EdgeInsets.only(bottom: 26),
+                        ),
+                      ],
+                      if (_groups.isEmpty && _groupsLoading)
+                        SliverPadding(
+                          padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+                          sliver: SliverGrid.builder(
+                            itemCount: 18,
+                            gridDelegate:
+                                SliverGridDelegateWithMaxCrossAxisExtent(
+                                  maxCrossAxisExtent:
+                                      displayPreferences.libraryThumbExtent,
+                                  crossAxisSpacing: kMediaCrossSpacing,
+                                  mainAxisSpacing: kMediaMainSpacing,
+                                  childAspectRatio: 0.8,
+                                ),
+                            itemBuilder: (_, __) => const _SkeletonBlock(),
+                          ),
+                        ),
+                      if (!_groupsLoading && _groups.isEmpty)
+                        SliverFillRemaining(
+                          hasScrollBody: false,
+                          child: Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.photo_library_outlined,
+                                  size: 72,
+                                  color: cs.outlineVariant,
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  '暂无已入库媒体',
+                                  style: Theme.of(context).textTheme.titleMedium
+                                      ?.copyWith(fontWeight: FontWeight.w600),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  '添加收藏库并完成扫描后，这里会展示你的照片与视频',
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(color: cs.onSurfaceVariant),
+                                ),
+                                const SizedBox(height: 20),
+                                FilledButton.icon(
+                                  onPressed: widget.onOpenScan,
+                                  icon: const Icon(Icons.manage_search),
+                                  label: const Text('前往扫描'),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      const SliverPadding(padding: EdgeInsets.only(bottom: 32)),
                     ],
-                    if (_groups.isEmpty && _groupsLoading)
-                      SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
-                        sliver: SliverGrid.builder(
-                          itemCount: 18,
-                          gridDelegate:
-                              SliverGridDelegateWithMaxCrossAxisExtent(
-                                maxCrossAxisExtent:
-                                    displayPreferences.libraryThumbExtent,
-                                crossAxisSpacing: 12,
-                                mainAxisSpacing: 18,
-                                childAspectRatio: 0.8,
-                              ),
-                          itemBuilder: (_, __) => const _SkeletonBlock(),
-                        ),
-                      ),
-                    if (!_groupsLoading && _groups.isEmpty)
-                      SliverFillRemaining(
-                        hasScrollBody: false,
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.photo_library_outlined,
-                                size: 72,
-                                color: cs.outlineVariant,
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                '暂无已入库媒体',
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w600),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                '添加收藏库并完成扫描后，这里会展示你的照片与视频',
-                                style: Theme.of(context).textTheme.bodySmall
-                                    ?.copyWith(color: cs.onSurfaceVariant),
-                              ),
-                              const SizedBox(height: 20),
-                              FilledButton.icon(
-                                onPressed: widget.onOpenScan,
-                                icon: const Icon(Icons.manage_search),
-                                label: const Text('前往扫描'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    const SliverPadding(padding: EdgeInsets.only(bottom: 32)),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -273,15 +279,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final extent = displayPreferences.libraryThumbExtent;
     final layout = displayPreferences.libraryLayout;
     if (layout == 'masonry') {
+      // 瀑布流：自实现 sliver（flutter_staggered_grid_view 的
+      // SliverMasonryGrid 在内容追加时会拉回滚动位置）。
       return SliverPadding(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
         sliver: SliverLayoutBuilder(
           builder: (context, constraints) {
             final columns = _columnCount(constraints.crossAxisExtent, extent);
-            return SliverMasonryGrid.count(
-              crossAxisCount: columns,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 18,
+            return MasonrySliver(
+              rebuildToken: group,
               childCount: group.items.length,
               itemBuilder: (context, index) {
                 final media = group.items[index];
@@ -289,13 +295,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _MediaTile(
                     media: media,
                     api: widget.api,
-                    imageAspectRatio: _mediaAspectRatio(media),
+                    imageAspectRatio: _rawAspectRatio(media),
                     showName: false,
                     onOpenViewer: () => _openViewer(group.items, index),
                     onDeleted: () => _removeFromGroups(media),
                   ),
                 );
               },
+              crossAxisCount: columns,
+              crossAxisSpacing: kMediaCrossSpacing,
+              mainAxisSpacing: kMediaMainSpacing,
+              heightFactor: (i) => 1 / _rawAspectRatio(group.items[i]),
             );
           },
         ),
@@ -310,7 +320,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           builder: (context, constraints) {
             final width = constraints.crossAxisExtent;
             final targetH = extent * 0.85;
-            const gap = 10.0;
+            const gap = kMediaJustifiedGap;
             final rows = _buildJustifiedRows(group.items, width, targetH, gap);
             return SliverList.builder(
               itemCount: rows.length,
@@ -319,7 +329,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 final rowH = _justifiedRowHeight(row, width, targetH, gap);
                 final widths = _justifiedCellWidths(row, rowH, width, gap);
                 return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.only(bottom: kMediaJustifiedMainGap),
                   child: Row(
                     children: [
                       for (var c = 0; c < row.length; c++) ...[
@@ -357,7 +367,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         builder: (context, constraints) {
           final columns = _columnCount(constraints.crossAxisExtent, extent);
           final width =
-              (constraints.crossAxisExtent - (columns - 1) * 12) / columns;
+              (constraints.crossAxisExtent -
+                  (columns - 1) * kMediaCrossSpacing) /
+              columns;
           final imageRatio = layout == 'square' ? 1.0 : 4 / 3;
           // 网格正切：正方形单元，图片裁剪填充不留空隙；自适应网格保留完整画面
           final imageFit = layout == 'square' ? BoxFit.cover : BoxFit.contain;
@@ -365,8 +377,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             itemCount: group.items.length,
             gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: columns,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 18,
+              crossAxisSpacing: kMediaCrossSpacing,
+              mainAxisSpacing: kMediaMainSpacing,
               mainAxisExtent: width / imageRatio,
             ),
             itemBuilder: (context, index) {
@@ -652,7 +664,11 @@ class _MediaTileState extends State<_MediaTile> {
           child: stack,
         );
       }
-      return AspectRatio(aspectRatio: widget.imageAspectRatio, child: stack);
+      // 图片区裁剪：hover 放大（AnimatedScale）会把图片绘制到 cell 之外，
+      // 在瀑布流等紧凑布局中会遮盖相邻项目，ClipRect 限制在 cell 内。
+      return ClipRect(
+        child: AspectRatio(aspectRatio: widget.imageAspectRatio, child: stack),
+      );
     }
 
     return MouseRegion(
@@ -670,25 +686,30 @@ class _MediaTileState extends State<_MediaTile> {
               onOpenViewer: widget.onOpenViewer,
               onDeleted: widget.onDeleted,
             ),
-        child: AnimatedScale(
-          scale: _hovered ? 1.03 : 1.0,
-          duration: const Duration(milliseconds: 160),
-          curve: Curves.easeOut,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              buildImageArea(),
-              if (widget.showName) ...[
-                const SizedBox(height: 6),
-                Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+        // ClipRect 必须在 AnimatedScale 外层：hover 放大（1.03）会同时
+        // 放大内部裁剪边界，图片仍会溢出 cell 遮盖相邻项目；
+        // 用固定裁剪区域把放大绘制限制在 cell 内。
+        child: ClipRect(
+          child: AnimatedScale(
+            scale: _hovered ? 1.03 : 1.0,
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOut,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                buildImageArea(),
+                if (widget.showName) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -812,45 +833,6 @@ class _SkeletonBlockState extends State<_SkeletonBlock>
         ),
       ),
     );
-  }
-}
-
-/// 布局切换时的淡入容器（sliver 无法直接包动画，包在 CustomScrollView 外层）。
-class _LayoutFade extends StatefulWidget {
-  final String layout;
-  final Widget child;
-
-  const _LayoutFade({required this.layout, required this.child});
-
-  @override
-  State<_LayoutFade> createState() => _LayoutFadeState();
-}
-
-class _LayoutFadeState extends State<_LayoutFade>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 240),
-    value: 1,
-  );
-
-  @override
-  void didUpdateWidget(_LayoutFade old) {
-    super.didUpdateWidget(old);
-    if (old.layout != widget.layout) {
-      _controller.forward(from: 0.3);
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(opacity: _controller, child: widget.child);
   }
 }
 
@@ -1351,8 +1333,8 @@ class _PagedMediaTabState extends State<_PagedMediaTab> {
                         itemCount: columns * 3,
                         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: columns,
-                          crossAxisSpacing: 12,
-                          mainAxisSpacing: 18,
+                          crossAxisSpacing: kMediaCrossSpacing,
+                          mainAxisSpacing: kMediaMainSpacing,
                           childAspectRatio: 0.75,
                         ),
                         itemBuilder: (_, __) => const _SkeletonBlock(),
@@ -1404,47 +1386,71 @@ class _PagedMediaTabState extends State<_PagedMediaTab> {
                               _extent,
                             );
                             if (layout == 'masonry') {
-                              return MasonryGridView.count(
+                              // 瀑布流：自实现 sliver（同库页，滚动稳定）
+                              return CustomScrollView(
                                 controller: _gridScroll,
                                 physics: const AlwaysScrollableScrollPhysics(),
-                                padding: const EdgeInsets.fromLTRB(
-                                  20,
-                                  20,
-                                  20,
-                                  28,
-                                ),
-                                crossAxisCount: columns,
-                                crossAxisSpacing: 12,
-                                mainAxisSpacing: 18,
-                                itemCount: page.items.length,
-                                itemBuilder: (_, index) {
-                                  final media = page.items[index];
-                                  return RepaintBoundary(
-                                    child: _MediaTile(
-                                      media: media,
-                                      api: widget.api,
-                                      imageAspectRatio: _mediaAspectRatio(
-                                        media,
-                                      ),
-                                      showName: true,
-                                      onOpenViewer:
-                                          () => _openMediaViewer(
-                                            context,
-                                            widget.api,
-                                            page.items,
-                                            index,
-                                          ),
-                                      onDeleted: () => _removeFromPage(media),
+                                slivers: [
+                                  SliverPadding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      20,
+                                      20,
+                                      20,
+                                      28,
                                     ),
-                                  );
-                                },
+                                    sliver: SliverLayoutBuilder(
+                                      builder: (context, constraints) {
+                                        final columns = _columnCount(
+                                          constraints.crossAxisExtent,
+                                          _extent,
+                                        );
+                                        return MasonrySliver(
+                                          rebuildToken: page,
+                                          childCount: page.items.length,
+                                          itemBuilder: (context, index) {
+                                            final media = page.items[index];
+                                            return RepaintBoundary(
+                                              child: _MediaTile(
+                                                media: media,
+                                                api: widget.api,
+                                                imageAspectRatio:
+                                                    _rawAspectRatio(media),
+                                                showName: true,
+                                                onOpenViewer:
+                                                    () => _openMediaViewer(
+                                                      context,
+                                                      widget.api,
+                                                      page.items,
+                                                      index,
+                                                    ),
+                                                onDeleted:
+                                                    () =>
+                                                        _removeFromPage(media),
+                                              ),
+                                            );
+                                          },
+                                          crossAxisCount: columns,
+                                          crossAxisSpacing: kMediaCrossSpacing,
+                                          mainAxisSpacing: kMediaMainSpacing,
+                                          heightFactor:
+                                              (i) =>
+                                                  1 /
+                                                  _rawAspectRatio(
+                                                    page.items[i],
+                                                  ),
+                                          fixedExtraHeight: 26,
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ],
                               );
                             }
                             if (layout == 'justified') {
                               // 自适应：按原始宽高比横向铺满整行，无空隙
                               final width = constraints.maxWidth - 40;
                               final targetH = _extent * 0.85;
-                              const gap = 10.0;
+                              const gap = kMediaJustifiedGap;
                               final rows = _buildJustifiedRows(
                                 page.items,
                                 width,
@@ -1531,7 +1537,7 @@ class _PagedMediaTabState extends State<_PagedMediaTab> {
                             final width =
                                 (constraints.maxWidth -
                                     40 -
-                                    (columns - 1) * 12) /
+                                    (columns - 1) * kMediaCrossSpacing) /
                                 columns;
                             return GridView.builder(
                               controller: _gridScroll,
@@ -1546,8 +1552,8 @@ class _PagedMediaTabState extends State<_PagedMediaTab> {
                               gridDelegate:
                                   SliverGridDelegateWithFixedCrossAxisCount(
                                     crossAxisCount: columns,
-                                    crossAxisSpacing: 12,
-                                    mainAxisSpacing: 18,
+                                    crossAxisSpacing: kMediaCrossSpacing,
+                                    mainAxisSpacing: kMediaMainSpacing,
                                     mainAxisExtent: width / imageRatio + 39,
                                   ),
                               itemBuilder: (_, index) {
@@ -1840,14 +1846,9 @@ void _openMediaViewer(
 }
 
 int _columnCount(double width, double preferredExtent) {
-  return ((width + 12) / (preferredExtent + 12)).floor().clamp(1, 12);
-}
-
-double _mediaAspectRatio(Media media) {
-  final width = media.width ?? 0;
-  final height = media.height ?? 0;
-  if (width <= 0 || height <= 0) return 4 / 3;
-  return (width / height).clamp(.45, 2.4);
+  return ((width + kMediaCrossSpacing) / (preferredExtent + kMediaCrossSpacing))
+      .floor()
+      .clamp(1, 12);
 }
 
 /// 原始宽高比（不裁剪限制），用于自适应铺满行的宽度计算。
