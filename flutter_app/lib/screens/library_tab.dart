@@ -87,13 +87,16 @@ class _LibraryTabState extends State<LibraryTab> {
     super.dispose();
   }
 
+  int _loadSeq = 0;
+
   /// 加载分组：懒加载模式追加批次；翻页模式替换当前页。
+  /// 刷新/翻页/搜索始终执行（用请求序号丢弃过期响应），
+  /// 避免加载中再次输入搜索词时请求被 _groupsLoading 吞掉。
   Future<void> _loadGroups({bool refresh = false}) async {
-    if (_groupsLoading) return;
     final mode = _loadMode;
-    if (mode == 'lazy') {
-      if (!refresh && _groups.length >= _groupTotal && _groupTotal != 0) return;
-    }
+    // 懒加载追加时避免并发；其余（翻页/搜索/刷新）每次都发请求
+    if (mode == 'lazy' && !refresh && _groupsLoading) return;
+    final seq = ++_loadSeq;
     setState(() => _groupsLoading = true);
     try {
       final result = await api.getMediaGroups(
@@ -104,7 +107,7 @@ class _LibraryTabState extends State<LibraryTab> {
         mode == 'lazy' ? 20 : _groupPageSize,
         query: _groupQuery.isEmpty ? null : _groupQuery,
       );
-      if (!mounted) return;
+      if (!mounted || seq != _loadSeq) return;
       setState(() {
         if (refresh || mode == 'page') _groups = [];
         _groupTotal = result.total;
@@ -122,9 +125,11 @@ class _LibraryTabState extends State<LibraryTab> {
         }
       }
     } catch (e) {
-      if (mounted) _showError(e);
+      if (mounted && seq == _loadSeq) _showError(e);
     } finally {
-      if (mounted) setState(() => _groupsLoading = false);
+      if (mounted && seq == _loadSeq) {
+        setState(() => _groupsLoading = false);
+      }
     }
   }
 

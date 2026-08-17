@@ -660,35 +660,46 @@ class _HomeScreenState extends State<HomeScreen> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-          const SizedBox(width: 18),
-
-          // 收藏库页：文件搜索框（Windows 10 风格，仅当前页显示）
           if (_selectedIndex == 1) ...[
+            // 搜索框居中：左右各一个 Expanded 对称占位，中间固定宽 360
             _buildLibrarySearchField(cs),
-            const SizedBox(width: 12),
           ],
-          if (_selectedIndex == 0 && _dashboardTab == 'library')
-            _buildLibraryLayoutMenu(cs),
-          const SizedBox(width: 10),
-          // 主题切换快捷按钮
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: cs.surfaceContainerLow,
-              border: Border.all(color: cs.outlineVariant),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: IconButton(
-              icon: Icon(
-                Theme.of(context).brightness == Brightness.dark
-                    ? Icons.light_mode_outlined
-                    : Icons.dark_mode_outlined,
-                size: 19,
+          if (_selectedIndex == 1)
+            // 右侧对称占位：主题按钮靠右，保证搜索框精确居中
+            Expanded(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [_buildThemeButton(cs)],
               ),
-              tooltip: '切换主题',
-              onPressed: () => themeNotifier.toggle(),
-            ),
-          ),
+            )
+          else ...[
+            if (_selectedIndex == 0 && _dashboardTab == 'library')
+              _buildLibraryLayoutMenu(cs),
+            const SizedBox(width: 10),
+            _buildThemeButton(cs),
+          ],
         ],
+      ),
+    );
+  }
+
+  /// 主题切换按钮（圆形描边）。
+  Widget _buildThemeButton(ColorScheme cs) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerLow,
+        border: Border.all(color: cs.outlineVariant),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: IconButton(
+        icon: Icon(
+          Theme.of(context).brightness == Brightness.dark
+              ? Icons.light_mode_outlined
+              : Icons.dark_mode_outlined,
+          size: 19,
+        ),
+        tooltip: '切换主题',
+        onPressed: () => themeNotifier.toggle(),
       ),
     );
   }
@@ -789,7 +800,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildLibrarySearchField(ColorScheme cs) {
     final hasText = _libSearchCtrl.text.isNotEmpty;
     return SizedBox(
-      width: 320,
+      width: 360,
       height: 36,
       child: TextField(
         controller: _libSearchCtrl,
