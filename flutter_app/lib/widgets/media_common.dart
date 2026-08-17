@@ -13,10 +13,10 @@ import 'image_viewer.dart';
 import 'media_viewer.dart';
 
 /// 媒体网格间隔常量：统一调整图片间距时只需修改这里。
-const double kMediaCrossSpacing = 2; // 列间距（网格/瀑布流/骨架屏）
-const double kMediaMainSpacing = 2; // 行间距（网格/瀑布流/骨架屏）
-const double kMediaJustifiedGap = 2; // 自适应（justified）布局行内间隙
-const double kMediaJustifiedMainGap = 2; // 自适应（justified）布局行间距
+const double kMediaCrossSpacing = 4; // 列间距（网格/瀑布流/骨架屏）
+const double kMediaMainSpacing = 4; // 行间距（网格/瀑布流/骨架屏）
+const double kMediaJustifiedGap = 4; // 自适应（justified）布局行内间隙
+const double kMediaJustifiedMainGap = 4; // 自适应（justified）布局行间距
 
 /// 媒体缩略图卡片（无卡片背景，图片 contain/cover 显示）。
 class MediaTile extends StatefulWidget {
@@ -58,65 +58,68 @@ class MediaTileState extends State<MediaTile> {
     final name = media.relativePath.split(RegExp(r'[/\\]')).last;
     final fixedSize = widget.cellWidth != null && widget.cellHeight != null;
     Widget buildImageArea() {
-      final stack = Stack(
-        fit: StackFit.expand,
-        children: [
-          MediaImage(media: media, api: widget.api, fit: widget.imageFit),
-          // hover 遮罩（淡入）
-          AnimatedOpacity(
-            opacity: _hovered ? 1 : 0,
-            duration: const Duration(milliseconds: 140),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: .1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-          ),
-          if (media.kind == 'video') ...[
-            const Positioned(
-              top: 6,
-              left: 6,
-              child: MediaBadge(icon: Icons.play_arrow_rounded),
-            ),
-            Positioned(
-              right: 6,
-              bottom: 6,
-              child: MediaBadge(
-                text:
-                    '${videoQuality(media.height)}  ${formatClock(media.durationMs ?? 0)}',
-              ),
-            ),
-          ],
-          // hover 快捷操作（右上角）
-          Positioned(
-            top: 6,
-            right: 6,
-            child: IgnorePointer(
-              ignoring: !_hovered,
-              child: AnimatedOpacity(
-                opacity: _hovered ? 1 : 0,
-                duration: const Duration(milliseconds: 140),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    QuickActionButton(
-                      icon: Icons.open_in_full_rounded,
-                      tooltip: '打开媒体',
-                      onTap: widget.onOpenViewer,
-                    ),
-                    const SizedBox(width: 6),
-                    QuickActionButton(
-                      icon: Icons.more_vert_rounded,
-                      tooltip: '更多操作',
-                      onTap: _openMoreMenu,
-                    ),
-                  ],
+      final stack = ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            MediaImage(media: media, api: widget.api, fit: widget.imageFit),
+            // hover 遮罩（淡入）
+            AnimatedOpacity(
+              opacity: _hovered ? 1 : 0,
+              duration: const Duration(milliseconds: 140),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: .1),
+                  borderRadius: BorderRadius.circular(10),
                 ),
               ),
             ),
-          ),
-        ],
+            if (media.kind == 'video') ...[
+              const Positioned(
+                top: 6,
+                left: 6,
+                child: MediaBadge(icon: Icons.play_arrow_rounded),
+              ),
+              Positioned(
+                right: 6,
+                bottom: 6,
+                child: MediaBadge(
+                  text:
+                      '${videoQuality(media.height)}  ${formatClock(media.durationMs ?? 0)}',
+                ),
+              ),
+            ],
+            // hover 快捷操作（右上角）
+            Positioned(
+              top: 6,
+              right: 6,
+              child: IgnorePointer(
+                ignoring: !_hovered,
+                child: AnimatedOpacity(
+                  opacity: _hovered ? 1 : 0,
+                  duration: const Duration(milliseconds: 140),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      QuickActionButton(
+                        icon: Icons.open_in_full_rounded,
+                        tooltip: '打开媒体',
+                        onTap: widget.onOpenViewer,
+                      ),
+                      const SizedBox(width: 6),
+                      QuickActionButton(
+                        icon: Icons.more_vert_rounded,
+                        tooltip: '更多操作',
+                        onTap: _openMoreMenu,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       );
       Widget area;
       if (fixedSize) {
@@ -368,6 +371,7 @@ class DisplayToolbar extends StatelessWidget {
   final int? pageSize;
   final ValueChanged<int>? onPageSizeChanged;
   final String? searchQuery;
+  final TextEditingController? searchController;
   final ValueChanged<String>? onSearchChanged;
   final VoidCallback? onSearchClear;
   final String? loadMode;
@@ -382,6 +386,7 @@ class DisplayToolbar extends StatelessWidget {
     this.pageSize,
     this.onPageSizeChanged,
     this.searchQuery,
+    this.searchController,
     this.onSearchChanged,
     this.onSearchClear,
     this.loadMode,
@@ -418,11 +423,15 @@ class DisplayToolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 20),
+      height: 64,
+      padding: const EdgeInsets.symmetric(horizontal: 22),
       decoration: BoxDecoration(
+        color: cs.surface,
         border: Border(
-          bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
+          bottom: BorderSide(
+            color: cs.outlineVariant.withValues(alpha: .8),
+            width: 0.5,
+          ),
         ),
       ),
       child: Row(
@@ -431,16 +440,17 @@ class DisplayToolbar extends StatelessWidget {
             // 搜索框（库页专用，防抖由调用方处理）
             Expanded(
               child: SizedBox(
-                height: 32,
+                height: 40,
                 child: TextField(
+                  controller: searchController,
                   style: const TextStyle(fontSize: 13),
                   onChanged: onSearchChanged,
                   textInputAction: TextInputAction.search,
                   decoration: InputDecoration(
                     isDense: true,
-                    hintText: '搜索文件名',
+                    hintText: '搜索文件名、拍摄地点、人物...',
                     hintStyle: TextStyle(fontSize: 13, color: cs.outline),
-                    prefixIcon: Icon(Icons.search, size: 16, color: cs.outline),
+                    prefixIcon: Icon(Icons.search, size: 19, color: cs.outline),
                     suffixIcon:
                         searchQuery!.isNotEmpty
                             ? IconButton(
@@ -455,16 +465,24 @@ class DisplayToolbar extends StatelessWidget {
                             : null,
                     contentPadding: const EdgeInsets.symmetric(vertical: 0),
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(8),
-                      borderSide: BorderSide.none,
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: cs.outlineVariant),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide(color: cs.primary, width: 1.4),
                     ),
                     filled: true,
-                    fillColor: cs.surfaceContainerHighest.withValues(alpha: .5),
+                    fillColor: cs.surfaceContainerLow,
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: 16),
+            const SizedBox(width: 18),
           ],
           // 布局切换
           PopupMenuButton<String>(
@@ -507,12 +525,12 @@ class DisplayToolbar extends StatelessWidget {
                       color: cs.onSurfaceVariant,
                     ),
                   ),
-                  Icon(Icons.arrow_drop_down, size: 16, color: cs.outline),
+                  Icon(Icons.keyboard_arrow_down_outlined, size: 16, color: cs.outline),
                 ],
               ),
             ),
           ),
-          const SizedBox(width: 20),
+          const SizedBox(width: 18),
           // 缩放滑杆
           Icon(
             Icons.zoom_in_map_outlined,
@@ -523,8 +541,8 @@ class DisplayToolbar extends StatelessWidget {
           Tooltip(
             message: '缩放',
             child: SizedBox(
-              width: 150,
-              height: 32,
+              width: 132,
+              height: 36,
               child: SliderTheme(
                 data: SliderThemeData(
                   trackHeight: 2.5,
@@ -553,7 +571,7 @@ class DisplayToolbar extends StatelessWidget {
             style: TextStyle(fontSize: 11, color: cs.outline),
           ),
           if (pageSize != null) ...[
-            const SizedBox(width: 20),
+            const SizedBox(width: 18),
             Container(width: 1, height: 18, color: cs.outlineVariant),
             const SizedBox(width: 10),
             // 每页数量
@@ -595,14 +613,14 @@ class DisplayToolbar extends StatelessWidget {
                         color: cs.onSurfaceVariant,
                       ),
                     ),
-                    Icon(Icons.arrow_drop_down, size: 16, color: cs.outline),
+                    Icon(Icons.keyboard_arrow_down_outlined, size: 16, color: cs.outline),
                   ],
                 ),
               ),
             ),
           ],
           if (loadMode != null) ...[
-            const SizedBox(width: 20),
+            const SizedBox(width: 18),
             Container(width: 1, height: 18, color: cs.outlineVariant),
             const SizedBox(width: 10),
             // 加载模式（翻页 / 懒加载）
@@ -642,7 +660,7 @@ class DisplayToolbar extends StatelessWidget {
                         color: cs.onSurfaceVariant,
                       ),
                     ),
-                    Icon(Icons.arrow_drop_down, size: 16, color: cs.outline),
+                    Icon(Icons.keyboard_arrow_down_outlined, size: 16, color: cs.outline),
                   ],
                 ),
               ),
@@ -715,75 +733,68 @@ class PaginationBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 5, 16, 12),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: colorScheme.surfaceContainerLow.withValues(alpha: .82),
-          border: Border.all(color: colorScheme.outlineVariant),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: SizedBox(
-          height: 42,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              IconButton(
-                tooltip: '上一页',
-                visualDensity: VisualDensity.compact,
-                onPressed: loading ? null : onPrevious,
-                icon: const Icon(Icons.chevron_left, size: 20),
-              ),
-              SizedBox(
-                width: 46,
-                height: 30,
-                child: TextField(
-                  controller: controller,
-                  textAlign: TextAlign.center,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  onSubmitted: (_) => onSubmit(),
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    contentPadding: EdgeInsets.symmetric(
-                      horizontal: 5,
-                      vertical: 7,
-                    ),
-                    border: OutlineInputBorder(),
+      padding: const EdgeInsets.fromLTRB(22, 8, 22, 14),
+      child: SizedBox(
+        height: 44,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              tooltip: '上一页',
+              visualDensity: VisualDensity.compact,
+              onPressed: loading ? null : onPrevious,
+              icon: const Icon(Icons.chevron_left, size: 20),
+            ),
+            SizedBox(
+              width: 46,
+              height: 30,
+              child: TextField(
+                controller: controller,
+                textAlign: TextAlign.center,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                onSubmitted: (_) => onSubmit(),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  contentPadding: EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 7,
                   ),
+                  border: OutlineInputBorder(),
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 7),
-                child: Text('/ $totalPages'),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 7),
+              child: Text('/ $totalPages'),
+            ),
+            IconButton(
+              tooltip: '下一页',
+              visualDensity: VisualDensity.compact,
+              onPressed: loading ? null : onNext,
+              icon: const Icon(Icons.chevron_right, size: 20),
+            ),
+            Container(
+              width: 1,
+              height: 18,
+              margin: const EdgeInsets.symmetric(horizontal: 10),
+              color: colorScheme.outlineVariant,
+            ),
+            Text(
+              '共 $totalItems 项',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
               ),
-              IconButton(
-                tooltip: '下一页',
-                visualDensity: VisualDensity.compact,
-                onPressed: loading ? null : onNext,
-                icon: const Icon(Icons.chevron_right, size: 20),
+            ),
+            if (loading) ...[
+              const SizedBox(width: 12),
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
-              Container(
-                width: 1,
-                height: 18,
-                margin: const EdgeInsets.symmetric(horizontal: 10),
-                color: colorScheme.outlineVariant,
-              ),
-              Text(
-                '共 $totalItems 项',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              if (loading) ...[
-                const SizedBox(width: 12),
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ],
             ],
-          ),
+          ],
         ),
       ),
     );

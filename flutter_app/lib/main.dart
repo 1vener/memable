@@ -69,14 +69,11 @@ class ThemeNotifier extends ChangeNotifier {
   Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        'ui.theme_mode',
-        switch (_mode) {
-          ThemeMode.light => 'light',
-          ThemeMode.dark => 'dark',
-          ThemeMode.system => 'system',
-        },
-      );
+      await prefs.setString('ui.theme_mode', switch (_mode) {
+        ThemeMode.light => 'light',
+        ThemeMode.dark => 'dark',
+        ThemeMode.system => 'system',
+      });
       await prefs.setInt('ui.accent_color', _seedColor.toARGB32());
     } catch (_) {}
   }
@@ -93,9 +90,9 @@ void main() {
   WidgetsFlutterBinding.ensureInitialized();
   themeNotifier.load();
   // 窗口最小尺寸
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-  ));
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(statusBarColor: Colors.transparent),
+  );
   // 官方退出钩子：桌面窗口关闭时先停止后端再退出（比 dispose 可靠）
   _exitListener = AppLifecycleListener(
     onExitRequested: () async {
@@ -126,7 +123,8 @@ Future<String> discoverBackend() async {
     // 等待就绪（最多 5 秒，windowsgui server 启动通常 1 秒内就绪）
     for (var i = 0; i < 25; i++) {
       await Future.delayed(const Duration(milliseconds: 200));
-      if (await _healthOk(kDefaultPort)) return 'http://localhost:$kDefaultPort';
+      if (await _healthOk(kDefaultPort))
+        return 'http://localhost:$kDefaultPort';
     }
   }
   return 'http://localhost:$kDefaultPort';
@@ -182,18 +180,19 @@ class _MemableAppState extends State<MemableApp> {
           themeMode: themeNotifier.mode,
           theme: _lightTheme(themeNotifier.seedColor),
           darkTheme: _darkTheme(themeNotifier.seedColor),
-          home: _baseUrl == null
-              ? const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 16),
-                      Text('正在启动服务...', style: TextStyle(fontSize: 13)),
-                    ],
-                  ),
-                )
-              : HomeScreen(api: ApiService(baseUrl: _baseUrl!)),
+          home:
+              _baseUrl == null
+                  ? const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(),
+                        SizedBox(height: 16),
+                        Text('正在启动服务...', style: TextStyle(fontSize: 13)),
+                      ],
+                    ),
+                  )
+                  : HomeScreen(api: ApiService(baseUrl: _baseUrl!)),
         );
       },
     );
@@ -202,11 +201,21 @@ class _MemableAppState extends State<MemableApp> {
 
 /// 亮色主题 — Material 3 定制（中性色打底 + 可自定义强调色）
 ThemeData _lightTheme(Color seed) {
-  final cs = ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.light);
+  final generated = ColorScheme.fromSeed(
+    seedColor: seed,
+    brightness: Brightness.light,
+  );
+  // 保留可自定义强调色，同时将大面积中性色收敛为更柔和的暖白。
+  final cs = generated.copyWith(
+    surface: const Color(0xFFFFFDFC),
+    surfaceContainerLow: const Color(0xFFFFFBF8),
+    surfaceContainerHighest: const Color(0xFFF6F1EC),
+    outlineVariant: const Color(0xFFE8E0D9),
+  );
   return ThemeData(
     colorScheme: cs,
     useMaterial3: true,
-    scaffoldBackgroundColor: cs.surface,
+    scaffoldBackgroundColor: const Color(0xFFFFFCFA),
     appBarTheme: AppBarTheme(
       backgroundColor: cs.surface,
       foregroundColor: cs.onSurface,
@@ -217,16 +226,24 @@ ThemeData _lightTheme(Color seed) {
       color: cs.surfaceContainerLow,
       elevation: 0,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: cs.outlineVariant),
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: cs.outlineVariant.withValues(alpha: .8)),
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: cs.surfaceContainerHighest,
+      fillColor: const Color(0xFFFFFBF8),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: BorderSide.none,
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: cs.outlineVariant),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: cs.outlineVariant),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: cs.primary, width: 1.4),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
     ),
@@ -234,7 +251,7 @@ ThemeData _lightTheme(Color seed) {
       style: ElevatedButton.styleFrom(
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     ),
     dividerTheme: DividerThemeData(
@@ -254,11 +271,23 @@ ThemeData _lightTheme(Color seed) {
 
 /// 暗色主题
 ThemeData _darkTheme(Color seed) {
-  final cs = ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.dark);
+  final generated = ColorScheme.fromSeed(
+    seedColor: seed,
+    brightness: Brightness.dark,
+  );
+  // 不使用纯黑：石墨色阶在长时间浏览媒体时更柔和，也能保留卡片层级。
+  final cs = generated.copyWith(
+    surface: const Color(0xFF191816),
+    surfaceContainerLow: const Color(0xFF201E1B),
+    surfaceContainerHighest: const Color(0xFF2A2724),
+    onSurface: const Color(0xFFECE6E0),
+    onSurfaceVariant: const Color(0xFFCFC6BE),
+    outlineVariant: const Color(0xFF46413C),
+  );
   return ThemeData(
     colorScheme: cs,
     useMaterial3: true,
-    scaffoldBackgroundColor: cs.surface,
+    scaffoldBackgroundColor: const Color(0xFF171614),
     appBarTheme: AppBarTheme(
       backgroundColor: cs.surface,
       foregroundColor: cs.onSurface,
@@ -266,19 +295,27 @@ ThemeData _darkTheme(Color seed) {
       surfaceTintColor: Colors.transparent,
     ),
     cardTheme: CardTheme(
-      color: cs.surfaceContainerLow,
+      color: const Color(0xFF201E1B),
       elevation: 0,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: cs.outlineVariant),
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: cs.outlineVariant.withValues(alpha: .85)),
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: cs.surfaceContainerHighest,
+      fillColor: const Color(0xFF252320),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: BorderSide.none,
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: cs.outlineVariant),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: cs.outlineVariant),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: cs.primary, width: 1.4),
       ),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
     ),
@@ -286,7 +323,7 @@ ThemeData _darkTheme(Color seed) {
       style: ElevatedButton.styleFrom(
         elevation: 0,
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     ),
     dividerTheme: DividerThemeData(

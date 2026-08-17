@@ -219,6 +219,7 @@ class _LibraryTabState extends State<LibraryTab> {
           pageSize: _groupPageSize,
           onPageSizeChanged: _onPageSizeChanged,
           searchQuery: _groupQuery,
+          searchController: _searchCtrl,
           onSearchChanged: _onSearchChanged,
           onSearchClear: _clearSearch,
           loadMode: _loadMode,
@@ -247,22 +248,38 @@ class _LibraryTabState extends State<LibraryTab> {
                     controller: _libraryScroll,
                     physics: const AlwaysScrollableScrollPhysics(),
                     slivers: [
-                      const SliverPadding(padding: EdgeInsets.only(top: 18)),
+                      const SliverPadding(padding: EdgeInsets.only(top: 22)),
                       for (int i = 0; i < _groups.length; i++) ...[
                         SliverToBoxAdapter(
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(20, 2, 20, 10),
+                            padding: const EdgeInsets.fromLTRB(24, 4, 24, 13),
                             child: Row(
                               children: [
+                                Container(
+                                  width: 24,
+                                  height: 24,
+                                  margin: const EdgeInsets.only(right: 9),
+                                  decoration: BoxDecoration(
+                                    color: cs.primary.withValues(alpha: .1),
+                                    borderRadius: BorderRadius.circular(7),
+                                  ),
+                                  child: Icon(
+                                    Icons.folder_rounded,
+                                    size: 15,
+                                    color: cs.primary,
+                                  ),
+                                ),
                                 Expanded(
                                   child: Text(
                                     '${_groups[i].libraryName}${_groups[i].groupPath.isEmpty ? '' : ' / ${_groups[i].groupPath}'}',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleSmall
-                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.titleSmall?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 14,
+                                    ),
                                   ),
                                 ),
                                 Text(
@@ -276,12 +293,12 @@ class _LibraryTabState extends State<LibraryTab> {
                         ),
                         _buildLibraryGroup(_groups[i]),
                         const SliverPadding(
-                          padding: EdgeInsets.only(bottom: 26),
+                          padding: EdgeInsets.only(bottom: 30),
                         ),
                       ],
                       if (_groups.isEmpty && _groupsLoading)
                         SliverPadding(
-                          padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+                          padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
                           sliver: SliverGrid.builder(
                             itemCount: 18,
                             gridDelegate:
@@ -369,7 +386,7 @@ class _LibraryTabState extends State<LibraryTab> {
       // 瀑布流：自实现 sliver（flutter_staggered_grid_view 的
       // SliverMasonryGrid 在内容追加时会拉回滚动位置）。
       return SliverPadding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 0),
         sliver: SliverLayoutBuilder(
           builder: (context, constraints) {
             final columns = columnCount(constraints.crossAxisExtent, extent);
@@ -403,7 +420,7 @@ class _LibraryTabState extends State<LibraryTab> {
     if (layout == 'justified') {
       // 自适应：按原始宽高比横向铺满整行，无空隙（Google Photos 风格）
       return SliverPadding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 0),
         sliver: SliverLayoutBuilder(
           builder: (context, constraints) {
             final width = constraints.crossAxisExtent;
@@ -453,7 +470,7 @@ class _LibraryTabState extends State<LibraryTab> {
     }
 
     return SliverPadding(
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 0),
       sliver: SliverLayoutBuilder(
         builder: (context, constraints) {
           final columns = columnCount(constraints.crossAxisExtent, extent);

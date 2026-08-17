@@ -112,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _apiStatus = 'unknown';
   List<BackgroundTask> _runningTasks = [];
   Timer? _taskTimer;
-  static const double _sidebarExpandedWidth = 220;
+  static const double _sidebarExpandedWidth = 148;
   static const double _sidebarCollapsedWidth = 64;
 
   bool _userCollapsed = false;
@@ -406,10 +406,10 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: Column(
         children: [
-          // 标题区
+          // 品牌区：与内容区顶部保留相同的呼吸感。
           Container(
-            height: 56,
-            padding: EdgeInsets.symmetric(horizontal: collapsed ? 16 : 20),
+            height: 76,
+            padding: EdgeInsets.symmetric(horizontal: collapsed ? 16 : 18),
             alignment: Alignment.centerLeft,
             child:
                 collapsed
@@ -420,7 +420,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         onTap: _toggleSidebar,
                         child: Icon(
                           Icons.grid_view_rounded,
-                          size: 22,
+                          size: 21,
                           color: cs.primary,
                         ),
                       ),
@@ -429,19 +429,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       children: [
                         Icon(
                           Icons.grid_view_rounded,
-                          size: 22,
+                          size: 21,
                           color: cs.primary,
                         ),
                         const SizedBox(width: 10),
-                        Text(
-                          'memable',
-                          style: TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700,
-                            color: cs.onSurface,
-                            letterSpacing: -0.3,
-                          ),
-                        ),
                         const Spacer(),
                         Tooltip(
                           message: '收起导航栏',
@@ -458,7 +449,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ],
                     ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           // 导航项
           for (int i = 0; i < _destinations.length; i++)
             _buildNavItem(i, cs, isDark, collapsed: collapsed),
@@ -498,8 +489,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Padding(
       padding: EdgeInsets.symmetric(
-        horizontal: collapsed ? 16 : 12,
-        vertical: 2,
+        horizontal: collapsed ? 12 : 10,
+        vertical: 3,
       ),
       child: Tooltip(
         message:
@@ -508,9 +499,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 : '${dest.tooltip} (${dest.shortcut})',
         child: Material(
           color: Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(10),
           child: InkWell(
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(10),
             onTap: () => _onSelectPage(index),
             onSecondaryTapDown: (details) {
               showContextMenu(
@@ -536,22 +527,22 @@ class _HomeScreenState extends State<HomeScreen> {
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 150),
               padding: EdgeInsets.symmetric(
-                horizontal: collapsed ? 0 : 14,
-                vertical: 10,
+                horizontal: collapsed ? 0 : 13,
+                vertical: 12,
               ),
               decoration: BoxDecoration(
                 color:
                     selected
                         ? cs.primary.withValues(alpha: isDark ? 0.15 : 0.1)
                         : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
               ),
               child:
                   collapsed
                       ? Center(
                         child: Icon(
                           selected ? dest.selectedIcon : dest.icon,
-                          size: 20,
+                          size: 19,
                           color: selected ? cs.primary : cs.onSurfaceVariant,
                         ),
                       )
@@ -559,15 +550,15 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           Icon(
                             selected ? dest.selectedIcon : dest.icon,
-                            size: 20,
+                            size: 19,
                             color: selected ? cs.primary : cs.onSurfaceVariant,
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: Text(
                               dest.label,
                               style: TextStyle(
-                                fontSize: 14,
+                                fontSize: 13.5,
                                 fontWeight:
                                     selected
                                         ? FontWeight.w600
@@ -575,16 +566,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                 color:
                                     selected ? cs.primary : cs.onSurfaceVariant,
                               ),
-                            ),
-                          ),
-                          Text(
-                            dest.shortcut.replaceAll('Ctrl+', ''),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color:
-                                  selected
-                                      ? cs.primary.withValues(alpha: 0.6)
-                                      : cs.outline,
                             ),
                           ),
                         ],
@@ -607,14 +588,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     return Material(
       color: Colors.transparent,
-      borderRadius: BorderRadius.circular(8),
+      borderRadius: BorderRadius.circular(10),
       child: InkWell(
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         onTap: onTap,
         child: Container(
           padding: EdgeInsets.symmetric(
-            horizontal: collapsed ? 0 : 14,
-            vertical: 10,
+            horizontal: collapsed ? 0 : 13,
+            vertical: 12,
           ),
           child:
               collapsed
@@ -624,11 +605,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   : Row(
                     children: [
                       Icon(icon, size: 20, color: cs.onSurfaceVariant),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 10),
                       Text(
                         label,
                         style: TextStyle(
-                          fontSize: 14,
+                          fontSize: 13.5,
                           color: cs.onSurfaceVariant,
                         ),
                       ),
@@ -642,12 +623,15 @@ class _HomeScreenState extends State<HomeScreen> {
   /// 顶部工具栏
   Widget _buildToolbar(ColorScheme cs, bool collapsed) {
     return Container(
-      height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      height: 96,
+      padding: const EdgeInsets.fromLTRB(22, 20, 22, 16),
       decoration: BoxDecoration(
         color: Theme.of(context).scaffoldBackgroundColor,
         border: Border(
-          bottom: BorderSide(color: cs.outlineVariant, width: 0.5),
+          bottom: BorderSide(
+            color: cs.outlineVariant.withValues(alpha: .8),
+            width: 0.5,
+          ),
         ),
       ),
       child: Row(
@@ -676,7 +660,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 18),
 
           // 收藏库页：文件搜索框（Windows 10 风格，仅当前页显示）
           if (_selectedIndex == 1) ...[
@@ -685,17 +669,24 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
           if (_selectedIndex == 0 && _dashboardTab == 'library')
             _buildLibraryLayoutMenu(cs),
-          const SizedBox(width: 8),
+          const SizedBox(width: 10),
           // 主题切换快捷按钮
-          IconButton(
-            icon: Icon(
-              Theme.of(context).brightness == Brightness.dark
-                  ? Icons.light_mode_outlined
-                  : Icons.dark_mode_outlined,
-              size: 20,
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerLow,
+              border: Border.all(color: cs.outlineVariant),
+              borderRadius: BorderRadius.circular(12),
             ),
-            tooltip: '切换主题',
-            onPressed: () => themeNotifier.toggle(),
+            child: IconButton(
+              icon: Icon(
+                Theme.of(context).brightness == Brightness.dark
+                    ? Icons.light_mode_outlined
+                    : Icons.dark_mode_outlined,
+                size: 19,
+              ),
+              tooltip: '切换主题',
+              onPressed: () => themeNotifier.toggle(),
+            ),
           ),
         ],
       ),
@@ -729,9 +720,27 @@ class _HomeScreenState extends State<HomeScreen> {
         onSelectionChanged: (value) => _selectDashboardTab(value.first),
         showSelectedIcon: false,
         style: ButtonStyle(
-          visualDensity: VisualDensity.compact,
+          minimumSize: const WidgetStatePropertyAll(Size.fromHeight(46)),
+          padding: const WidgetStatePropertyAll(
+            EdgeInsets.symmetric(horizontal: 20),
+          ),
+          side: WidgetStatePropertyAll(BorderSide(color: cs.outlineVariant)),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+          backgroundColor: WidgetStateProperty.resolveWith((states) {
+            // 判断是否处于选中状态
+            if (states.contains(WidgetState.selected)) {
+              return cs.primary.withValues(
+                alpha:
+                    Theme.of(context).brightness == Brightness.dark ? .24 : .13,
+              );
+            }
+            // 默认背景色
+            return cs.surfaceContainerLow;
+          }),
           textStyle: const WidgetStatePropertyAll(
-            TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
           ),
           foregroundColor: WidgetStatePropertyAll(cs.onSurface),
         ),

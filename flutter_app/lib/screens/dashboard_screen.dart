@@ -10,10 +10,10 @@ import '../widgets/media_common.dart';
 import 'library_tab.dart';
 
 /// 媒体网格间隔常量：统一调整图片间距时只需修改这里。
-const double kMediaCrossSpacing = 2; // 列间距（网格/瀑布流/骨架屏）
-const double kMediaMainSpacing = 2; // 行间距（网格/瀑布流/骨架屏）
-const double kMediaJustifiedGap = 2; // 自适应（justified）布局行内间隙
-const double kMediaJustifiedMainGap = 2; // 自适应（justified）布局行间距
+const double kMediaCrossSpacing = 20; // 列间距（网格/瀑布流/骨架屏）
+const double kMediaMainSpacing = 20; // 行间距（网格/瀑布流/骨架屏）
+const double kMediaJustifiedGap = 20; // 自适应（justified）布局行内间隙
+const double kMediaJustifiedMainGap = 20; // 自适应（justified）布局行间距
 
 class DashboardScreen extends StatefulWidget {
   final ApiService api;
