@@ -8,6 +8,8 @@ class DisplayPreferences extends ChangeNotifier {
   int libraryGroupDepth = 3;
   double libraryThumbExtent = 180;
   String libraryLayout = 'adaptive';
+  int libraryGroupPageSize = 20;
+  String libraryLoadMode = 'page'; // page=翻页 / lazy=触底懒加载
   int videoPageSize = 20;
   double videoThumbExtent = 180;
   String videoLayout = 'adaptive';
@@ -23,6 +25,10 @@ class DisplayPreferences extends ChangeNotifier {
     );
     libraryThumbExtent = (p.getDouble('ui.home.library_thumb_extent') ?? 180)
         .clamp(120, 320);
+    libraryGroupPageSize = (p.getInt('ui.home.library_group_page_size') ?? 20)
+        .clamp(1, 100);
+    final mode = p.getString('ui.home.library_load_mode');
+    libraryLoadMode = (mode == 'lazy') ? 'lazy' : 'page';
     videoPageSize = (p.getInt('ui.home.video_page_size') ?? 20).clamp(1, 100);
     videoThumbExtent = (p.getDouble('ui.home.video_thumb_extent') ?? 180).clamp(
       120,
@@ -69,6 +75,19 @@ class DisplayPreferences extends ChangeNotifier {
     libraryLayout = value;
     notifyListeners();
     _set('ui.home.library_layout', value);
+  }
+
+  void setLibraryGroupPageSize(int v) {
+    libraryGroupPageSize = v.clamp(1, 100);
+    notifyListeners();
+    _set('ui.home.library_group_page_size', libraryGroupPageSize);
+  }
+
+  void setLibraryLoadMode(String value) {
+    if (value != 'page' && value != 'lazy') return;
+    libraryLoadMode = value;
+    notifyListeners();
+    _set('ui.home.library_load_mode', value);
   }
 
   void setVideoPageSize(int v) {

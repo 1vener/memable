@@ -5,6 +5,9 @@ package api
 import (
 	"net/http"
 	"strconv"
+	"strings"
+
+	"memable/internal/repo"
 )
 
 const (
@@ -77,7 +80,15 @@ func (s *Server) handleListMediaGroups(w http.ResponseWriter, r *http.Request) {
 	if limit > maxMediaGroupLimit {
 		limit = maxMediaGroupLimit
 	}
-	groups, total, err := s.media.ListFormalGroups(depth, offset, limit)
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	var groups []repo.MediaGroup
+	var total int
+	if q == "" {
+		groups, total, err = s.media.ListFormalGroups(depth, offset, limit)
+	} else {
+		// 搜索：返回命中文件所属分组（整组媒体，命中多个同时返回）
+		groups, total, err = s.media.ListFormalGroupsByQuery(depth, q, offset, limit)
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

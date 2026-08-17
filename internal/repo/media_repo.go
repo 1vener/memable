@@ -187,43 +187,54 @@ func (r *MediaRepo) ListFormalPage(kind string, page, pageSize int) (MediaPage, 
 	return MediaPage{Total: total, Page: page, PageSize: pageSize, TotalPages: totalPages, Items: items}, nil
 }
 
-// ListFormalGroups 按目录前 depth 段聚合正式媒体，并只对组分页。
-func (r *MediaRepo) ListFormalGroups(depth, offset, limit int) ([]MediaGroup, int, error) {
+// groupKey 目录分组键（收藏库 + 前 depth 段相对目录）。
+type groupKey struct {
+	libraryID int64
+	path      string
+}
+
+// groupData 分组聚合数据。
+type groupData struct {
+	group MediaGroup
+}
+
+// groupKeyOf 计算媒体相对路径所属的分组键（取前 depth 段，根目录为空串）。
+func groupKeyOf(depth int, libraryID int64, relativePath string) groupKey {
+	parts := strings.Split(strings.ReplaceAll(relativePath, "\\", "/"), "/")
+	dirParts := make([]string, 0, len(parts))
+	if len(parts) > 1 {
+		dirParts = append(dirParts, parts[:len(parts)-1]...)
+	}
+	if depth < len(dirParts) {
+		dirParts = dirParts[:depth]
+	}
+	return groupKey{libraryID: libraryID, path: strings.Join(dirParts, "/")}
+}
+
+// aggregateFormalGroups 聚合正式媒体（排除临时扫描）为目录分组，
+// 返回分组 map 与按最新 mtime 倒序的分组键顺序。
+func (r *MediaRepo) aggregateFormalGroups(depth int) (map[groupKey]*groupData, []groupKey, error) {
 	rows, err := r.db.Query(`SELECT m.library_id, l.name, m.relative_path, m.mtime FROM media m
 		JOIN libraries l ON l.id = m.library_id
 		LEFT JOIN scan_sessions s ON s.id = m.scan_session_id
 		WHERE COALESCE(s.is_temporary, 0) = 0`)
 	if err != nil {
-		return nil, 0, errx.Wrapf(err, "查询正式媒体目录分组")
+		return nil, nil, errx.Wrapf(err, "查询正式媒体目录分组")
 	}
 	defer rows.Close()
-	type key struct {
-		libraryID int64
-		path      string
-	}
-	type groupData struct{ group MediaGroup }
-	groups := make(map[key]*groupData)
-	order := make([]key, 0)
+	groups := make(map[groupKey]*groupData)
+	order := make([]groupKey, 0)
 	for rows.Next() {
 		var libraryID int64
 		var name, relativePath string
 		var mtime time.Time
 		if err := rows.Scan(&libraryID, &name, &relativePath, &mtime); err != nil {
-			return nil, 0, errx.Wrapf(err, "扫描正式媒体目录分组")
+			return nil, nil, errx.Wrapf(err, "扫描正式媒体目录分组")
 		}
-		parts := strings.Split(strings.ReplaceAll(relativePath, "\\", "/"), "/")
-		dirParts := parts[:0]
-		if len(parts) > 1 {
-			dirParts = parts[:len(parts)-1]
-		}
-		if depth < len(dirParts) {
-			dirParts = dirParts[:depth]
-		}
-		path := strings.Join(dirParts, "/")
-		k := key{libraryID, path}
+		k := groupKeyOf(depth, libraryID, relativePath)
 		g := groups[k]
 		if g == nil {
-			g = &groupData{group: MediaGroup{LibraryID: libraryID, LibraryName: name, GroupPath: path, Items: make([]Media, 0)}}
+			g = &groupData{group: MediaGroup{LibraryID: libraryID, LibraryName: name, GroupPath: k.path, Items: make([]Media, 0)}}
 			groups[k] = g
 			order = append(order, k)
 		}
@@ -233,7 +244,7 @@ func (r *MediaRepo) ListFormalGroups(depth, offset, limit int) ([]MediaGroup, in
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, errx.Wrapf(err, "遍历正式媒体目录分组")
+		return nil, nil, errx.Wrapf(err, "遍历正式媒体目录分组")
 	}
 	sort.SliceStable(order, func(i, j int) bool {
 		a, b := groups[order[i]].group, groups[order[j]].group
@@ -245,6 +256,31 @@ func (r *MediaRepo) ListFormalGroups(depth, offset, limit int) ([]MediaGroup, in
 		}
 		return a.GroupPath < b.GroupPath
 	})
+	return groups, order, nil
+}
+
+// loadGroupItems 查询分组（库 + 路径前缀）的全部后代媒体，按 mtime 倒序。
+func (r *MediaRepo) loadGroupItems(k groupKey) ([]Media, error) {
+	cols := `m.` + strings.ReplaceAll(mediaCols, ", ", ", m.")
+	var query string
+	var args []any
+	if k.path == "" {
+		query = `SELECT ` + cols + ` FROM media m LEFT JOIN scan_sessions s ON s.id = m.scan_session_id
+			WHERE m.library_id = ? AND COALESCE(s.is_temporary, 0) = 0 AND m.relative_path NOT LIKE '%/%'
+			ORDER BY m.mtime DESC, m.id DESC`
+		args = []any{k.libraryID}
+	} else {
+		query = `SELECT ` + cols + ` FROM media m LEFT JOIN scan_sessions s ON s.id = m.scan_session_id
+			WHERE m.library_id = ? AND COALESCE(s.is_temporary, 0) = 0
+			AND (m.relative_path = ? OR m.relative_path LIKE ? ESCAPE '\')
+			ORDER BY m.mtime DESC, m.id DESC`
+		args = []any{k.libraryID, k.path, escapeLike(k.path) + "/%"}
+	}
+	return r.query(query, args...)
+}
+
+// groupPageSlice 按 offset/limit 切组并装载整组媒体，返回切片与组总数。
+func (r *MediaRepo) groupPageSlice(groups map[groupKey]*groupData, order []groupKey, offset, limit int) ([]MediaGroup, int, error) {
 	if offset > len(order) {
 		offset = len(order)
 	}
@@ -252,23 +288,8 @@ func (r *MediaRepo) ListFormalGroups(depth, offset, limit int) ([]MediaGroup, in
 	if end > len(order) {
 		end = len(order)
 	}
-	cols := `m.` + strings.ReplaceAll(mediaCols, ", ", ", m.")
 	for _, k := range order[offset:end] {
-		var query string
-		var args []any
-		if k.path == "" {
-			query = `SELECT ` + cols + ` FROM media m LEFT JOIN scan_sessions s ON s.id = m.scan_session_id
-				WHERE m.library_id = ? AND COALESCE(s.is_temporary, 0) = 0 AND m.relative_path NOT LIKE '%/%'
-				ORDER BY m.mtime DESC, m.id DESC`
-			args = []any{k.libraryID}
-		} else {
-			query = `SELECT ` + cols + ` FROM media m LEFT JOIN scan_sessions s ON s.id = m.scan_session_id
-				WHERE m.library_id = ? AND COALESCE(s.is_temporary, 0) = 0
-				AND (m.relative_path = ? OR m.relative_path LIKE ? ESCAPE '\')
-				ORDER BY m.mtime DESC, m.id DESC`
-			args = []any{k.libraryID, k.path, escapeLike(k.path) + "/%"}
-		}
-		items, err := r.query(query, args...)
+		items, err := r.loadGroupItems(k)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -279,6 +300,62 @@ func (r *MediaRepo) ListFormalGroups(depth, offset, limit int) ([]MediaGroup, in
 		out = append(out, groups[k].group)
 	}
 	return out, len(order), nil
+}
+
+// ListFormalGroups 按目录前 depth 段聚合正式媒体，并只对组分页。
+func (r *MediaRepo) ListFormalGroups(depth, offset, limit int) ([]MediaGroup, int, error) {
+	groups, order, err := r.aggregateFormalGroups(depth)
+	if err != nil {
+		return nil, 0, err
+	}
+	return r.groupPageSlice(groups, order, offset, limit)
+}
+
+// ListFormalGroupsByQuery 按文件名（含路径，大小写不敏感）搜索正式媒体，
+// 返回命中文件所属目录分组（整组后代媒体，按 mtime 倒序）。
+// 命中多个分组时同时返回；total 为命中组数。q 为空时回退全量分组。
+func (r *MediaRepo) ListFormalGroupsByQuery(depth int, q string, offset, limit int) ([]MediaGroup, int, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return r.ListFormalGroups(depth, offset, limit)
+	}
+	// 1. 命中媒体 → 命中组键集合
+	rows, err := r.db.Query(`SELECT m.library_id, m.relative_path FROM media m
+		LEFT JOIN scan_sessions s ON s.id = m.scan_session_id
+		WHERE COALESCE(s.is_temporary, 0) = 0 AND m.relative_path LIKE ? ESCAPE '\'`,
+		"%"+escapeLike(q)+"%")
+	if err != nil {
+		return nil, 0, errx.Wrapf(err, "查询命中媒体")
+	}
+	hitKeys := make(map[groupKey]struct{})
+	for rows.Next() {
+		var libraryID int64
+		var relativePath string
+		if err := rows.Scan(&libraryID, &relativePath); err != nil {
+			rows.Close()
+			return nil, 0, errx.Wrapf(err, "扫描命中媒体")
+		}
+		hitKeys[groupKeyOf(depth, libraryID, relativePath)] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, errx.Wrapf(err, "关闭命中媒体查询")
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, errx.Wrapf(err, "遍历命中媒体")
+	}
+
+	// 2. 聚合全部分组，过滤出命中组，分页返回
+	groups, order, err := r.aggregateFormalGroups(depth)
+	if err != nil {
+		return nil, 0, err
+	}
+	filtered := make([]groupKey, 0, len(hitKeys))
+	for _, k := range order {
+		if _, ok := hitKeys[k]; ok {
+			filtered = append(filtered, k)
+		}
+	}
+	return r.groupPageSlice(groups, filtered, offset, limit)
 }
 
 // FormalStatistics 汇总正式媒体数量、大小和视频时长。

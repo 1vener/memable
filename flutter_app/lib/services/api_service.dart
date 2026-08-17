@@ -136,16 +136,19 @@ class ApiService {
   }
 
   /// 获取首页库目录分组。
+  /// [query] 非空时按文件名（含路径）搜索：返回命中文件所属分组（整组媒体）。
   Future<MediaGroupPage> getMediaGroups(
     int depth,
     int offset,
-    int limit,
-  ) async {
+    int limit, {
+    String? query,
+  }) async {
     final uri = Uri.parse('$baseUrl/api/media/groups').replace(
       queryParameters: {
         'depth': '$depth',
         'offset': '$offset',
         'limit': '$limit',
+        if (query != null && query.trim().isNotEmpty) 'q': query.trim(),
       },
     );
     final res = await http.get(uri);

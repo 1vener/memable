@@ -88,3 +88,78 @@ func TestListFormalGroupsAndStatistics(t *testing.T) {
 		t.Fatalf("统计错误: %+v", stats)
 	}
 }
+
+// TestListFormalGroupsByQuery 搜索命中：整组返回、多组同时返回、大小写不敏感、临时媒体排除。
+func TestListFormalGroupsByQuery(t *testing.T) {
+	mr, a, b := setupMediaHomeRepo(t)
+
+	// "jpg" 命中 root.jpg（A库根）、一月/a.jpg、二月/b.jpg → A库根 + A库旅行 两组；
+	// 临时文件 tmp.jpg 排除；B库旅行/c.mp4 不命中。
+	groups, total, err := mr.ListFormalGroupsByQuery(1, "jpg", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(groups) != 2 {
+		t.Fatalf("命中组数=%d/%d, want 2/2", len(groups), total)
+	}
+	// 整组返回：A 库旅行组 items 含整组后代（一月+二月），而非只命中文件
+	var travel *MediaGroup
+	var root *MediaGroup
+	for i := range groups {
+		if groups[i].GroupPath == "旅行" {
+			travel = &groups[i]
+		} else if groups[i].GroupPath == "" {
+			root = &groups[i]
+		}
+	}
+	if travel == nil || root == nil {
+		t.Fatalf("应同时返回旅行与根分组: %+v", groups)
+	}
+	if travel.LibraryID != a.ID || travel.Total != 2 || len(travel.Items) != 2 {
+		t.Fatalf("命中组应整组返回（含全部后代）: %+v", travel)
+	}
+	if root.Items[0].RelativePath != "root.jpg" {
+		t.Fatalf("根分组命中内容错误: %+v", root)
+	}
+	// 临时媒体不应出现
+	for _, g := range groups {
+		for _, it := range g.Items {
+			if it.RelativePath == "旅行/tmp.jpg" {
+				t.Fatalf("临时媒体不应出现在结果: %+v", it)
+			}
+		}
+	}
+
+	// 大小写不敏感
+	groups, total, err = mr.ListFormalGroupsByQuery(1, "JPG", 0, 10)
+	if err != nil || total != 2 {
+		t.Fatalf("大小写不敏感搜索失败 total=%d err=%v", total, err)
+	}
+
+	// 无命中
+	groups, total, err = mr.ListFormalGroupsByQuery(1, "不存在的文件", 0, 10)
+	if err != nil || total != 0 || len(groups) != 0 {
+		t.Fatalf("无命中应返回空: %d/%d err=%v", len(groups), total, err)
+	}
+
+	// 命中一个分组：b 库 旅行/c.mp4
+	groups, total, err = mr.ListFormalGroupsByQuery(1, "c.mp4", 0, 10)
+	if err != nil || total != 1 || len(groups) != 1 {
+		t.Fatalf("单组命中失败: %d/%d err=%v", len(groups), total, err)
+	}
+	if groups[0].LibraryID != b.ID || groups[0].Items[0].RelativePath != "旅行/c.mp4" {
+		t.Fatalf("单组命中内容错误: %+v", groups[0])
+	}
+
+	// 分页：limit=1 取第一组，total 仍为 2
+	groups, total, err = mr.ListFormalGroupsByQuery(1, "jpg", 0, 1)
+	if err != nil || total != 2 || len(groups) != 1 {
+		t.Fatalf("搜索分页错误: %d/%d err=%v", len(groups), total, err)
+	}
+
+	// q 为空回退全量
+	groups, total, err = mr.ListFormalGroupsByQuery(1, "  ", 0, 10)
+	if err != nil || total != 3 {
+		t.Fatalf("空 q 应回退全量: %d err=%v", total, err)
+	}
+}
