@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart' as mk;
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/models.dart';
 import '../services/api_service.dart';
@@ -42,6 +43,11 @@ class _MediaViewerState extends State<MediaViewer> {
   StreamSubscription<String>? _errorSub;
   StreamSubscription<bool>? _playingSub;
   StreamSubscription<double>? _rateSub;
+  StreamSubscription<bool>? _completedSub;
+
+  // 自动连播：当前视频播完后自动播放下一个（持久化）。
+  // 用 ValueNotifier 驱动功能栏 Switch，避免 media_kit 控件主题不重建导致状态不刷新。
+  final ValueNotifier<bool> _autoPlayNext = ValueNotifier(false);
 
   // 转码兜底（解码器不支持时自动转码播放）
   bool _transcoding = false;
@@ -85,6 +91,7 @@ class _MediaViewerState extends State<MediaViewer> {
     _index = _initialIndex(_queue, widget.initialIndex);
     _directoryVideos = _videosInDirectory(_queue, _currentMedia);
     mk.MediaKit.ensureInitialized();
+    _loadAutoPlayPref();
     if (_currentMedia?.kind == 'video') _loadVideo();
     if (widget.preserveQueue) {
       _directoryLoading = false;
@@ -100,6 +107,37 @@ class _MediaViewerState extends State<MediaViewer> {
     return requested;
   }
 
+  /// 读取自动连播偏好。
+  Future<void> _loadAutoPlayPref() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (mounted) {
+        _autoPlayNext.value = prefs.getBool('ui.viewer.autoplay') ?? false;
+      }
+    } catch (_) {}
+  }
+
+  /// 切换自动连播并持久化。
+  void _toggleAutoPlay(bool value) {
+    _autoPlayNext.value = value;
+    SharedPreferences.getInstance()
+        .then((prefs) {
+          prefs.setBool('ui.viewer.autoplay', _autoPlayNext.value);
+        })
+        .catchError((_) {});
+  }
+
+  /// 播放完成回调：自动连播时切到下一个视频，已是最后一个则停在末尾。
+  void _onCompleted(bool completed) {
+    if (!completed || !_autoPlayNext.value || !mounted) return;
+    final current = _currentMedia;
+    if (current == null) return;
+    final videos = _directoryVideos.isEmpty ? _queue : _directoryVideos;
+    final index = videos.indexWhere((m) => m.id == current.id);
+    if (index < 0 || index >= videos.length - 1) return;
+    _goAdjacentVideo(1);
+  }
+
   @override
   void dispose() {
     _errorSub?.cancel();
@@ -107,6 +145,7 @@ class _MediaViewerState extends State<MediaViewer> {
     _rateSub?.cancel();
     _rate.dispose();
     _rotation.dispose();
+    _autoPlayNext.dispose();
     _pageScrollController.dispose();
     _disposeVideo();
     super.dispose();
@@ -119,6 +158,8 @@ class _MediaViewerState extends State<MediaViewer> {
     _playingSub = null;
     _rateSub?.cancel();
     _rateSub = null;
+    _completedSub?.cancel();
+    _completedSub = null;
     final controller = _videoController;
     _videoController = null;
     if (controller != null) {
@@ -217,6 +258,9 @@ class _MediaViewerState extends State<MediaViewer> {
       _rateSub = player.stream.rate.listen((rate) {
         if (rate > 0) _rate.value = rate;
       });
+      // 自动连播：播放完成（completed=true）时切下一个视频
+      _completedSub?.cancel();
+      _completedSub = player.stream.completed.listen(_onCompleted);
       _rate.value = player.state.rate > 0 ? player.state.rate : 1.0;
       if (!mounted) {
         await player.dispose();
@@ -850,8 +894,35 @@ class _MediaViewerState extends State<MediaViewer> {
       _barButton(Icons.replay_10, '快退 10 秒', _rewind),
       _barButton(Icons.forward_10, '快进 10 秒', _forward),
       const MaterialDesktopVolumeButton(),
-      const MaterialDesktopPositionIndicator(),
+      // 自定义进度指示：切换视频后随当前播放器重新订阅时长/位置流
+      const _VideoPositionIndicator(),
       const Spacer(),
+      // 自动连播开关（靠右，播完切下一个，到底暂停）。
+      // 用 ValueListenableBuilder 驱动，绕过控件主题不重建的限制。
+      Tooltip(
+        message: '自动连播',
+        child: ValueListenableBuilder<bool>(
+          valueListenable: _autoPlayNext,
+          builder:
+              (_, autoPlay, __) => Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    '连播',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Transform.scale(
+                    scale: 0.75,
+                    child: Switch(value: autoPlay, onChanged: _toggleAutoPlay),
+                  ),
+                ],
+              ),
+        ),
+      ),
       Builder(
         builder:
             (ctx) => Listener(
@@ -1324,5 +1395,77 @@ class _MediaViewerState extends State<MediaViewer> {
     final local = value.toLocal();
     String two(int n) => n.toString().padLeft(2, '0');
     return '${local.year}-${two(local.month)}-${two(local.day)} ${two(local.hour)}:${two(local.minute)}';
+  }
+}
+
+/// 视频进度指示：显示当前位置 / 总时长。
+///
+/// media_kit 自带的 `MaterialDesktopPositionIndicator` 只在首次
+/// `didChangeDependencies` 订阅一次播放器流，且其控件主题的 bar 因
+/// `updateShouldNotify` 恒为 false 而永不重建，导致切换视频后仍监听已
+/// dispose 的旧播放器、时长不更新。本组件在依赖变化时通过
+/// `VideoStateInheritedWidget` 动态获取当前播放器并重新订阅。
+class _VideoPositionIndicator extends StatefulWidget {
+  const _VideoPositionIndicator();
+
+  @override
+  State<_VideoPositionIndicator> createState() =>
+      _VideoPositionIndicatorState();
+}
+
+class _VideoPositionIndicatorState extends State<_VideoPositionIndicator> {
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  StreamSubscription<Duration>? _positionSub;
+  StreamSubscription<Duration>? _durationSub;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final player =
+        VideoStateInheritedWidget.maybeOf(
+          context,
+        )?.state.widget.controller.player;
+    _positionSub?.cancel();
+    _durationSub?.cancel();
+    _positionSub = null;
+    _durationSub = null;
+    if (player == null) {
+      _position = Duration.zero;
+      _duration = Duration.zero;
+      return;
+    }
+    _position = player.state.position;
+    _duration = player.state.duration;
+    _positionSub = player.stream.position.listen((event) {
+      if (mounted) setState(() => _position = event);
+    });
+    _durationSub = player.stream.duration.listen((event) {
+      if (mounted) setState(() => _duration = event);
+    });
+  }
+
+  @override
+  void dispose() {
+    _positionSub?.cancel();
+    _durationSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      '${_label(_position)} / ${_label(_duration)}',
+      style: const TextStyle(height: 1.0, fontSize: 12.0, color: Colors.white),
+    );
+  }
+
+  static String _label(Duration d) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    final s = d.inSeconds.remainder(60);
+    if (h > 0) return '$h:${two(m)}:${two(s)}';
+    return '${two(m)}:${two(s)}';
   }
 }
